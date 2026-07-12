@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type { PlatformId, SyncMode } from '../../../../shared/contracts'
 import AccountDetailPane from './AccountDetailPane.vue'
 import AccountListPane from './AccountListPane.vue'
@@ -9,6 +9,8 @@ const store = useAccounts()
 const addDialog = ref(false)
 const groupDialog = ref(false)
 const toast = ref('')
+const addBusy = ref(false)
+const groupBusy = ref(false)
 const addForm = reactive<{ platformId: PlatformId; alias: string; syncMode: SyncMode }>({
   platformId: 'xiaohongshu',
   alias: '',
@@ -27,8 +29,13 @@ const selectedBrowserState = computed(() => {
 
 onMounted(() => store.initialize())
 onBeforeUnmount(() => store.dispose())
+watch(store.selectedId, () => {
+  toast.value = ''
+})
 
 async function createAccount(): Promise<void> {
+  if (addBusy.value) return
+  addBusy.value = true
   try {
     await store.createAccount({ ...addForm })
     addDialog.value = false
@@ -36,10 +43,14 @@ async function createAccount(): Promise<void> {
     showToast('账号空间已创建，可以在独立浏览器窗口登录。')
   } catch {
     // Store exposes the sanitized error in the page alert.
+  } finally {
+    addBusy.value = false
   }
 }
 
 async function createGroup(): Promise<void> {
+  if (groupBusy.value) return
+  groupBusy.value = true
   try {
     await store.createGroup({ ...groupForm })
     groupDialog.value = false
@@ -47,6 +58,8 @@ async function createGroup(): Promise<void> {
     showToast('分组已创建。')
   } catch {
     // Store exposes the sanitized error in the page alert.
+  } finally {
+    groupBusy.value = false
   }
 }
 
@@ -64,6 +77,14 @@ function showToast(value: string): void {
   window.setTimeout(() => {
     if (toast.value === value) toast.value = ''
   }, 2800)
+}
+
+function closeAddDialog(): void {
+  if (!addBusy.value) addDialog.value = false
+}
+
+function closeGroupDialog(): void {
+  if (!groupBusy.value) groupDialog.value = false
 }
 </script>
 
@@ -107,29 +128,30 @@ function showToast(value: string): void {
         :save="store.updateAccount"
         :open-browser="store.openBrowser"
         :disconnect="store.disconnectAccount"
+        :purge="store.purgeAccount"
       />
     </section>
 
-    <div v-if="addDialog" class="modal-backdrop" @click.self="addDialog = false">
+    <div v-if="addDialog" class="modal-backdrop" @click.self="closeAddDialog">
       <form class="modal" @submit.prevent="createAccount">
         <div class="modal-head">
           <div><span class="page-eyebrow">NEW ACCOUNT SPACE</span><h2>添加本人账号</h2><p>创建独立会话后，在大窗口中手动登录官方页面。</p></div>
-          <button type="button" @click="addDialog = false">×</button>
+          <button type="button" :disabled="addBusy" @click="closeAddDialog">×</button>
         </div>
         <label>平台<select v-model="addForm.platformId"><option v-for="platform in store.platforms.value" :key="platform.id" :value="platform.id">{{ platform.name }}</option></select></label>
         <label>本地别名<input v-model="addForm.alias" maxlength="40" required placeholder="例如：个人品牌号" /></label>
-        <label>首次同步范围<select v-model="addForm.syncMode"><option value="profile_only">仅账号资料（推荐）</option><option value="recent_20">最近 20 条</option><option value="recent_100">最近 100 条</option><option value="disabled">暂不同步</option></select></label>
+        <label>未来平台插件的默认同步范围<select v-model="addForm.syncMode"><option value="profile_only">仅账号资料（推荐）</option><option value="recent_20">最近 20 条</option><option value="recent_100">最近 100 条</option><option value="disabled">不允许平台同步</option></select></label>
         <div class="modal-warning"><strong>登录安全说明</strong><span>只打开预置官方 HTTPS 地址；不读取密码，不导入外部浏览器 Cookie。</span></div>
-        <div class="modal-actions"><button class="button" type="button" @click="addDialog = false">取消</button><button class="button primary" type="submit">创建账号空间</button></div>
+        <div class="modal-actions"><button class="button" :disabled="addBusy" type="button" @click="closeAddDialog">取消</button><button class="button primary" :disabled="addBusy" type="submit">{{ addBusy ? '创建中…' : '创建账号空间' }}</button></div>
       </form>
     </div>
 
-    <div v-if="groupDialog" class="modal-backdrop" @click.self="groupDialog = false">
+    <div v-if="groupDialog" class="modal-backdrop" @click.self="closeGroupDialog">
       <form class="modal compact" @submit.prevent="createGroup">
-        <div class="modal-head"><div><span class="page-eyebrow">LOCAL GROUP</span><h2>新建分组</h2><p>分组信息只保存在本机。</p></div><button type="button" @click="groupDialog = false">×</button></div>
+        <div class="modal-head"><div><span class="page-eyebrow">LOCAL GROUP</span><h2>新建分组</h2><p>分组信息只保存在本机。</p></div><button type="button" :disabled="groupBusy" @click="closeGroupDialog">×</button></div>
         <label>分组名称<input v-model="groupForm.name" maxlength="30" required /></label>
         <label>标识颜色<input v-model="groupForm.color" type="color" /></label>
-        <div class="modal-actions"><button class="button" type="button" @click="groupDialog = false">取消</button><button class="button primary" type="submit">创建</button></div>
+        <div class="modal-actions"><button class="button" :disabled="groupBusy" type="button" @click="closeGroupDialog">取消</button><button class="button primary" :disabled="groupBusy" type="submit">{{ groupBusy ? '创建中…' : '创建' }}</button></div>
       </form>
     </div>
 

@@ -12,6 +12,13 @@ export const accountStatuses = [
 ] as const
 export type AccountStatus = (typeof accountStatuses)[number]
 
+export const connectionStatuses = ['pending', 'ready', 'expired', 'mismatch', 'disconnected'] as const
+export type ConnectionStatus = (typeof connectionStatuses)[number]
+export const ownershipStatuses = ['unconfirmed', 'user_confirmed', 'plugin_verified'] as const
+export type OwnershipStatus = (typeof ownershipStatuses)[number]
+export const syncStatuses = ['idle', 'queued', 'running', 'cooldown', 'failed', 'unsupported'] as const
+export type SyncStatus = (typeof syncStatuses)[number]
+
 export type SyncMode = 'profile_only' | 'recent_20' | 'recent_100' | 'disabled'
 
 export interface PlatformDefinition {
@@ -31,6 +38,14 @@ export interface Account {
   remoteName: string
   remoteId: string | null
   status: AccountStatus
+  connectionStatus: ConnectionStatus
+  ownershipStatus: OwnershipStatus
+  syncEnabled: boolean
+  syncStatus: SyncStatus
+  cooldownUntil: string | null
+  lastSyncError: string
+  ownershipConfirmedAt: string | null
+  identityVerifiedAt: string | null
   note: string
   tags: string[]
   groupIds: string[]
@@ -62,7 +77,7 @@ export interface UpdateAccountInput {
   note?: string
   tags?: string[]
   groupIds?: string[]
-  status?: AccountStatus
+  syncEnabled?: boolean
   syncMode?: SyncMode
   isDefault?: boolean
 }
@@ -95,6 +110,7 @@ export interface SocialVaultApi {
     create(input: CreateAccountInput): Promise<Account>
     update(input: UpdateAccountInput): Promise<Account>
     disconnect(id: string): Promise<void>
+    purge(id: string): Promise<void>
   }
   groups: {
     list(): Promise<Group[]>
@@ -104,6 +120,34 @@ export interface SocialVaultApi {
   browser: {
     open(accountId: string): Promise<BrowserState>
     onState(callback: (state: BrowserState) => void): () => void
+  }
+  content: {
+    list(query?: import('./content-contracts').ContentQuery): Promise<import('./content-contracts').ContentSummary[]>
+    detail(id: string): Promise<import('./content-contracts').ContentDetail>
+    update(input: import('./content-contracts').UpdateContentInput): Promise<import('./content-contracts').ContentDetail>
+    clearAccount(accountId: string): Promise<void>
+  }
+  analytics: {
+    overview(query?: import('./content-contracts').AnalyticsQuery): Promise<import('./content-contracts').AnalyticsOverview>
+    dashboard(): Promise<import('./content-contracts').DashboardOverview>
+  }
+  plugins: {
+    list(): Promise<import('./plugin-contracts').PluginInstallation[]>
+    setEnabled(id: string, enabled: boolean): Promise<import('./plugin-contracts').PluginInstallation>
+  }
+  imports: {
+    preview(accountId: string): Promise<import('./import-contracts').FileImportPreview | null>
+    commit(input: import('./import-contracts').CommitFileImportInput): Promise<import('./import-contracts').FileImportResult>
+  }
+  jobs: {
+    list(): Promise<import('./job-contracts').JobRecord[]>
+    cancel(id: string): Promise<import('./job-contracts').JobRecord>
+    onChanged(callback: (job: import('./job-contracts').JobRecord) => void): () => void
+  }
+  settings: {
+    overview(): Promise<import('./settings-contracts').StorageOverview>
+    update(input: import('./settings-contracts').UpdateSettingsInput): Promise<import('./settings-contracts').StorageOverview>
+    exportData(input: import('./settings-contracts').ExportDataInput): Promise<import('./settings-contracts').ExportDataResult>
   }
 }
 
@@ -116,3 +160,9 @@ export interface BrowserWorkspaceApi {
   close(): Promise<void>
   onState(callback: (state: BrowserState) => void): () => void
 }
+
+export * from './content-contracts'
+export * from './import-contracts'
+export * from './job-contracts'
+export * from './plugin-contracts'
+export * from './settings-contracts'

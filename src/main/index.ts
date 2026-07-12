@@ -5,18 +5,25 @@ import { writeFileSync } from 'node:fs'
 import {
   app,
   BrowserWindow,
+  dialog,
   net,
   protocol,
   session
 } from 'electron'
 import { BrowserManager } from './browser-manager'
 import { SocialDatabase } from './database'
+import { ExportService } from './export-service'
 import { registerIpc, unregisterIpc } from './ipc'
+import { PluginService } from './plugin-service'
+import { SettingsService } from './settings-service'
+import { ImportService } from './services/import-service'
+import { JobService } from './services/job-service'
 import { isTrustedShellUrl } from './shell-security'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const smokeMode = process.env.SOCIAL_VAULT_SMOKE === '1'
 const reviewMode = process.env.SOCIAL_VAULT_REVIEW === '1'
+if (smokeMode) app.disableHardwareAcceleration()
 if (smokeMode || reviewMode) {
   app.setPath('userData', join(tmpdir(), `social-vault-${smokeMode ? 'smoke' : 'review'}-${process.pid}`))
 }
@@ -118,6 +125,7 @@ function createWindow(): void {
   })
 
   database = new SocialDatabase(join(app.getPath('userData'), 'social-vault.sqlite'))
+  database.recoverInterruptedJobs()
   if (smokeMode && process.env.SOCIAL_VAULT_SMOKE_CAPTURE) {
     smokeVisualAccountId = database.createAccount({
       platformId: 'xiaohongshu',
@@ -134,7 +142,34 @@ function createWindow(): void {
       : 'app://browser/browser.html',
     !smokeMode
   )
-  registerIpc(mainWindow, database, browserManager)
+  const pluginService = new PluginService(database)
+  pluginService.initialize()
+  const jobService = new JobService(database)
+  const importService = new ImportService({
+    dialog: {
+      showOpenDialog: (options) => dialog.showOpenDialog(mainWindow!, options)
+    },
+    repository: database,
+    jobs: jobService
+  })
+  const settingsService = new SettingsService({
+    getStorageCounts: () => database!.getStorageCounts(),
+    getSetting: (key) => database!.getSetting<string>(key),
+    setSetting: (key, value) => { database!.setSetting(key, value) }
+  }, database.databasePath, {
+    appVersion: app.getVersion(),
+    electronVersion: process.versions.electron,
+    chromiumVersion: process.versions.chrome,
+    nodeVersion: process.versions.node
+  })
+  const exportService = new ExportService(mainWindow, database)
+  registerIpc(mainWindow, database, browserManager, {
+    imports: importService,
+    jobs: jobService,
+    plugins: pluginService,
+    settings: settingsService,
+    exporter: exportService
+  })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -148,12 +183,22 @@ function createWindow(): void {
         const hasApi = typeof window.socialVault === 'object'
         const platforms = hasApi ? await window.socialVault.platforms.list() : []
         const accounts = hasApi ? await window.socialVault.accounts.list() : []
+        const plugins = hasApi ? await window.socialVault.plugins.list() : []
+        const contents = hasApi ? await window.socialVault.content.list() : []
+        const jobs = hasApi ? await window.socialVault.jobs.list() : []
+        const dashboard = hasApi ? await window.socialVault.analytics.dashboard() : null
+        const settings = hasApi ? await window.socialVault.settings.overview() : null
         return {
           title: document.title,
           hasApi,
           hasApp: Boolean(document.querySelector('#app')),
           platformCount: platforms.length,
           accountCount: accounts.length,
+          pluginCount: plugins.length,
+          contentCount: contents.length,
+          jobCount: jobs.length,
+          dashboardReady: Boolean(dashboard),
+          settingsReady: Boolean(settings?.appVersion),
           text: document.body.innerText.slice(0, 80)
         }
       })()`)
@@ -171,6 +216,27 @@ function createWindow(): void {
       }
       const capturePath = process.env.SOCIAL_VAULT_SMOKE_CAPTURE
       if (capturePath && mainWindow) {
+        const captureWidth = Number(process.env.SOCIAL_VAULT_SMOKE_WIDTH)
+        if (Number.isSafeInteger(captureWidth) && captureWidth >= 920 && captureWidth <= 1920) {
+          mainWindow.setSize(captureWidth, 720)
+        }
+        const captureSection = process.env.SOCIAL_VAULT_SMOKE_SECTION
+        if (captureSection) {
+          await mainWindow.webContents.executeJavaScript(`(() => {
+            const label = ${JSON.stringify(captureSection)}
+            const button = [...document.querySelectorAll('.main-nav nav button')]
+              .find((item) => item.textContent?.trim().endsWith(label))
+            if (button instanceof HTMLButtonElement) button.click()
+          })()`)
+        }
+        await mainWindow.webContents.executeJavaScript(`new Promise((resolve) => {
+          const deadline = Date.now() + 2000
+          const check = () => {
+            if (!document.querySelector('.feature-loading') || Date.now() >= deadline) resolve(undefined)
+            else setTimeout(check, 25)
+          }
+          check()
+        })`)
         await mainWindow.webContents.executeJavaScript(
           'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))'
         )
@@ -180,7 +246,28 @@ function createWindow(): void {
         database.removeAccount(smokeVisualAccountId)
         smokeVisualAccountId = null
       }
-      console.log(`SOCIAL_VAULT_SMOKE_OK ${JSON.stringify({ shell: shellResult, workspace: workspaceResult, partitionIsolation, capturePath: capturePath ?? null })}`)
+      const smokePayload = {
+        shell: shellResult,
+        workspace: workspaceResult,
+        partitionIsolation,
+        capturePath: capturePath ?? null
+      }
+      const shell = shellResult as {
+        hasApi?: boolean
+        hasApp?: boolean
+        dashboardReady?: boolean
+        settingsReady?: boolean
+      } | null
+      const workspace = workspaceResult as { hasApi?: boolean; accountId?: string } | null
+      if (
+        !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady ||
+        !workspace?.hasApi || !workspace.accountId || !partitionIsolation
+      ) {
+        console.error(`SOCIAL_VAULT_SMOKE_FAILED ${JSON.stringify(smokePayload)}`)
+        app.exit(1)
+        return
+      }
+      console.log(`SOCIAL_VAULT_SMOKE_OK ${JSON.stringify(smokePayload)}`)
       app.quit()
     })
     mainWindow.webContents.once('did-fail-load', (_event, code, description) => {

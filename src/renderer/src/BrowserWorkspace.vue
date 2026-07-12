@@ -42,6 +42,7 @@ const goBack = (): void => run(() => window.browserWorkspace.back())
 const goForward = (): void => run(() => window.browserWorkspace.forward())
 const reload = (): void => run(() => window.browserWorkspace.reload())
 const goHome = (): void => run(() => window.browserWorkspace.home())
+const closeWindow = (): void => run(() => window.browserWorkspace.close())
 
 function messageOf(value: unknown): string {
   return value instanceof Error ? value.message : String(value)
@@ -75,6 +76,7 @@ function messageOf(value: unknown): string {
       <span class="official-badge" :class="{ verified: state.official }">
         {{ state.official ? '官方域名' : '域名校验中' }}
       </span>
+      <button class="close-browser" aria-label="关闭浏览器窗口" title="关闭窗口（保留登录态）" @click="closeWindow">关闭</button>
     </div>
 
     <div class="status-row" :class="{ error: error }">

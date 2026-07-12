@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Account, Group, PlatformDefinition } from '../../../../shared/contracts'
-import { statusPresentation } from './presentation'
+import { accountHealthPresentation } from './presentation'
 
 const props = defineProps<{
   accounts: Account[]
@@ -28,8 +28,11 @@ function platformOf(account: Account): PlatformDefinition | undefined {
 function countFor(value: string): number {
   if (value === 'all') return props.allAccounts.length
   if (value === 'ungrouped') return props.allAccounts.filter((item) => item.groupIds.length === 0).length
-  if (value === 'problem') return props.allAccounts.filter((item) => ['expired', 'mismatch', 'cooldown', 'unsupported'].includes(item.status)).length
-  if (value === 'paused') return props.allAccounts.filter((item) => item.status === 'paused').length
+  if (value === 'problem') return props.allAccounts.filter((item) =>
+    ['expired', 'mismatch'].includes(item.connectionStatus) ||
+    ['failed', 'cooldown', 'unsupported'].includes(item.syncStatus)
+  ).length
+  if (value === 'paused') return props.allAccounts.filter((item) => !item.syncEnabled).length
   return props.groups.find((group) => group.id === value)?.accountCount ?? 0
 }
 </script>
@@ -55,8 +58,8 @@ function countFor(value: string): number {
       <select :value="selectedGroup" @change="emit('update:selectedGroup', ($event.target as HTMLSelectElement).value)">
         <option value="all">全部账号（{{ countFor('all') }}）</option>
         <option value="ungrouped">未分组（{{ countFor('ungrouped') }}）</option>
-        <option value="problem">登录异常（{{ countFor('problem') }}）</option>
-        <option value="paused">已暂停（{{ countFor('paused') }}）</option>
+        <option value="problem">连接/同步异常（{{ countFor('problem') }}）</option>
+        <option value="paused">同步已暂停（{{ countFor('paused') }}）</option>
         <option v-for="group in groups" :key="group.id" :value="group.id">
           {{ group.name }}（{{ group.accountCount }}）
         </option>
@@ -69,7 +72,7 @@ function countFor(value: string): number {
       >×</button>
     </div>
 
-    <div class="account-list">
+    <div class="account-list" role="listbox" aria-label="账号列表">
       <div v-if="loading" class="empty-list">正在读取本地数据库…</div>
       <div v-else-if="accounts.length === 0" class="empty-list">
         <strong>当前筛选下没有账号</strong>
@@ -80,6 +83,8 @@ function countFor(value: string): number {
         :key="account.id"
         class="account-row"
         :class="{ active: selectedId === account.id }"
+        role="option"
+        :aria-selected="selectedId === account.id"
         @click="emit('select', account.id)"
       >
         <span class="avatar">{{ platformOf(account)?.shortName }}</span>
@@ -87,7 +92,7 @@ function countFor(value: string): number {
           <strong>{{ account.alias }}</strong>
           <small>{{ platformOf(account)?.name }} · {{ account.remoteName || '待绑定身份' }}</small>
         </span>
-        <span class="status-dot" :class="statusPresentation(account.status).tone"></span>
+        <span class="status-dot" :class="accountHealthPresentation(account).tone" :title="accountHealthPresentation(account).label"></span>
       </button>
     </div>
   </aside>

@@ -7,7 +7,7 @@ const definitions: Record<PlatformId, PlatformDefinition> = {
     shortName: '红',
     loginUrl: 'https://creator.xiaohongshu.com/',
     homeUrl: 'https://creator.xiaohongshu.com/',
-    officialHosts: ['xiaohongshu.com'],
+    officialHosts: ['creator.xiaohongshu.com', 'www.xiaohongshu.com'],
     riskNote: '仅打开小红书官方创作服务平台；出现验证时由用户手动完成。'
   },
   weibo: {
@@ -16,7 +16,7 @@ const definitions: Record<PlatformId, PlatformDefinition> = {
     shortName: '微',
     loginUrl: 'https://weibo.com/',
     homeUrl: 'https://weibo.com/',
-    officialHosts: ['weibo.com', 'sina.com.cn'],
+    officialHosts: ['weibo.com', 'www.weibo.com', 'passport.weibo.com', 'login.sina.com.cn'],
     riskNote: '仅打开微博及新浪官方认证域名；当前版本不执行自动采集。'
   },
   douyin: {
@@ -25,7 +25,7 @@ const definitions: Record<PlatformId, PlatformDefinition> = {
     shortName: '抖',
     loginUrl: 'https://creator.douyin.com/',
     homeUrl: 'https://creator.douyin.com/',
-    officialHosts: ['douyin.com'],
+    officialHosts: ['creator.douyin.com', 'www.douyin.com'],
     riskNote: '仅打开抖音官方创作者中心；不修改浏览器指纹或 User-Agent。'
   },
   zhihu: {
@@ -34,7 +34,7 @@ const definitions: Record<PlatformId, PlatformDefinition> = {
     shortName: '知',
     loginUrl: 'https://www.zhihu.com/signin',
     homeUrl: 'https://www.zhihu.com/creator',
-    officialHosts: ['zhihu.com'],
+    officialHosts: ['www.zhihu.com'],
     riskNote: '仅打开知乎官方登录与创作页面；不自动填写登录信息。'
   }
 }
@@ -67,9 +67,7 @@ export function isOfficialUrl(platformId: PlatformId, value: string): boolean {
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
   if (!hostname || hostname === 'localhost' || isIpAddress(hostname)) return false
 
-  return definitions[platformId].officialHosts.some(
-    (base) => hostname === base || hostname.endsWith(`.${base}`)
-  )
+  return definitions[platformId].officialHosts.includes(hostname)
 }
 
 function isIpAddress(hostname: string): boolean {

@@ -1,4 +1,4 @@
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type {
   Account,
   BrowserState,
@@ -33,9 +33,10 @@ export function useAccounts() {
       if (selectedGroup.value === 'ungrouped' && account.groupIds.length > 0) return false
       if (
         selectedGroup.value === 'problem' &&
-        !['expired', 'mismatch', 'cooldown', 'unsupported'].includes(account.status)
+        !['expired', 'mismatch'].includes(account.connectionStatus) &&
+        !['failed', 'cooldown', 'unsupported'].includes(account.syncStatus)
       ) return false
-      if (selectedGroup.value === 'paused' && account.status !== 'paused') return false
+      if (selectedGroup.value === 'paused' && account.syncEnabled) return false
       if (
         !['all', 'ungrouped', 'problem', 'paused'].includes(selectedGroup.value) &&
         !account.groupIds.includes(selectedGroup.value)
@@ -46,6 +47,11 @@ export function useAccounts() {
         .toLocaleLowerCase()
         .includes(keyword)
     })
+  })
+
+  watch(filteredAccounts, (visible) => {
+    if (selectedId.value && visible.some((account) => account.id === selectedId.value)) return
+    selectedId.value = visible[0]?.id ?? null
   })
 
   async function initialize(): Promise<void> {
@@ -72,8 +78,9 @@ export function useAccounts() {
       platforms.value = platformResult
       accounts.value = accountResult
       groups.value = groupResult
-      if (!selectedId.value || !accountResult.some((item) => item.id === selectedId.value)) {
-        selectedId.value = accountResult[0]?.id ?? null
+      const visibleAccounts = filteredAccounts.value
+      if (!selectedId.value || !visibleAccounts.some((item) => item.id === selectedId.value)) {
+        selectedId.value = visibleAccounts[0]?.id ?? null
       }
     } catch (cause) {
       error.value = messageOf(cause)
@@ -85,6 +92,8 @@ export function useAccounts() {
   async function createAccount(input: CreateAccountInput): Promise<Account> {
     return run(async () => {
       const account = await window.socialVault.accounts.create(input)
+      selectedGroup.value = 'all'
+      search.value = ''
       await reload()
       selectedId.value = account.id
       return account
@@ -102,6 +111,14 @@ export function useAccounts() {
   async function disconnectAccount(id: string): Promise<void> {
     await run(async () => {
       await window.socialVault.accounts.disconnect(id)
+      browserStates.delete(id)
+      await reload()
+    })
+  }
+
+  async function purgeAccount(id: string): Promise<void> {
+    await run(async () => {
+      await window.socialVault.accounts.purge(id)
       browserStates.delete(id)
       await reload()
     })
@@ -127,6 +144,7 @@ export function useAccounts() {
     return run(async () => {
       const state = await window.socialVault.browser.open(id)
       browserStates.set(id, state)
+      await reload()
       return state
     })
   }
@@ -160,6 +178,7 @@ export function useAccounts() {
     createAccount,
     updateAccount,
     disconnectAccount,
+    purgeAccount,
     createGroup,
     removeGroup,
     openBrowser

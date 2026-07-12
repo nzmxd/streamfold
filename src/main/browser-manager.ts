@@ -133,16 +133,9 @@ export class BrowserManager {
       await session.closeAllConnections()
       await session.clearAuthCache()
       await session.clearCache()
-      await session.clearStorageData({
-        storages: [
-          'cookies',
-          'filesystem',
-          'indexdb',
-          'localstorage',
-          'serviceworkers',
-          'cachestorage'
-        ]
-      })
+      // The partition belongs to exactly one account. Clearing without a storage filter avoids
+      // leaving newer Chromium storage types behind when Electron adds support for them.
+      await session.clearStorageData()
       this.configuredSessions.delete(account.sessionPartition)
     } finally {
       this.disconnecting.delete(accountId)
@@ -163,7 +156,7 @@ export class BrowserManager {
       height: 820,
       minWidth: 900,
       minHeight: 620,
-      title: `${platform.name} · ${account.alias} — Social Vault`,
+      title: `${platform.name} · ${sanitizeTitle(account.alias)} — Social Vault`,
       backgroundColor: '#f4f6f8',
       show: false,
       autoHideMenuBar: true,
@@ -206,7 +199,7 @@ export class BrowserManager {
       disposed: false,
       state: {
         accountId: account.id,
-        accountAlias: account.alias,
+      accountAlias: sanitizeTitle(account.alias),
         platformName: platform.name,
         url: '',
         title: '',
@@ -295,7 +288,7 @@ export class BrowserManager {
     contents.on('did-navigate', () => this.refreshState(managed))
     contents.on('did-navigate-in-page', () => this.refreshState(managed))
     contents.on('page-title-updated', (_event, title) => {
-      managed.state = { ...managed.state, title }
+      managed.state = { ...managed.state, title: sanitizeTitle(title) }
       this.emitState(managed)
     })
     contents.on('render-process-gone', () => {
@@ -340,7 +333,7 @@ export class BrowserManager {
     managed.state = {
       ...managed.state,
       url: displayUrl(rawUrl),
-      title: contents.getTitle(),
+      title: sanitizeTitle(contents.getTitle()),
       loading: contents.isLoading(),
       canGoBack: contents.navigationHistory.canGoBack(),
       canGoForward: contents.navigationHistory.canGoForward(),
@@ -401,6 +394,10 @@ function displayUrl(value: string): string {
   } catch {
     return ''
   }
+}
+
+function sanitizeTitle(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)
 }
 
 function messageOf(value: unknown): string {

@@ -1,9 +1,15 @@
 import {
-  accountStatuses,
+  contentTypes,
   platformIds,
+  type AnalyticsQuery,
+  type CommitFileImportInput,
+  type ContentQuery,
   type CreateAccountInput,
   type CreateGroupInput,
+  type ExportDataInput,
   type SyncMode,
+  type UpdateContentInput,
+  type UpdateSettingsInput,
   type UpdateAccountInput
 } from '../shared/contracts'
 
@@ -25,7 +31,7 @@ export function parseUpdateAccount(value: unknown): UpdateAccountInput {
   if (record.note !== undefined) result.note = asText(record.note, '备注', 0, 1000)
   if (record.tags !== undefined) result.tags = asStringArray(record.tags, '标签', 20, 24)
   if (record.groupIds !== undefined) result.groupIds = asStringArray(record.groupIds, '分组', 50, 64)
-  if (record.status !== undefined) result.status = asEnum(record.status, accountStatuses, '状态')
+  if (record.syncEnabled !== undefined) result.syncEnabled = asBoolean(record.syncEnabled, '同步开关')
   if (record.syncMode !== undefined) {
     result.syncMode = asEnum(record.syncMode, syncModes, '同步范围') as SyncMode
   }
@@ -47,6 +53,73 @@ export function parseId(value: unknown): string {
   return asId(value)
 }
 
+export function parseBoolean(value: unknown, label = '布尔字段'): boolean {
+  return asBoolean(value, label)
+}
+
+export function parseContentQuery(value: unknown): ContentQuery {
+  if (value === undefined || value === null) return {}
+  const record = asRecord(value)
+  const result: ContentQuery = {}
+  if (record.accountId !== undefined) result.accountId = asId(record.accountId)
+  if (record.platformId !== undefined) result.platformId = asEnum(record.platformId, platformIds, '平台')
+  if (record.type !== undefined) result.type = asEnum(record.type, contentTypes, '内容类型')
+  if (record.query !== undefined) result.query = asText(record.query, '搜索词', 0, 100)
+  if (record.from !== undefined) result.from = asDate(record.from, '开始日期')
+  if (record.to !== undefined) result.to = asDate(record.to, '结束日期')
+  if (record.limit !== undefined) result.limit = asInteger(record.limit, '返回数量', 1, 500)
+  if (record.offset !== undefined) result.offset = asInteger(record.offset, '分页位置', 0, 1_000_000)
+  return result
+}
+
+export function parseUpdateContent(value: unknown): UpdateContentInput {
+  const record = asRecord(value)
+  const result: UpdateContentInput = { id: asId(record.id) }
+  if (record.note !== undefined) result.note = asText(record.note, '内容备注', 0, 1000)
+  if (record.tags !== undefined) result.tags = asStringArray(record.tags, '内容标签', 20, 24)
+  return result
+}
+
+export function parseAnalyticsQuery(value: unknown): AnalyticsQuery {
+  if (value === undefined || value === null) return {}
+  const record = asRecord(value)
+  const result: AnalyticsQuery = {}
+  if (record.accountId !== undefined) result.accountId = asId(record.accountId)
+  if (record.platformId !== undefined) result.platformId = asEnum(record.platformId, platformIds, '平台')
+  if (record.days !== undefined) {
+    const days = asInteger(record.days, '统计周期', 7, 365)
+    if (![7, 30, 90, 365].includes(days)) throw new Error('统计周期无效')
+    result.days = days as 7 | 30 | 90 | 365
+  }
+  return result
+}
+
+export function parseCommitFileImport(value: unknown): CommitFileImportInput {
+  const record = asRecord(value)
+  return {
+    token: asText(record.token, '导入令牌', 1, 80),
+    accountId: asId(record.accountId),
+    confirmOwnership: asBoolean(record.confirmOwnership, '本人账号确认')
+  }
+}
+
+export function parseUpdateSettings(value: unknown): UpdateSettingsInput {
+  const record = asRecord(value)
+  const result: UpdateSettingsInput = {}
+  if (record.rawRetentionDays !== undefined) {
+    result.rawRetentionDays = asInteger(record.rawRetentionDays, '原始响应保留天数', 0, 365)
+  }
+  return result
+}
+
+export function parseExportData(value: unknown): ExportDataInput {
+  const record = asRecord(value)
+  const format = asEnum(record.format, ['json', 'csv'] as const, '导出格式')
+  const result: ExportDataInput = { format }
+  if (record.accountId !== undefined) result.accountId = asId(record.accountId)
+  return result
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('请求参数无效')
   return value as Record<string, unknown>
@@ -61,6 +134,25 @@ function asText(value: unknown, label: string, min: number, max: number): string
   const text = value.trim()
   if (text.length < min || text.length > max) throw new Error(`${label}长度应为 ${min}-${max} 个字符`)
   return text
+}
+
+function asBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${label}无效`)
+  return value
+}
+
+function asInteger(value: unknown, label: string, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`${label}无效`)
+  }
+  return value
+}
+
+function asDate(value: unknown, label: string): string {
+  const text = asText(value, label, 1, 40)
+  const date = new Date(text)
+  if (Number.isNaN(date.getTime())) throw new Error(`${label}无效`)
+  return date.toISOString()
 }
 
 function asStringArray(value: unknown, label: string, maxItems: number, maxLength: number): string[] {
