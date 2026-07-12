@@ -1,0 +1,439 @@
+<div id="social-account-manager">
+  <style>
+    #social-account-manager {
+      color: var(--foreground);
+      font-size: var(--font-size-base);
+    }
+    #social-account-manager * { box-sizing: border-box; }
+    #social-account-manager .app-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 0 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    #social-account-manager .brand,
+    #social-account-manager .account-name,
+    #social-account-manager .detail-title {
+      font-weight: 500;
+    }
+    #social-account-manager .brand { display: flex; align-items: center; gap: 8px; }
+    #social-account-manager .shell {
+      display: grid;
+      grid-template-columns: 148px minmax(210px, 0.78fr) minmax(270px, 1.22fr);
+      gap: 14px;
+      padding-top: 14px;
+      align-items: start;
+    }
+    #social-account-manager .nav-title,
+    #social-account-manager .section-label {
+      color: var(--muted-foreground);
+      margin: 0 0 8px;
+    }
+    #social-account-manager .nav-list { display: grid; gap: 3px; }
+    #social-account-manager .nav-item {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      border: 0;
+      background: transparent;
+      color: var(--foreground);
+      padding: 7px 8px;
+      border-radius: 6px;
+      text-align: left;
+      cursor: pointer;
+    }
+    #social-account-manager .nav-item:hover { background: var(--accent); color: var(--accent-foreground); }
+    #social-account-manager .nav-item[aria-pressed="true"] { background: var(--primary); color: var(--primary-foreground); }
+    #social-account-manager .nav-label { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    #social-account-manager .nav-count { font-variant-numeric: tabular-nums; }
+    #social-account-manager .list-tools { display: grid; gap: 8px; margin-bottom: 6px; }
+    #social-account-manager .account-list { border-top: 1px solid var(--border); }
+    #social-account-manager .account-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      padding: 10px 6px;
+      border: 0;
+      border-bottom: 1px solid var(--border);
+      background: transparent;
+      color: var(--foreground);
+      text-align: left;
+      cursor: pointer;
+    }
+    #social-account-manager .account-row:hover { background: var(--accent); color: var(--accent-foreground); }
+    #social-account-manager .account-row[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 14%, transparent); }
+    #social-account-manager .avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: color-mix(in srgb, var(--viz-series-1) 18%, transparent);
+      color: var(--foreground);
+      font-weight: 500;
+    }
+    #social-account-manager .account-meta,
+    #social-account-manager .detail-sub,
+    #social-account-manager .post-meta {
+      color: var(--muted-foreground);
+    }
+    #social-account-manager .account-name,
+    #social-account-manager .account-meta {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #social-account-manager .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--viz-series-2);
+    }
+    #social-account-manager .status-dot.warn { background: var(--viz-series-4); }
+    #social-account-manager .status-dot.paused { background: var(--muted-foreground); }
+    #social-account-manager .empty { color: var(--muted-foreground); padding: 18px 4px; }
+    #social-account-manager .detail-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding-bottom: 10px;
+    }
+    #social-account-manager .detail-id { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    #social-account-manager .detail-title { overflow-wrap: anywhere; }
+    #social-account-manager .tabbar {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+      padding: 0 0 10px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    #social-account-manager .tabbar .btn[aria-selected="true"] { background: var(--primary); color: var(--primary-foreground); }
+    #social-account-manager .stats { margin-bottom: 14px; }
+    #social-account-manager .trend-wrap { margin-top: 12px; }
+    #social-account-manager .trend-chart { width: 100%; height: auto; display: block; }
+    #social-account-manager .trend-chart .grid { stroke: var(--border); stroke-width: 1; }
+    #social-account-manager .trend-chart .line { stroke: var(--viz-series-1); stroke-width: 2; fill: none; }
+    #social-account-manager .trend-chart .area { fill: color-mix(in srgb, var(--viz-series-1) 12%, transparent); }
+    #social-account-manager .trend-chart text { fill: var(--muted-foreground); }
+    #social-account-manager .recent-list { display: grid; }
+    #social-account-manager .post-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 10px;
+      align-items: center;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    #social-account-manager .post-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #social-account-manager .metric { font-variant-numeric: tabular-nums; text-align: right; }
+    #social-account-manager .browser-toolbar {
+      display: grid;
+      grid-template-columns: auto auto minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    #social-account-manager .browser-stage {
+      min-height: 220px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 24px;
+      background: color-mix(in srgb, var(--muted) 35%, transparent);
+    }
+    #social-account-manager .browser-stage i { margin: 0 auto 8px; }
+    #social-account-manager .settings-grid { display: grid; gap: 14px; }
+    #social-account-manager .check-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+    #social-account-manager .settings-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    #social-account-manager .danger-zone { padding-top: 12px; border-top: 1px solid var(--border); }
+    #social-account-manager .content-head { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 10px; padding-bottom: 7px; color: var(--muted-foreground); }
+    @media (max-width: 780px) {
+      #social-account-manager .shell { grid-template-columns: minmax(220px, 0.8fr) minmax(280px, 1.2fr); }
+      #social-account-manager .group-nav { grid-column: 1 / -1; }
+      #social-account-manager .nav-list { display: flex; flex-wrap: wrap; }
+      #social-account-manager .nav-item { width: auto; }
+    }
+    @media (max-width: 560px) {
+      #social-account-manager .shell { grid-template-columns: 1fr; }
+      #social-account-manager .group-nav { grid-column: auto; }
+      #social-account-manager .post-row { grid-template-columns: minmax(0, 1fr) auto; }
+      #social-account-manager .post-row .post-meta { display: none; }
+      #social-account-manager .browser-toolbar { grid-template-columns: auto auto minmax(0, 1fr); }
+      #social-account-manager .browser-toolbar .browser-open { grid-column: 1 / -1; }
+      #social-account-manager .content-head { display: none; }
+    }
+  </style>
+
+  <div class="app-bar">
+    <div class="brand"><i data-lucide="layers-3" aria-hidden="true"></i><span>Social Vault</span></div>
+    <button type="button" class="btn btn-primary" id="sam-add-account"><i data-lucide="plus" aria-hidden="true"></i>添加账号</button>
+  </div>
+
+  <div class="shell">
+    <nav class="group-nav" aria-label="账号分组">
+      <p class="nav-title text-small">账号分组</p>
+      <div class="nav-list" id="sam-groups"></div>
+    </nav>
+
+    <section aria-label="账号列表">
+      <div class="list-tools">
+        <label class="form-label" for="sam-search">搜索账号</label>
+        <input class="form-control" id="sam-search" type="search" placeholder="昵称、备注或标签" />
+      </div>
+      <div class="account-list" id="sam-account-list"></div>
+    </section>
+
+    <section aria-label="账号详情" id="sam-detail"></section>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.getElementById('social-account-manager');
+      const accounts = [
+        {
+          id: 'xhs-personal', platform: '小红书', short: '红', alias: '个人品牌号', handle: '山茶的数字花园',
+          status: 'ready', groups: ['personal', 'focus'], tags: ['生活方式', '重点'], note: '主账号；每周一、四更新图文。',
+          followers: 12840, contents: 186, interactions: 92400, synced: '12 分钟前', url: 'https://creator.xiaohongshu.com',
+          trend: [6, 8, 7, 11, 13, 15, 18],
+          posts: [
+            ['夏日桌面改造清单', '图文', 18200, 1260],
+            ['我如何整理数字生活', '图文', 12600, 910],
+            ['周末城市散步路线', '视频', 9800, 684]
+          ]
+        },
+        {
+          id: 'weibo-work', platform: '微博', short: '微', alias: '工作资讯号', handle: '@边界观察室',
+          status: 'ready', groups: ['work'], tags: ['科技', '资讯'], note: '工作账号；仅同步数据，不执行发布。',
+          followers: 7340, contents: 420, interactions: 38100, synced: '1 小时前', url: 'https://weibo.com',
+          trend: [9, 8, 10, 12, 11, 14, 16],
+          posts: [
+            ['今天值得关注的三个产品变化', '微博', 8400, 522],
+            ['一周科技行业速览', '微博', 7200, 468],
+            ['工具推荐：个人信息工作台', '微博', 6100, 391]
+          ]
+        },
+        {
+          id: 'douyin-video', platform: '抖音', short: '抖', alias: '短视频实验号', handle: '镜头之外',
+          status: 'expired', groups: ['work', 'focus'], tags: ['视频', '待重登'], note: '登录已过期；重新扫码后再恢复同步。',
+          followers: 3680, contents: 74, interactions: 27600, synced: '3 天前', url: 'https://creator.douyin.com',
+          trend: [5, 7, 10, 9, 12, 10, 13],
+          posts: [
+            ['一分钟看懂信息归档', '视频', 22100, 1480],
+            ['我的桌面工作流', '视频', 16800, 1120],
+            ['如何管理多个内容账号', '视频', 13500, 906]
+          ]
+        },
+        {
+          id: 'zhihu-long', platform: '知乎', short: '知', alias: '长文账号', handle: '北窗',
+          status: 'paused', groups: ['personal'], tags: ['长文'], note: '暂时停更，保留历史数据。',
+          followers: 5160, contents: 96, interactions: 19400, synced: '8 天前', url: 'https://www.zhihu.com/creator',
+          trend: [12, 11, 13, 12, 14, 14, 15],
+          posts: [
+            ['怎样建立真正可持续的知识库？', '回答', 15400, 936],
+            ['个人数据为什么应该本地优先', '文章', 12800, 782],
+            ['从零设计跨平台客户端', '文章', 9700, 641]
+          ]
+        }
+      ];
+      const groups = [
+        ['all', '全部账号', 'layers-3'],
+        ['ungrouped', '未分组', 'inbox'],
+        ['problem', '登录异常', 'circle-alert'],
+        ['work', '工作账号', 'briefcase-business'],
+        ['personal', '个人品牌', 'user-round'],
+        ['focus', '重点账号', 'star']
+      ];
+      let activeGroup = 'all';
+      let selectedId = 'xhs-personal';
+      let activeTab = 'overview';
+      let search = '';
+
+      const escapeHtml = (value) => String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+      const number = (value) => new Intl.NumberFormat('zh-CN', { notation: value >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(value);
+      const statusLabel = (status) => ({ ready: '正常', expired: '需登录', paused: '已暂停' }[status]);
+
+      function filteredAccounts() {
+        return accounts.filter((account) => {
+          const inGroup = activeGroup === 'all'
+            || (activeGroup === 'ungrouped' && account.groups.length === 0)
+            || (activeGroup === 'problem' && account.status !== 'ready')
+            || account.groups.includes(activeGroup);
+          const haystack = [account.alias, account.handle, account.platform, account.note, ...account.tags].join(' ').toLowerCase();
+          return inGroup && haystack.includes(search.toLowerCase());
+        });
+      }
+
+      function renderGroups() {
+        const box = root.querySelector('#sam-groups');
+        box.innerHTML = groups.map(([id, label, icon]) => {
+          const count = id === 'all' ? accounts.length
+            : id === 'ungrouped' ? accounts.filter((a) => a.groups.length === 0).length
+            : id === 'problem' ? accounts.filter((a) => a.status !== 'ready').length
+            : accounts.filter((a) => a.groups.includes(id)).length;
+          return `<button type="button" class="nav-item" data-group="${id}" aria-pressed="${id === activeGroup}">
+            <span class="nav-label"><i data-lucide="${icon}" aria-hidden="true"></i>${label}</span>
+            <span class="nav-count text-small">${count}</span>
+          </button>`;
+        }).join('');
+        box.querySelectorAll('[data-group]').forEach((button) => button.addEventListener('click', () => {
+          activeGroup = button.dataset.group;
+          const visible = filteredAccounts();
+          if (!visible.some((a) => a.id === selectedId) && visible[0]) selectedId = visible[0].id;
+          render();
+        }));
+      }
+
+      function renderAccounts() {
+        const list = root.querySelector('#sam-account-list');
+        const visible = filteredAccounts();
+        list.innerHTML = visible.length ? visible.map((account) => `
+          <button type="button" class="account-row" data-account="${account.id}" aria-pressed="${account.id === selectedId}">
+            <span class="avatar" aria-hidden="true">${account.short}</span>
+            <span>
+              <span class="account-name">${escapeHtml(account.alias)}</span>
+              <span class="account-meta text-small">${escapeHtml(account.platform)} · ${escapeHtml(account.handle)}</span>
+            </span>
+            <span class="status-dot ${account.status === 'expired' ? 'warn' : account.status === 'paused' ? 'paused' : ''}" aria-label="${statusLabel(account.status)}"></span>
+          </button>`).join('') : '<div class="empty">没有符合条件的账号</div>';
+        list.querySelectorAll('[data-account]').forEach((row) => row.addEventListener('click', () => {
+          selectedId = row.dataset.account;
+          activeTab = 'overview';
+          render();
+        }));
+      }
+
+      function trendSvg(account) {
+        const values = account.trend;
+        const max = Math.max(...values) + 2;
+        const points = values.map((value, index) => `${18 + index * 47},${100 - (value / max) * 72}`).join(' ');
+        const areaPoints = `18,100 ${points} 300,100`;
+        return `<svg class="trend-chart" viewBox="0 0 318 120" role="img" aria-label="${escapeHtml(account.alias)}最近七次同步的粉丝增长趋势">
+          <title>最近七次同步趋势</title>
+          <line class="grid" x1="18" y1="100" x2="300" y2="100"></line>
+          <line class="grid" x1="18" y1="64" x2="300" y2="64"></line>
+          <line class="grid" x1="18" y1="28" x2="300" y2="28"></line>
+          <polygon class="area" points="${areaPoints}"></polygon>
+          <polyline class="line" points="${points}"></polyline>
+          <text x="18" y="116" class="text-small">6 次前</text>
+          <text x="270" y="116" class="text-small">本次</text>
+        </svg>`;
+      }
+
+      function overview(account) {
+        return `<div class="viz-grid stats">
+          <div class="card viz-stat"><span class="text-muted">粉丝</span><span class="viz-stat-value">${number(account.followers)}</span><span class="text-small text-muted">最近同步 ${account.synced}</span></div>
+          <div class="card viz-stat"><span class="text-muted">内容</span><span class="viz-stat-value">${number(account.contents)}</span><span class="text-small text-muted">本人发布内容</span></div>
+          <div class="card viz-stat"><span class="text-muted">累计互动</span><span class="viz-stat-value">${number(account.interactions)}</span><span class="text-small text-muted">赞评转藏合计</span></div>
+        </div>
+        <div class="trend-wrap">
+          <p class="section-label text-small">粉丝增长趋势</p>
+          ${trendSvg(account)}
+        </div>
+        <div>
+          <p class="section-label text-small">最近内容</p>
+          <div class="recent-list">${account.posts.slice(0, 3).map((post) => `<div class="post-row">
+            <div><div class="post-title">${escapeHtml(post[0])}</div><div class="post-meta text-small">${post[1]}</div></div>
+            <div class="metric">${number(post[2])}<div class="text-small text-muted">浏览</div></div>
+            <div class="metric">${number(post[3])}<div class="text-small text-muted">互动</div></div>
+          </div>`).join('')}</div>
+        </div>`;
+      }
+
+      function browserPanel(account) {
+        return `<div class="browser-toolbar">
+          <button type="button" class="btn btn-ghost" aria-label="后退"><i data-lucide="arrow-left" aria-hidden="true"></i></button>
+          <button type="button" class="btn btn-ghost" aria-label="刷新"><i data-lucide="rotate-cw" aria-hidden="true"></i></button>
+          <input class="form-control" aria-label="当前地址" value="${escapeHtml(account.url)}" readonly />
+          <button type="button" class="btn browser-open">外部打开</button>
+        </div>
+        <div class="browser-stage">
+          <div><i data-lucide="globe-2" aria-hidden="true"></i><div class="detail-title">${escapeHtml(account.platform)}账号页面</div>
+          <div class="text-muted text-small">使用独立会话 <code>persist:social:${escapeHtml(account.id)}</code></div>
+          <div class="text-muted text-small">登录、扫码和验证码均在此区域完成</div></div>
+        </div>`;
+      }
+
+      function contentPanel(account) {
+        return `<div class="content-head text-small"><span>内容</span><span>类型</span><span>浏览</span><span>互动</span></div>
+        <div class="recent-list">${account.posts.map((post) => `<div class="post-row">
+          <div><div class="post-title">${escapeHtml(post[0])}</div><div class="post-meta text-small">最近一次采集</div></div>
+          <div class="post-meta">${post[1]}</div><div class="metric">${number(post[2])}</div><div class="metric">${number(post[3])}</div>
+        </div>`).join('')}</div>`;
+      }
+
+      function settingsPanel(account) {
+        const editableGroups = groups.filter(([id]) => !['all', 'ungrouped', 'problem'].includes(id));
+        return `<div class="settings-grid">
+          <div><label class="form-label" for="sam-alias">本地别名</label><input id="sam-alias" class="form-control" value="${escapeHtml(account.alias)}" /></div>
+          <div><label class="form-label" for="sam-note">账号备注</label><textarea id="sam-note" class="form-control" rows="3">${escapeHtml(account.note)}</textarea></div>
+          <div><p class="section-label text-small">所属分组</p><div class="check-grid">${editableGroups.map(([id, label]) => `<label class="form-check"><input class="form-check-input" type="checkbox" data-account-group="${id}" ${account.groups.includes(id) ? 'checked' : ''}><span class="form-check-label">${label}</span></label>`).join('')}</div></div>
+          <div><label class="form-label" for="sam-sync">自动同步</label><select id="sam-sync" class="form-select"><option>每天一次</option><option>仅手动</option><option>每周一次</option></select></div>
+          <div class="settings-actions"><button type="button" class="btn btn-primary" id="sam-save">保存本地设置</button><button type="button" class="btn">${account.status === 'paused' ? '恢复同步' : '暂停同步'}</button></div>
+          <div class="danger-zone"><button type="button" class="btn text-destructive">断开此账号</button></div>
+        </div>`;
+      }
+
+      function renderDetail() {
+        const account = accounts.find((item) => item.id === selectedId) || filteredAccounts()[0];
+        const detail = root.querySelector('#sam-detail');
+        if (!account) { detail.innerHTML = '<div class="empty">选择一个账号查看详情</div>'; return; }
+        const panel = activeTab === 'browser' ? browserPanel(account) : activeTab === 'content' ? contentPanel(account) : activeTab === 'settings' ? settingsPanel(account) : overview(account);
+        detail.innerHTML = `<div class="detail-head">
+          <div class="detail-id"><span class="avatar" aria-hidden="true">${account.short}</span><div><div class="detail-title">${escapeHtml(account.alias)}</div><div class="detail-sub text-small">${escapeHtml(account.handle)} · ${statusLabel(account.status)}</div></div></div>
+          ${account.status === 'expired' ? '<button type="button" class="btn btn-primary">重新登录</button>' : '<span class="viz-badge">只读采集</span>'}
+        </div>
+        <div class="tabbar" role="tablist" aria-label="账号详情视图">
+          ${[['overview', '总览'], ['browser', '内置浏览器'], ['content', '内容数据'], ['settings', '设置与备注']].map(([id, label]) => `<button type="button" class="btn btn-ghost" role="tab" data-tab="${id}" aria-selected="${activeTab === id}">${label}</button>`).join('')}
+        </div><div>${panel}</div>`;
+        detail.querySelectorAll('[data-tab]').forEach((tab) => tab.addEventListener('click', () => { activeTab = tab.dataset.tab; renderDetail(); refreshIcons(); }));
+        const save = detail.querySelector('#sam-save');
+        if (save) save.addEventListener('click', () => {
+          account.alias = detail.querySelector('#sam-alias').value.trim() || account.alias;
+          account.note = detail.querySelector('#sam-note').value.trim();
+          account.groups = [...detail.querySelectorAll('[data-account-group]:checked')].map((item) => item.dataset.accountGroup);
+          save.textContent = '已保存';
+          renderGroups();
+          renderAccounts();
+          refreshIcons();
+        });
+      }
+
+      function refreshIcons() {
+        if (window.lucide) window.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+      }
+
+      function render() {
+        renderGroups();
+        renderAccounts();
+        renderDetail();
+        refreshIcons();
+      }
+
+      root.querySelector('#sam-search').addEventListener('input', (event) => { search = event.target.value; renderAccounts(); });
+      root.querySelector('#sam-add-account').addEventListener('click', () => {
+        activeGroup = 'all';
+        search = '';
+        root.querySelector('#sam-search').value = '';
+        selectedId = 'douyin-video';
+        activeTab = 'browser';
+        render();
+      });
+      render();
+    })();
+  </script>
+</div>

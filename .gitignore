@@ -1,0 +1,11 @@
+node_modules/
+out/
+dist/
+release/
+coverage/
+*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.DS_Store
+Thumbs.db
