@@ -17,6 +17,7 @@ import { SocialDatabase } from './database'
 import { ExportService } from './export-service'
 import { registerIpc, unregisterIpc } from './ipc'
 import { PluginService } from './plugin-service'
+import { ProfileMediaStore } from './profile-media'
 import { SettingsService } from './settings-service'
 import { JobService } from './services/job-service'
 import { XiaohongshuApiService } from './xiaohongshu-api-service'
@@ -54,6 +55,7 @@ if (!gotSingleInstanceLock) app.quit()
 let mainWindow: BrowserWindow | null = null
 let database: SocialDatabase | null = null
 let browserManager: BrowserManager | null = null
+let profileMediaStore: ProfileMediaStore | null = null
 let smokeVisualAccountId: string | null = null
 
 app.on('second-instance', () => {
@@ -77,7 +79,8 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.whenReady().then(async () => {
-  await registerShellProtocol()
+  profileMediaStore = new ProfileMediaStore(join(app.getPath('userData'), 'profile-media'))
+  await registerShellProtocol(profileMediaStore)
   createWindow()
 
   app.on('activate', () => {
@@ -99,6 +102,7 @@ app.on('before-quit', () => {
 
 function createWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) return
+  if (!profileMediaStore) throw new Error('头像媒体缓存尚未初始化')
 
   database = new SocialDatabase(join(app.getPath('userData'), 'social-vault.sqlite'))
   database.recoverInterruptedJobs()
@@ -170,7 +174,8 @@ function createWindow(): void {
     process.env.ELECTRON_RENDERER_URL
       ? new URL('browser.html', process.env.ELECTRON_RENDERER_URL).toString()
       : 'app://browser/browser.html',
-    !smokeMode
+    !smokeMode,
+    profileMediaStore
   )
   const pluginService = new PluginService(database)
   pluginService.initialize()
@@ -207,8 +212,12 @@ function createWindow(): void {
     afterRestore: () => pluginService.initialize(),
     afterCommit: async () => {
       try {
-        const restoredPartitions = database!.listAccounts().map((account) => account.sessionPartition)
+        const restoredAccounts = database!.listAccounts()
+        const restoredPartitions = restoredAccounts.map((account) => account.sessionPartition)
         await browserManager?.clearPartitions([...restorePartitions, ...restoredPartitions])
+        // Avatar files are intentionally outside encrypted database backups. Restore clears
+        // their database keys, so remove every pre-restore cache before the next sync.
+        await browserManager?.pruneAccountMedia(new Set())
       } finally {
         restorePartitions = []
       }
@@ -273,6 +282,8 @@ function createWindow(): void {
         await browserManager.disconnect(second.id)
         database.removeAccount(first.id)
         database.removeAccount(second.id)
+        await browserManager.purgeAccountMedia(first.id)
+        await browserManager.purgeAccountMedia(second.id)
       }
       const capturePath = process.env.SOCIAL_VAULT_SMOKE_CAPTURE
       if (capturePath && mainWindow) {
@@ -304,6 +315,7 @@ function createWindow(): void {
       }
       if (smokeVisualAccountId && database) {
         database.removeAccount(smokeVisualAccountId)
+        await browserManager?.purgeAccountMedia(smokeVisualAccountId)
         smokeVisualAccountId = null
       }
       const smokePayload = {
@@ -353,11 +365,26 @@ function createWindow(): void {
   })
 }
 
-async function registerShellProtocol(): Promise<void> {
+async function registerShellProtocol(profileMedia: ProfileMediaStore): Promise<void> {
   const rendererRoot = resolve(currentDir, '../renderer')
-  await protocol.handle('app', (request) => {
+  await protocol.handle('app', async (request) => {
     const url = new URL(request.url)
     if (!['shell', 'browser'].includes(url.hostname)) return new Response('Not found', { status: 404 })
+
+    if (url.hostname === 'shell' && url.pathname.startsWith('/media/')) {
+      if (request.method !== 'GET') return new Response('Method not allowed', { status: 405 })
+      const media = await profileMedia.readAppUrl(request.url)
+      if (!media) return new Response('Not found', { status: 404 })
+      return new Response(media.bytes.slice().buffer as ArrayBuffer, {
+        status: 200,
+        headers: {
+          'content-type': media.mime,
+          'content-length': String(media.bytes.byteLength),
+          'cache-control': 'private, max-age=31536000, immutable',
+          'x-content-type-options': 'nosniff'
+        }
+      })
+    }
 
     const relativePath = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html'
     const target = resolve(rendererRoot, relativePath)

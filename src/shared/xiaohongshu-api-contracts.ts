@@ -26,6 +26,7 @@ export interface ConfirmApiIdentityInput {
 export interface XiaohongshuSyncProfile {
   remoteId: string
   remoteName: string
+  avatarAvailable: boolean
   followers: number
   following: number
   likesAndFavorites: number

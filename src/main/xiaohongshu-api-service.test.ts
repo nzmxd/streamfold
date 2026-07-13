@@ -16,6 +16,8 @@ import {
 const origin = 'https://creator.xiaohongshu.com'
 const ownerId = '5605904194'
 const ownerName = '测试本人账号'
+const remoteAvatar = 'https://sns-avatar-qc.xhscdn.com/avatar/test.png'
+const cachedAvatar = { cacheKey: `${'a'.repeat(64)}.png`, mime: 'image/png' as const }
 
 describe('XiaohongshuApiService', () => {
   let database: SocialDatabase
@@ -44,7 +46,10 @@ describe('XiaohongshuApiService', () => {
     })
 
     const transport = createTransport()
-    const result = await createService(() => transport).verifyIdentity(account.id)
+    const cacheAvatar = vi.fn(async () => cachedAvatar)
+    const pruneAvatar = vi.fn(async () => undefined)
+    const leaseHooks = { showForLogin: vi.fn(), release: vi.fn(), cacheAvatar, pruneAvatar }
+    const result = await createService(() => transport, () => 'token', leaseHooks).verifyIdentity(account.id)
 
     expect(result).toMatchObject({
       status: 'verified',
@@ -56,15 +61,24 @@ describe('XiaohongshuApiService', () => {
       remoteId: ownerId,
       remoteName: ownerName,
       ownershipStatus: 'plugin_verified',
-      connectionStatus: 'ready'
+      connectionStatus: 'ready',
+      avatarUrl: `app://shell/media/avatars/${account.id}/${cachedAvatar.cacheKey}`,
+      bio: '本人账号简介',
+      creatorLevel: 3
     })
+    expect(cacheAvatar).toHaveBeenCalledWith(account.id, remoteAvatar)
+    expect(pruneAvatar).toHaveBeenCalledWith(account.id, cachedAvatar.cacheKey)
+    expect(leaseHooks.showForLogin).not.toHaveBeenCalled()
+    expect(leaseHooks.release).toHaveBeenCalledOnce()
   })
 
   it('requires a preview and a second matching API read before first binding', async () => {
     enablePlugin()
     const account = createAccount('profile_only')
     const transport = createTransport()
-    const service = createService(() => transport, () => 'preview-token')
+    const cacheAvatar = vi.fn(async () => cachedAvatar)
+    const leaseHooks = { showForLogin: vi.fn(), release: vi.fn(), cacheAvatar }
+    const service = createService(() => transport, () => 'preview-token', leaseHooks)
 
     const preview = await service.verifyIdentity(account.id)
     expect(preview).toMatchObject({
@@ -78,6 +92,7 @@ describe('XiaohongshuApiService', () => {
       remoteId: null,
       ownershipStatus: 'unconfirmed'
     })
+    expect(cacheAvatar).not.toHaveBeenCalled()
 
     const confirmed = await service.confirmIdentity({
       accountId: account.id,
@@ -90,15 +105,18 @@ describe('XiaohongshuApiService', () => {
       ownershipStatus: 'plugin_verified',
       connectionStatus: 'ready'
     })
-    expect(transport.directJson).toHaveBeenCalledTimes(2)
+    expect(transport.directJson).toHaveBeenCalledTimes(4)
+    expect(cacheAvatar).toHaveBeenCalledOnce()
+    expect(leaseHooks.release).toHaveBeenCalledTimes(2)
   })
 
   it('marks the account expired when the profile API reports login expiry', async () => {
     enablePlugin()
     const account = createAccount('profile_only')
     const transport = createTransport({ profileStatus: 401 })
+    const leaseHooks = { showForLogin: vi.fn(), release: vi.fn() }
 
-    await expect(createService(() => transport).verifyIdentity(account.id)).resolves.toMatchObject({
+    await expect(createService(() => transport, () => 'token', leaseHooks).verifyIdentity(account.id)).resolves.toMatchObject({
       status: 'login_required',
       remoteId: null
     })
@@ -107,6 +125,10 @@ describe('XiaohongshuApiService', () => {
       status: 'expired',
       syncEnabled: false
     })
+    expect(leaseHooks.showForLogin).toHaveBeenCalledOnce()
+    expect(leaseHooks.release).toHaveBeenCalledOnce()
+    expect(leaseHooks.showForLogin.mock.invocationCallOrder[0])
+      .toBeLessThan(leaseHooks.release.mock.invocationCallOrder[0]!)
   })
 
   it('stops a previously bound account when the API identity mismatches', async () => {
@@ -114,8 +136,10 @@ describe('XiaohongshuApiService', () => {
     const account = createAccount('profile_only')
     bindLegacyIdentity(account.id, ownerId, ownerName)
     const transport = createTransport({ profiles: [['other-account', '另一个账号']] })
+    const cacheAvatar = vi.fn(async () => cachedAvatar)
+    const leaseHooks = { showForLogin: vi.fn(), release: vi.fn(), cacheAvatar }
 
-    await expect(createService(() => transport).verifyIdentity(account.id)).resolves.toMatchObject({
+    await expect(createService(() => transport, () => 'token', leaseHooks).verifyIdentity(account.id)).resolves.toMatchObject({
       status: 'identity_mismatch',
       remoteId: 'other-account'
     })
@@ -125,21 +149,32 @@ describe('XiaohongshuApiService', () => {
       status: 'mismatch',
       syncEnabled: false
     })
+    expect(leaseHooks.showForLogin).not.toHaveBeenCalled()
+    expect(leaseHooks.release).toHaveBeenCalledOnce()
+    expect(cacheAvatar).not.toHaveBeenCalled()
   })
 
   it('commits profile_only profile and account metrics without requesting contents', async () => {
     enablePlugin()
     const account = createSyncableAccount('profile_only')
     const transport = createTransport()
+    const cacheAvatar = vi.fn(async () => { throw new Error('CDN 暂时不可用') })
 
-    const result = await createService(() => transport).sync(account.id)
+    const result = await createService(
+      () => transport,
+      () => 'token',
+      { showForLogin: vi.fn(), release: vi.fn(), cacheAvatar }
+    ).sync(account.id)
 
     expect(result).toMatchObject({
       accountId: account.id,
       mode: 'profile_only',
       contentCount: 0,
+      profile: { avatarAvailable: true, bio: '本人账号简介', creatorLevel: 3 },
       job: { status: 'succeeded', kind: 'managed_sync' }
     })
+    expect(result.profile).not.toHaveProperty('avatarUrl')
+    expect(cacheAvatar).toHaveBeenCalledWith(account.id, remoteAvatar)
     expect(transport.captureSignedJson).not.toHaveBeenCalled()
     expect(database.listAccountSnapshots(account.id)).toHaveLength(1)
     expect(database.listContents({ accountId: account.id })).toEqual([])
@@ -152,7 +187,9 @@ describe('XiaohongshuApiService', () => {
     })
     expect(database.getAccount(account.id)).toMatchObject({
       syncStatus: 'idle',
-      lastSyncedAt: '2026-07-13T08:00:00.000Z'
+      lastSyncedAt: '2026-07-13T08:00:00.000Z',
+      bio: '本人账号简介',
+      creatorLevel: 3
     })
   })
 
@@ -217,8 +254,9 @@ describe('XiaohongshuApiService', () => {
     enablePlugin()
     const account = createSyncableAccount('profile_only')
     const transport = createTransport({ profileStatus: 401 })
+    const leaseHooks = { showForLogin: vi.fn(), release: vi.fn() }
 
-    await expect(createService(() => transport).sync(account.id)).rejects.toMatchObject({
+    await expect(createService(() => transport, () => 'token', leaseHooks).sync(account.id)).rejects.toMatchObject({
       code: 'AUTH_REQUIRED'
     })
     expect(database.getAccount(account.id)).toMatchObject({
@@ -227,6 +265,8 @@ describe('XiaohongshuApiService', () => {
       syncEnabled: false,
       syncStatus: 'idle'
     })
+    expect(leaseHooks.showForLogin).toHaveBeenCalledOnce()
+    expect(leaseHooks.release).toHaveBeenCalledOnce()
   })
 
   it('rejects a disabled plugin before opening the browser transport', async () => {
@@ -239,14 +279,14 @@ describe('XiaohongshuApiService', () => {
     expect(database.getAccount(account.id)?.remoteId).toBeNull()
   })
 
-  it('reports a missing browser workspace without writing identity data', async () => {
+  it('reports a background workspace startup failure without writing identity data', async () => {
     enablePlugin()
     const account = createAccount('profile_only')
     const service = createService(() => {
-      throw new Error('请先打开该账号的内置浏览器并完成登录')
+      throw new Error('账号浏览器工作区启动失败')
     })
 
-    await expect(service.verifyIdentity(account.id)).rejects.toThrow('请先打开该账号的内置浏览器')
+    await expect(service.verifyIdentity(account.id)).rejects.toThrow('账号浏览器工作区启动失败')
     expect(database.getAccount(account.id)).toMatchObject({
       remoteId: null,
       ownershipStatus: 'unconfirmed'
@@ -263,7 +303,7 @@ describe('XiaohongshuApiService', () => {
       status: 'confirmation_required'
     })
     await expect(service.verifyIdentity(account.id)).rejects.toThrow('60 秒后重试')
-    expect(transport.directJson).toHaveBeenCalledTimes(1)
+    expect(transport.directJson).toHaveBeenCalledTimes(2)
   })
 
   it('serializes platform syncs and rejects concurrent work on another account', async () => {
@@ -288,9 +328,11 @@ describe('XiaohongshuApiService', () => {
 
     const running = service.sync(first.id)
     await entered.promise
+    expect(service.isAccountActive(first.id)).toBe(true)
     await expect(service.sync(second.id)).rejects.toThrow('已有一个同步任务正在运行')
     release.resolve()
     await expect(running).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    expect(service.isAccountActive(first.id)).toBe(false)
     expect(database.getStorageCounts().jobCount).toBe(1)
   })
 
@@ -336,7 +378,13 @@ describe('XiaohongshuApiService', () => {
 
   function createService(
     transportForAccount: (accountId: string) => XiaohongshuApiTransport,
-    createToken: () => string = () => 'token'
+    createToken: () => string = () => 'token',
+    leaseHooks: {
+      showForLogin: () => void
+      release: () => void
+      cacheAvatar?: (accountId: string, sourceUrl: string) => Promise<typeof cachedAvatar | null>
+      pruneAvatar?: (accountId: string, keepCacheKey: string) => Promise<void>
+    } = { showForLogin: vi.fn(), release: vi.fn() }
   ): XiaohongshuApiService {
     const jobs = new JobService(database, {
       clock: () => new Date(nowMs),
@@ -344,7 +392,15 @@ describe('XiaohongshuApiService', () => {
     })
     return new XiaohongshuApiService({
       repository: database,
-      browser: { createXiaohongshuApiTransport: transportForAccount },
+      browser: {
+        acquireXiaohongshuApiTransport: async (accountId) => ({
+          transport: transportForAccount(accountId),
+          showForLogin: leaseHooks.showForLogin,
+          release: leaseHooks.release
+        }),
+        cacheXiaohongshuAvatar: leaseHooks.cacheAvatar ?? (async () => null),
+        pruneAccountAvatarMedia: leaseHooks.pruneAvatar ?? (async () => undefined)
+      },
       plugins,
       jobs,
       clock: () => new Date(nowMs),
@@ -363,11 +419,15 @@ function createTransport(options: {
   notes?: Array<Record<string, unknown>>
 } = {}) {
   const profiles = [...(options.profiles ?? [[ownerId, ownerName] as [string, string]])]
+  let currentIdentity = profiles[0]!
   const notes = options.notes ?? [note()]
   const directJson = vi.fn(async (endpoint: string): Promise<XiaohongshuJsonResponse> => {
     if (endpoint === XIAOHONGSHU_API_ENDPOINTS.personalInfo) {
-      const identity = profiles.length > 1 ? profiles.shift()! : profiles[0]!
-      return profileResponse(identity[0], identity[1], options.profileStatus ?? 200)
+      currentIdentity = profiles.length > 1 ? profiles.shift()! : profiles[0]!
+      return profileResponse(currentIdentity[0], currentIdentity[1], options.profileStatus ?? 200)
+    }
+    if (endpoint === XIAOHONGSHU_API_ENDPOINTS.userInfo) {
+      return userInfoResponse(currentIdentity[0], currentIdentity[1])
     }
     if (endpoint === XIAOHONGSHU_API_ENDPOINTS.accountStats) return metricsResponse()
     throw new Error(`unexpected endpoint: ${endpoint}`)
@@ -417,6 +477,18 @@ function profileResponse(id: string, name: string, status = 200): XiaohongshuJso
       grow_info: { level: 3 }
     }
   }, status)
+}
+
+function userInfoResponse(id: string, name: string): XiaohongshuJsonResponse {
+  return response(XIAOHONGSHU_API_ENDPOINTS.userInfo, {
+    code: 0,
+    data: {
+      redId: id,
+      userName: name,
+      userAvatar: remoteAvatar,
+      userDesc: '本人账号简介'
+    }
+  })
 }
 
 function metricsResponse(): XiaohongshuJsonResponse {

@@ -255,7 +255,7 @@ legend, .muted { color: var(--text-tertiary); }
 .export-form label, .retention-form small, .backup-form label, .backup-form > small,
 .data-account-row small, .account-content-list article small, .metric-grid span,
 .metric-grid small, .section-heading p, .steps span, .account-copy small,
-.account-identity p, .browser-launch-copy p, .browser-session-status span,
+.account-identity p, .head-remote-id, .browser-launch-copy p, .browser-session-status span,
 .content-empty, .empty-detail, .modal-head p { color: var(--text-tertiary); }
 .feature-empty strong, .compact-empty strong, .empty-detail h2, .backup-form > strong,
 .snapshot-row strong { color: var(--text); }

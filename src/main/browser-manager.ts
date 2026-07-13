@@ -9,6 +9,7 @@ import {
 } from 'electron'
 import type { Account, AppearanceState, BrowserState } from '../shared/contracts'
 import { getPlatform, isOfficialUrl } from './platforms'
+import type { CachedProfileAvatar, ProfileMediaStore } from './profile-media'
 import { isTrustedBrowserUrl } from './shell-security'
 import {
   XIAOHONGSHU_API_ENDPOINTS,
@@ -34,7 +35,17 @@ interface ManagedWorkspace {
   view: WebContentsView
   senderId: number
   disposed: boolean
+  foregroundRequested: boolean
+  apiLeaseCount: number
+  shellReady: Promise<void>
+  apiPageReady: Promise<void> | null
   state: BrowserState
+}
+
+export interface XiaohongshuApiTransportLease {
+  readonly transport: XiaohongshuApiTransport
+  showForLogin(): void
+  release(): void
 }
 
 export class BrowserManager {
@@ -50,7 +61,8 @@ export class BrowserManager {
     private readonly findAccount: (id: string) => Account | null,
     private readonly browserPreload: string,
     private readonly browserShellUrl: string,
-    private readonly showWindows = true
+    private readonly showWindows = true,
+    private readonly profileMedia: ProfileMediaStore | null = null
   ) {}
 
   async open(accountId: string, loadRemote = true): Promise<BrowserState> {
@@ -60,13 +72,11 @@ export class BrowserManager {
 
     const existing = this.workspaces.get(accountId)
     if (existing && !existing.window.isDestroyed()) {
-      if (existing.window.isMinimized()) existing.window.restore()
-      existing.window.show()
-      existing.window.focus()
+      this.showWorkspace(existing)
       return { ...existing.state }
     }
 
-    const managed = await this.createWorkspace(account)
+    const managed = await this.createWorkspace(account, true)
     if (loadRemote) void this.safeLoad(managed, getPlatform(account.platformId).loginUrl).catch((cause) => {
       managed.state = {
         ...managed.state,
@@ -76,6 +86,77 @@ export class BrowserManager {
       this.emitState(managed)
     })
     return { ...managed.state }
+  }
+
+  async acquireXiaohongshuApiTransport(accountId: string): Promise<XiaohongshuApiTransportLease> {
+    if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
+    const account = this.findAccount(accountId)
+    if (!account) throw new Error('账号不存在')
+    if (account.platformId !== 'xiaohongshu') throw new Error('该 API 传输仅允许小红书账号')
+
+    let managed = this.workspaces.get(accountId)
+    if (!managed || managed.disposed || managed.window.isDestroyed() ||
+      managed.view.webContents.isDestroyed()) {
+      managed = await this.createWorkspace(account, false)
+    } else {
+      await managed.shellReady
+    }
+
+    beginApiLease(managed)
+    let released = false
+    try {
+      await this.prepareXiaohongshuApiPage(managed)
+      this.requireXiaohongshuApiWorkspace(accountId)
+    } catch (error) {
+      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      throw error
+    }
+
+    const transport = this.createXiaohongshuApiTransport(accountId)
+    return Object.freeze({
+      transport,
+      showForLogin: (): void => {
+        if (released || managed.disposed) return
+        this.showWorkspace(managed)
+      },
+      release: (): void => {
+        if (released) return
+        released = true
+        if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      }
+    })
+  }
+
+  private showWorkspace(managed: ManagedWorkspace): void {
+    promoteApiWorkspace(managed)
+    managed.state = { ...managed.state, windowOpen: true }
+    this.emitState(managed)
+    if (managed.window.isMinimized()) managed.window.restore()
+    managed.window.show()
+    managed.window.focus()
+  }
+
+  private async prepareXiaohongshuApiPage(managed: ManagedWorkspace): Promise<void> {
+    if (managed.disposed || managed.window.isDestroyed() || managed.view.webContents.isDestroyed()) {
+      throw new Error('账号浏览器工作区已关闭')
+    }
+    if (managed.apiPageReady) return managed.apiPageReady
+
+    const contents = managed.view.webContents
+    if (isXiaohongshuCreatorPage(contents.getURL()) && !contents.isLoading()) return
+
+    const pending = (async () => {
+      await this.safeLoad(managed, XIAOHONGSHU_CREATOR_ORIGIN)
+      if (!isXiaohongshuCreatorPage(contents.getURL())) {
+        throw new Error('小红书创作中心未能完成加载')
+      }
+    })()
+    managed.apiPageReady = pending
+    try {
+      await pending
+    } finally {
+      if (managed.apiPageReady === pending) managed.apiPageReady = null
+    }
   }
 
   createXiaohongshuApiTransport(accountId: string): XiaohongshuApiTransport {
@@ -99,6 +180,38 @@ export class BrowserManager {
         }
       }
     })
+  }
+
+  async cacheXiaohongshuAvatar(
+    accountId: string,
+    sourceUrl: string
+  ): Promise<CachedProfileAvatar | null> {
+    if (!this.profileMedia) return null
+    const account = this.findAccount(accountId)
+    if (!account) throw new Error('账号不存在')
+    if (account.platformId !== 'xiaohongshu') throw new Error('头像缓存仅允许小红书账号')
+    const managed = this.requireXiaohongshuApiWorkspace(accountId)
+    const accountSession = electronSession.fromPartition(account.sessionPartition)
+    if (managed.view.webContents.session !== accountSession) {
+      throw new Error('头像缓存会话与账号独立登录分区不匹配')
+    }
+    return this.profileMedia.cacheAvatar(
+      account.id,
+      sourceUrl,
+      (url, init) => accountSession.fetch(url, init)
+    )
+  }
+
+  async purgeAccountMedia(accountId: string): Promise<void> {
+    await this.profileMedia?.purgeAccount(accountId)
+  }
+
+  async pruneAccountAvatarMedia(accountId: string, keepCacheKey: string): Promise<void> {
+    await this.profileMedia?.pruneAccountAvatars(accountId, keepCacheKey)
+  }
+
+  async pruneAccountMedia(accountIds: ReadonlySet<string>): Promise<void> {
+    await this.profileMedia?.pruneAccounts(accountIds)
   }
 
   async smokeWorkspace(accountId: string): Promise<{
@@ -179,6 +292,10 @@ export class BrowserManager {
 
   async disconnect(accountId: string): Promise<void> {
     if (this.disconnecting.has(accountId)) throw new Error('账号正在断开')
+    const active = this.workspaces.get(accountId)
+    if ((active?.apiLeaseCount ?? 0) > 0 || this.activeApiCaptures.has(accountId)) {
+      throw new Error('账号正在同步或核验，请稍候')
+    }
     this.disconnecting.add(accountId)
     const account = this.findAccount(accountId)
     if (!account) {
@@ -221,14 +338,15 @@ export class BrowserManager {
     }
   }
 
-  private async createWorkspace(account: Account): Promise<ManagedWorkspace> {
+  private async createWorkspace(account: Account, foregroundRequested: boolean): Promise<ManagedWorkspace> {
     const platform = getPlatform(account.platformId)
+    const accountLabel = displayAccountName(account, platform.name)
     const window = new BrowserWindow({
       width: 1180,
       height: 820,
       minWidth: 900,
       minHeight: 620,
-      title: `${platform.name} · ${sanitizeTitle(account.alias)} — 归页`,
+      title: `${platform.name} · ${accountLabel} — 归页`,
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d1016' : '#f6f7fb',
       show: false,
       autoHideMenuBar: true,
@@ -282,10 +400,14 @@ export class BrowserManager {
       view,
       senderId: window.webContents.id,
       disposed: false,
+      foregroundRequested,
+      apiLeaseCount: 0,
+      shellReady: Promise.resolve(),
+      apiPageReady: null,
       state: {
         accountId: account.id,
         platformId: account.platformId,
-        accountAlias: sanitizeTitle(account.alias),
+        accountAlias: accountLabel,
         platformName: platform.name,
         url: '',
         title: '',
@@ -293,7 +415,7 @@ export class BrowserManager {
         canGoBack: false,
         canGoForward: false,
         official: false,
-        windowOpen: true,
+        windowOpen: foregroundRequested,
         message: '正在打开平台官方登录入口…'
       }
     }
@@ -309,14 +431,15 @@ export class BrowserManager {
     window.on('maximize', layout)
     window.on('unmaximize', layout)
     window.once('ready-to-show', () => {
-      if (this.showWindows && !window.isDestroyed()) window.show()
+      if (this.showWindows && managed.foregroundRequested && !window.isDestroyed()) window.show()
     })
     window.on('closed', () => {
       if (!this.shuttingDown) this.disposeWorkspace(managed, false)
     })
 
     try {
-      await window.loadURL(this.browserShellUrl)
+      managed.shellReady = window.loadURL(this.browserShellUrl).then(() => undefined)
+      await managed.shellReady
       this.layoutRemoteView(managed)
       this.emitState(managed)
       return managed
@@ -424,7 +547,7 @@ export class BrowserManager {
       canGoBack: contents.navigationHistory.canGoBack(),
       canGoForward: contents.navigationHistory.canGoForward(),
       official,
-      windowOpen: true,
+      windowOpen: managed.foregroundRequested,
       message: official ? '平台页面已打开' : '正在打开平台页面'
     }
     this.emitState(managed)
@@ -467,13 +590,45 @@ export class BrowserManager {
   private disposeWorkspace(managed: ManagedWorkspace, closeWindow: boolean): void {
     if (managed.disposed) return
     managed.disposed = true
-    this.workspaces.delete(managed.account.id)
-    this.senderAccounts.delete(managed.senderId)
+    if (this.workspaces.get(managed.account.id) === managed) {
+      this.workspaces.delete(managed.account.id)
+    }
+    if (this.senderAccounts.get(managed.senderId) === managed.account.id) {
+      this.senderAccounts.delete(managed.senderId)
+    }
     managed.state = { ...managed.state, loading: false, windowOpen: false, message: '浏览器窗口已关闭' }
     if (!this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('browser:state', { ...managed.state })
 
     if (!managed.view.webContents.isDestroyed()) managed.view.webContents.close()
     if (closeWindow && !managed.window.isDestroyed()) managed.window.destroy()
+  }
+}
+
+interface ApiLeaseLifecycle {
+  foregroundRequested: boolean
+  apiLeaseCount: number
+}
+
+function beginApiLease(workspace: ApiLeaseLifecycle): void {
+  workspace.apiLeaseCount += 1
+}
+
+function endApiLease(workspace: ApiLeaseLifecycle): boolean {
+  if (workspace.apiLeaseCount > 0) workspace.apiLeaseCount -= 1
+  return workspace.apiLeaseCount === 0 && !workspace.foregroundRequested
+}
+
+function promoteApiWorkspace(workspace: ApiLeaseLifecycle): void {
+  workspace.foregroundRequested = true
+}
+
+function isXiaohongshuCreatorPage(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.hostname === 'creator.xiaohongshu.com' &&
+      !url.username && !url.password && !url.port
+  } catch {
+    return false
   }
 }
 
@@ -759,6 +914,7 @@ function waitForSignedResponses(
 
 function assertDirectEndpoint(endpoint: string): void {
   if (endpoint !== XIAOHONGSHU_API_ENDPOINTS.personalInfo &&
+    endpoint !== XIAOHONGSHU_API_ENDPOINTS.userInfo &&
     endpoint !== XIAOHONGSHU_API_ENDPOINTS.accountStats) {
     throw new Error('拒绝非白名单的小红书只读 API')
   }
@@ -847,12 +1003,7 @@ function parseJson(value: string): unknown {
 }
 
 function capturedContentType(response: Record<string, unknown>): string {
-  const mimeType = typeof response.mimeType === 'string' ? response.mimeType : ''
-  const headers = objectRecord(response.headers)
-  for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() === 'content-type' && typeof value === 'string') return value
-  }
-  return mimeType
+  return typeof response.mimeType === 'string' ? response.mimeType : ''
 }
 
 function objectRecord(value: unknown): Record<string, unknown> {
@@ -918,12 +1069,22 @@ export const __xiaohongshuApiTransportTest = Object.freeze({
   captureSignedJson: captureXiaohongshuSignedJson
 })
 
+export const __browserWorkspaceLeaseTest = Object.freeze({
+  begin: beginApiLease,
+  end: endApiLease,
+  promote: promoteApiWorkspace
+})
+
 function safeHostname(value: string): string {
   try {
     return new URL(value).hostname || '未知地址'
   } catch {
     return '无效地址'
   }
+}
+
+function displayAccountName(account: Pick<Account, 'alias' | 'remoteName'>, platformName: string): string {
+  return sanitizeTitle(account.alias) || sanitizeTitle(account.remoteName) || `${platformName}账号`
 }
 
 function displayUrl(value: string): string {

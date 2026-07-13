@@ -9,7 +9,7 @@
 
 2. [界面与功能设计](interface-and-feature-design.md)
    - 查看工作台、账号、内容、数据、插件和设置六个模块。
-   - 查看账号分组、备注、独立浏览器窗口、身份核验和同步流程。
+   - 查看可选本地备注名、账号资料指标、独立浏览器窗口、身份核验和一键主动同步流程。
 
 3. [品牌与界面系统](brand-and-ui-system.md)
    - 查看归页品牌、浅深色 Token、原生标题栏和统一弹窗。
@@ -28,12 +28,14 @@
    - 查看 `.svbackup` 的范围、加密参数、回滚和登录会话边界。
 
 7. [小红书 Session API 适配器](xiaohongshu-identity-adapter.md)
-   - 查看固定 JSON 接口、作品列表与指标响应捕获、身份核验和停止条件。
+   - 查看双资料接口身份校验、头像本地缓存、固定 JSON 接口、后台 workspace lease、作品指标响应捕获和停止条件。
 
 ## 实现边界
 
 - 账号登录在应用内置 Chromium 的独立窗口中完成，每个账号使用独立持久 Session Partition。
+- 主动核验与同步会自动获取隐藏 workspace lease，用户不必预先打开窗口；登录失效时才显示同一个官方浏览器窗口。
 - 平台数据只来自固定 JSON API 或平台页面自身发起的 XHR/Fetch JSON 响应。
+- 平台头像经主进程校验后写入本地缓存，Renderer 仅通过 `app://shell/media` 同源路由读取。
 - 当前没有平台页面 DOM 解析、手动 JSON/CSV 导入或 Cookie 导入入口。
 - 设置页的 JSON/CSV 是本地数据导出；加密备份用于完整 SQLite 备份与恢复，两者都不会导入平台采集数据。
 

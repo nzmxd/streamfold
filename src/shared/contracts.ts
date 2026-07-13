@@ -35,8 +35,13 @@ export interface Account {
   id: string
   platformId: PlatformId
   alias: string
+  aliasCustomized: boolean
   remoteName: string
   remoteId: string | null
+  avatarUrl: string
+  bio: string
+  creatorLevel: number | null
+  latestSnapshot: import('./content-contracts').AccountSnapshot | null
   status: AccountStatus
   connectionStatus: ConnectionStatus
   ownershipStatus: OwnershipStatus
@@ -67,7 +72,7 @@ export interface Group {
 
 export interface CreateAccountInput {
   platformId: PlatformId
-  alias: string
+  alias?: string
   syncMode: SyncMode
 }
 

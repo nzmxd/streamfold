@@ -10,6 +10,7 @@ import {
   parseAnalyzeCaptures,
   parsePersonalInfo,
   parsePostedCaptures,
+  parseUserInfo,
   type XiaohongshuApiTransport,
   type XiaohongshuJsonResponse
 } from './xiaohongshu-api'
@@ -20,7 +21,11 @@ function response(path: string, json: unknown, status = 200): XiaohongshuJsonRes
   return { status, url: `${origin}${path}`, json }
 }
 
-function profile(id = '5605904194', name = '测试本人账号'): XiaohongshuJsonResponse {
+function profile(
+  id = '5605904194',
+  name = '测试本人账号',
+  bio = '本人账号简介'
+): XiaohongshuJsonResponse {
   return response(XIAOHONGSHU_API_ENDPOINTS.personalInfo, {
     code: 0,
     data: {
@@ -29,10 +34,32 @@ function profile(id = '5605904194', name = '测试本人账号'): XiaohongshuJso
       fans_count: 12,
       follow_count: 119,
       faved_count: 122,
-      personal_desc: '本人账号简介',
+      personal_desc: bio,
       grow_info: { level: 3 }
     }
   })
+}
+
+function userInfo(
+  id = '5605904194',
+  name = '测试本人账号',
+  avatar: unknown = 'https://sns-avatar-qc.xhscdn.com/avatar/test.webp'
+): XiaohongshuJsonResponse {
+  return response(XIAOHONGSHU_API_ENDPOINTS.userInfo, {
+    code: 0,
+    data: {
+      redId: id,
+      userName: name,
+      userAvatar: avatar,
+      userDesc: '备用本人账号简介'
+    }
+  })
+}
+
+function directResponse(endpoint: string): XiaohongshuJsonResponse {
+  if (endpoint === XIAOHONGSHU_API_ENDPOINTS.personalInfo) return profile()
+  if (endpoint === XIAOHONGSHU_API_ENDPOINTS.userInfo) return userInfo()
+  return stats()
 }
 
 function period(seed: number): Record<string, number> {
@@ -120,9 +147,7 @@ function expectCode(action: () => unknown, code: string): void {
 
 describe('XiaohongshuApi JSON-only adapter', () => {
   it('maps personal_info, note_detail_new and signed analyze JSON', async () => {
-    const directJson = vi.fn(async (endpoint: string) => {
-      return endpoint === XIAOHONGSHU_API_ENDPOINTS.personalInfo ? profile() : stats()
-    })
+    const directJson = vi.fn(async (endpoint: string) => directResponse(endpoint))
     const captureSignedJson = vi.fn(async (
       route: string,
       _selector: string | ((url: string) => boolean)
@@ -136,6 +161,7 @@ describe('XiaohongshuApi JSON-only adapter', () => {
       profile: {
         remoteId: '5605904194',
         remoteName: '测试本人账号',
+        avatarUrl: 'https://sns-avatar-qc.xhscdn.com/avatar/test.webp',
         followers: 12,
         following: 119,
         likesAndFavorites: 122,
@@ -191,7 +217,7 @@ describe('XiaohongshuApi JSON-only adapter', () => {
       'note_analyze_list',
       20
     )
-    expect(directJson).toHaveBeenCalledTimes(3)
+    expect(directJson).toHaveBeenCalledTimes(5)
   })
 
   it('keeps a fresh note empty title without using a page fallback', () => {
@@ -202,7 +228,7 @@ describe('XiaohongshuApi JSON-only adapter', () => {
   it('merges the full posted-note list with available analytics by note id', async () => {
     const oldId = 'bbbbbbbbbbbbbbbbbbbbbbbb'
     const api = new XiaohongshuApi({
-      directJson: vi.fn(async (endpoint) => endpoint === XIAOHONGSHU_API_ENDPOINTS.personalInfo ? profile() : stats()),
+      directJson: vi.fn(async (endpoint) => directResponse(endpoint)),
       captureSignedJson: vi.fn(async (route) => route === XIAOHONGSHU_API_ROUTES.noteManager
         ? [postedCapture([
             postedNote(),
@@ -260,13 +286,49 @@ describe('XiaohongshuApi JSON-only adapter', () => {
     ], 1), 'MALFORMED_RESPONSE')
   })
 
+  it('cross-checks user_info identity and accepts only official HTTPS avatar hosts', async () => {
+    expect(parseUserInfo(userInfo())).toMatchObject({
+      remoteId: '5605904194',
+      remoteName: '测试本人账号',
+      avatarUrl: 'https://sns-avatar-qc.xhscdn.com/avatar/test.webp'
+    })
+    for (const avatar of [
+      'http://sns-avatar-qc.xhscdn.com/avatar/test.webp',
+      'https://xhscdn.com.evil.example/avatar/test.webp',
+      'https://user@xhscdn.com/avatar/test.webp',
+      'https://xhscdn.com:444/avatar/test.webp',
+      'not a url'
+    ]) {
+      expect(parseUserInfo(userInfo('5605904194', '测试本人账号', avatar)).avatarUrl).toBeNull()
+    }
+
+    const api = new XiaohongshuApi({
+      directJson: vi.fn(async (endpoint) => endpoint === XIAOHONGSHU_API_ENDPOINTS.personalInfo
+        ? profile()
+        : userInfo('other-account', '另一个账号')),
+      captureSignedJson: vi.fn()
+    })
+    await expect(api.getProfile()).rejects.toMatchObject({ code: 'IDENTITY_MISMATCH' })
+
+    const fallback = new XiaohongshuApi({
+      directJson: vi.fn(async (endpoint) => endpoint === XIAOHONGSHU_API_ENDPOINTS.personalInfo
+        ? profile('5605904194', '测试本人账号', '')
+        : userInfo()),
+      captureSignedJson: vi.fn()
+    })
+    await expect(fallback.getProfile()).resolves.toMatchObject({ bio: '备用本人账号简介' })
+  })
+
   it('rejects an identity switch before returning a snapshot', async () => {
     let profileReads = 0
     const transport: XiaohongshuApiTransport = {
       directJson: vi.fn(async (endpoint) => {
         if (endpoint === XIAOHONGSHU_API_ENDPOINTS.accountStats) return stats()
-        profileReads += 1
-        return profileReads === 1 ? profile() : profile('other-account', '另一个账号')
+        if (endpoint === XIAOHONGSHU_API_ENDPOINTS.personalInfo) {
+          profileReads += 1
+          return profileReads === 1 ? profile() : profile('other-account', '另一个账号')
+        }
+        return profileReads === 1 ? userInfo() : userInfo('other-account', '另一个账号')
       }),
       captureSignedJson: vi.fn(async (route) => route === XIAOHONGSHU_API_ROUTES.noteManager
         ? [postedCapture([postedNote()])]

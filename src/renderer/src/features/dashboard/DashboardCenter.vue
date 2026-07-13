@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import type { Account, DashboardOverview } from '../../../../shared/contracts'
-import { formatDate, formatNumber, messageOf } from '../shared/format'
+import { accountDisplayName } from '../accounts/presentation'
+import { formatDate, formatNumber, messageOf, platformLabel } from '../shared/format'
 
 const emit = defineEmits<{ navigate: [section: 'accounts'] }>()
 
@@ -89,7 +90,7 @@ onMounted(() => void load())
           <div v-if="recentlySyncedAccounts.length === 0" class="compact-empty"><strong>还没有同步记录</strong><span>完成账号登录和身份确认后，可在账号中心发起同步。</span></div>
           <div v-for="account in recentlySyncedAccounts" :key="account.id" class="recent-row">
             <span class="content-kind">已同步</span>
-            <span><strong>{{ account.alias }}</strong><small>{{ account.remoteName || '本人身份已确认' }}</small></span>
+            <span><strong>{{ accountDisplayName(account, platformLabel(account.platformId)) }}</strong><small>{{ account.remoteName || '本人身份已确认' }}</small></span>
             <b>{{ formatDate(account.lastSyncedAt, true) }}</b>
           </div>
         </section>

@@ -7,6 +7,8 @@ import type {
 } from '../shared/xiaohongshu-api-contracts'
 import type { JobRecord } from '../shared/job-contracts'
 import type { ManagedSyncCommitMetadata, ManagedSyncCommitResult } from './database'
+import type { XiaohongshuApiTransportLease } from './browser-manager'
+import type { CachedProfileAvatar } from './profile-media'
 import type { NormalizedImportPayload } from './plugins/types'
 import type { PluginService } from './plugin-service'
 import type { JobService } from './services/job-service'
@@ -15,7 +17,6 @@ import {
   XiaohongshuApiError,
   type XiaohongshuAccountMetrics,
   type XiaohongshuApiSnapshot,
-  type XiaohongshuApiTransport,
   type XiaohongshuProfile
 } from './xiaohongshu-api'
 
@@ -24,7 +25,9 @@ const PREVIEW_TTL_MS = 5 * 60_000
 const MAX_PREVIEWS = 50
 
 interface ApiBrowser {
-  createXiaohongshuApiTransport(accountId: string): XiaohongshuApiTransport
+  acquireXiaohongshuApiTransport(accountId: string): Promise<XiaohongshuApiTransportLease>
+  cacheXiaohongshuAvatar(accountId: string, sourceUrl: string): Promise<CachedProfileAvatar | null>
+  pruneAccountAvatarMedia?(accountId: string, keepCacheKey: string): Promise<void>
 }
 
 interface ApiRepository {
@@ -33,7 +36,14 @@ interface ApiRepository {
   setSetting(key: string, value: unknown): void
   applyManagedIdentity(
     accountId: string,
-    identity: { remoteId: string; remoteName: string },
+    identity: {
+      remoteId: string
+      remoteName: string
+      avatarCacheKey?: string | null
+      avatarMime?: string | null
+      bio?: string
+      creatorLevel?: number | null
+    },
     verifiedAt: string
   ): Account
   applyManagedProbeStatus(
@@ -85,11 +95,11 @@ export class XiaohongshuApiService {
     return this.withAccountLock(accountId, '账号核验', async () => {
       const account = this.requireAccountAndPlugin(accountId)
       this.enforceInterval(account.id, 'identity', 60)
+      let lease: XiaohongshuApiTransportLease | null = null
       try {
-        const profile = await new XiaohongshuApi(
-          this.options.browser.createXiaohongshuApiTransport(accountId)
-        ).getProfile()
-        if (account.remoteId) return this.commitIdentity(account, profile)
+        lease = await this.options.browser.acquireXiaohongshuApiTransport(accountId)
+        const profile = await new XiaohongshuApi(lease.transport).getProfile()
+        if (account.remoteId) return await this.commitIdentity(account, profile)
         const preview = this.cachePreview(account.id, profile)
         this.options.plugins.recordSessionApiRun(XIAOHONGSHU_API_PLUGIN_ID, true)
         return {
@@ -103,7 +113,9 @@ export class XiaohongshuApiService {
           message: '已读取当前登录账号，请核对并确认。'
         }
       } catch (error) {
-        return this.handleIdentityError(account.id, error)
+        return this.handleIdentityError(account.id, error, lease)
+      } finally {
+        lease?.release()
       }
     })
   }
@@ -116,16 +128,18 @@ export class XiaohongshuApiService {
       if (!preview || preview.accountId !== input.accountId) throw new Error('身份确认已过期，请重新核验')
       this.previews.delete(input.token)
       const account = this.requireAccountAndPlugin(input.accountId)
+      let lease: XiaohongshuApiTransportLease | null = null
       try {
-        const profile = await new XiaohongshuApi(
-          this.options.browser.createXiaohongshuApiTransport(account.id)
-        ).getProfile()
+        lease = await this.options.browser.acquireXiaohongshuApiTransport(account.id)
+        const profile = await new XiaohongshuApi(lease.transport).getProfile()
         if (profile.remoteId !== preview.remoteId || profile.remoteName !== preview.remoteName) {
           throw new XiaohongshuApiError('IDENTITY_MISMATCH', '确认前登录账号发生变化')
         }
-        return this.commitIdentity(account, profile)
+        return await this.commitIdentity(account, profile)
       } catch (error) {
-        return this.handleIdentityError(account.id, error)
+        return this.handleIdentityError(account.id, error, lease)
+      } finally {
+        lease?.release()
       }
     })
   }
@@ -136,6 +150,7 @@ export class XiaohongshuApiService {
       this.platformSyncActive = true
       let job: JobRecord | null = null
       let committed = false
+      let lease: XiaohongshuApiTransportLease | null = null
       try {
         const account = this.requireSyncableAccount(accountId)
         const installation = this.options.plugins.requireEnabledSessionApi(XIAOHONGSHU_API_PLUGIN_ID)
@@ -144,13 +159,15 @@ export class XiaohongshuApiService {
         job = await this.options.jobs.createManagedSync(account.id, XIAOHONGSHU_API_PLUGIN_ID)
         this.options.repository.markManagedSyncStarted(account.id, startedAt)
 
-        const api = new XiaohongshuApi(this.options.browser.createXiaohongshuApiTransport(account.id))
+        lease = await this.options.browser.acquireXiaohongshuApiTransport(account.id)
+        const api = new XiaohongshuApi(lease.transport)
         const capturedAt = this.now()
         const limit = account.syncMode === 'recent_20' ? 20 : account.syncMode === 'recent_100' ? 100 : 0
         const snapshot = limit === 0
           ? await collectProfileOnly(api, account.remoteId!)
           : await api.collect(account.remoteId!, limit)
-        const payload = toPayload(snapshot, capturedAt)
+        const cachedAvatar = await this.cacheAvatar(account.id, snapshot.profile)
+        const payload = toPayload(snapshot, capturedAt, cachedAvatar)
         job = await this.options.jobs.transition(job, 'committing', { progress: 85, stage: '保存同步数据' })
         const finishedAt = this.now()
         const committedResult = this.options.repository.commitManagedSync(payload, {
@@ -162,6 +179,7 @@ export class XiaohongshuApiService {
           finishedAt
         })
         committed = true
+        await this.pruneAvatarCache(account.id, cachedAvatar)
         job = this.options.jobs.publishPersisted(committedResult.job)
         return syncResult(account, snapshot, capturedAt, committedResult, job)
       } catch (error) {
@@ -169,6 +187,7 @@ export class XiaohongshuApiService {
           const failedAt = this.now()
           try {
             if (error instanceof XiaohongshuApiError && error.code === 'AUTH_REQUIRED') {
+              this.showLoginWorkspace(lease)
               this.options.repository.applyManagedProbeStatus(accountId, 'login_required', messageOf(error), failedAt)
             } else if (error instanceof XiaohongshuApiError && error.code === 'IDENTITY_MISMATCH') {
               this.options.repository.markManagedIdentityMismatch(accountId, messageOf(error), failedAt)
@@ -197,6 +216,7 @@ export class XiaohongshuApiService {
         }
         throw error
       } finally {
+        lease?.release()
         this.platformSyncActive = false
       }
     })
@@ -205,6 +225,10 @@ export class XiaohongshuApiService {
   invalidatePreviews(): void {
     if (this.activeAccounts.size > 0) throw new Error('仍有账号操作正在执行')
     this.previews.clear()
+  }
+
+  isAccountActive(accountId: string): boolean {
+    return this.activeAccounts.has(accountId)
   }
 
   private requireAccountAndPlugin(accountId: string): Account {
@@ -218,15 +242,30 @@ export class XiaohongshuApiService {
   private requireSyncableAccount(accountId: string): Account {
     const account = this.requireAccountAndPlugin(accountId)
     if (!account.remoteId || account.ownershipStatus !== 'plugin_verified') throw new Error('请先核验当前账号')
-    if (account.connectionStatus !== 'ready') throw new Error('请先打开独立浏览器并完成官方登录')
+    if (account.connectionStatus !== 'ready') throw new Error('账号登录状态尚未就绪，请先重新核验')
     if (!account.syncEnabled || account.syncMode === 'disabled') throw new Error('请先启用该账号的数据同步')
     return account
   }
 
-  private commitIdentity(account: Account, profile: XiaohongshuProfile): ApiIdentityCheckResult {
+  private async commitIdentity(
+    account: Account,
+    profile: XiaohongshuProfile
+  ): Promise<ApiIdentityCheckResult> {
     const verifiedAt = this.now()
-    const updated = this.options.repository.applyManagedIdentity(account.id, profile, verifiedAt)
+    const cachedAvatar = account.remoteId && account.remoteId !== profile.remoteId
+      ? null
+      : await this.cacheAvatar(account.id, profile)
+    const updated = this.options.repository.applyManagedIdentity(account.id, {
+      remoteId: profile.remoteId,
+      remoteName: profile.remoteName,
+      bio: profile.bio,
+      creatorLevel: profile.creatorLevel,
+      ...(cachedAvatar
+        ? { avatarCacheKey: cachedAvatar.cacheKey, avatarMime: cachedAvatar.mime }
+        : {})
+    }, verifiedAt)
     const mismatch = updated.connectionStatus === 'mismatch'
+    if (!mismatch) await this.pruneAvatarCache(account.id, cachedAvatar)
     this.options.plugins.recordSessionApiRun(XIAOHONGSHU_API_PLUGIN_ID, true)
     return {
       accountId: account.id,
@@ -242,10 +281,15 @@ export class XiaohongshuApiService {
     }
   }
 
-  private handleIdentityError(accountId: string, error: unknown): ApiIdentityCheckResult {
+  private handleIdentityError(
+    accountId: string,
+    error: unknown,
+    lease: XiaohongshuApiTransportLease | null
+  ): ApiIdentityCheckResult {
     const message = messageOf(error)
     this.options.plugins.recordSessionApiRun(XIAOHONGSHU_API_PLUGIN_ID, false, message)
     if (error instanceof XiaohongshuApiError && error.code === 'AUTH_REQUIRED') {
+      this.showLoginWorkspace(lease)
       this.options.repository.applyManagedProbeStatus(accountId, 'login_required', message, this.now())
       return {
         accountId,
@@ -259,6 +303,35 @@ export class XiaohongshuApiService {
       }
     }
     throw error
+  }
+
+  private showLoginWorkspace(lease: XiaohongshuApiTransportLease | null): void {
+    if (!lease) return
+    try {
+      lease.showForLogin()
+    } catch {}
+  }
+
+  private async cacheAvatar(
+    accountId: string,
+    profile: XiaohongshuProfile
+  ): Promise<CachedProfileAvatar | null> {
+    if (!profile.avatarUrl) return null
+    try {
+      return await this.options.browser.cacheXiaohongshuAvatar(accountId, profile.avatarUrl)
+    } catch {
+      return null
+    }
+  }
+
+  private async pruneAvatarCache(
+    accountId: string,
+    cachedAvatar: CachedProfileAvatar | null
+  ): Promise<void> {
+    if (!cachedAvatar || !this.options.browser.pruneAccountAvatarMedia) return
+    try {
+      await this.options.browser.pruneAccountAvatarMedia(accountId, cachedAvatar.cacheKey)
+    } catch {}
   }
 
   private cachePreview(accountId: string, profile: XiaohongshuProfile): IdentityPreview {
@@ -341,13 +414,22 @@ async function collectProfileOnly(
   }
 }
 
-function toPayload(snapshot: XiaohongshuApiSnapshot, capturedAt: string): NormalizedImportPayload {
+function toPayload(
+  snapshot: XiaohongshuApiSnapshot,
+  capturedAt: string,
+  cachedAvatar: CachedProfileAvatar | null
+): NormalizedImportPayload {
   const metrics = snapshot.accountMetrics.thirty
   return {
     capturedAt,
     profile: {
       remoteId: snapshot.profile.remoteId,
       remoteName: snapshot.profile.remoteName,
+      bio: snapshot.profile.bio,
+      creatorLevel: snapshot.profile.creatorLevel,
+      ...(cachedAvatar
+        ? { avatarCacheKey: cachedAvatar.cacheKey, avatarMime: cachedAvatar.mime }
+        : {}),
       followers: snapshot.profile.followers,
       following: snapshot.profile.following,
       contentCount: null,
@@ -390,7 +472,16 @@ function syncResult(
     accountId: account.id,
     mode: account.syncMode as XiaohongshuSyncResult['mode'],
     capturedAt,
-    profile: { ...snapshot.profile },
+    profile: {
+      remoteId: snapshot.profile.remoteId,
+      remoteName: snapshot.profile.remoteName,
+      avatarAvailable: Boolean(snapshot.profile.avatarUrl),
+      followers: snapshot.profile.followers,
+      following: snapshot.profile.following,
+      likesAndFavorites: snapshot.profile.likesAndFavorites,
+      bio: snapshot.profile.bio,
+      creatorLevel: snapshot.profile.creatorLevel
+    },
     contentCount: snapshot.contents.length,
     stats: committed.stats,
     job,

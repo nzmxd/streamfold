@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import type { WebContents } from 'electron'
 import {
+  __browserWorkspaceLeaseTest,
   __xiaohongshuApiTransportTest,
 } from './browser-manager'
 import {
@@ -81,7 +82,10 @@ function emitJsonCapture(
       url,
       status: 200,
       mimeType: contentType,
-      headers: { 'content-type': contentType }
+      headers: new Proxy({}, {
+        ownKeys: () => { throw new Error('response headers must not be enumerated') },
+        get: () => { throw new Error('response headers must not be read') }
+      })
     }
   })
   if (finish) finishJsonCapture(debuggerApi, requestId, body)
@@ -95,6 +99,26 @@ function finishJsonCapture(debuggerApi: FakeDebugger, requestId: string, body: s
 }
 
 describe('BrowserManager Xiaohongshu API transport', () => {
+  it('disposes only background-created workspaces after their final API lease', () => {
+    const background = { foregroundRequested: false, apiLeaseCount: 0 }
+    __browserWorkspaceLeaseTest.begin(background)
+    __browserWorkspaceLeaseTest.begin(background)
+    expect(__browserWorkspaceLeaseTest.end(background)).toBe(false)
+    expect(__browserWorkspaceLeaseTest.end(background)).toBe(true)
+
+    const foreground = { foregroundRequested: true, apiLeaseCount: 0 }
+    __browserWorkspaceLeaseTest.begin(foreground)
+    expect(__browserWorkspaceLeaseTest.end(foreground)).toBe(false)
+  })
+
+  it('retains a background workspace promoted for interactive login', () => {
+    const workspace = { foregroundRequested: false, apiLeaseCount: 0 }
+    __browserWorkspaceLeaseTest.begin(workspace)
+    __browserWorkspaceLeaseTest.promote(workspace)
+    expect(workspace.foregroundRequested).toBe(true)
+    expect(__browserWorkspaceLeaseTest.end(workspace)).toBe(false)
+  })
+
   it('uses a fixed page-origin JSON request without page element access', async () => {
     const executeJavaScript = vi.fn(async (_source: string) => ({
       status: 200,
@@ -117,6 +141,24 @@ describe('BrowserManager Xiaohongshu API transport', () => {
     expect(source).toContain("credentials: 'include'")
     expect(source).toContain("headers: { Accept: 'application/json' }")
     expect(source).not.toMatch(/document|querySelector|innerText|textContent|outerHTML|innerHTML/)
+  })
+
+  it('allows the fixed read-only user profile endpoint used for avatar metadata', async () => {
+    const executeJavaScript = vi.fn(async () => ({
+      status: 200,
+      url: `${origin}${XIAOHONGSHU_API_ENDPOINTS.userInfo}`,
+      contentType: 'application/json',
+      text: JSON.stringify({ code: 0, data: { redId: '5605904194' } })
+    }))
+    await expect(__xiaohongshuApiTransportTest.fetchPageJson(
+      {
+        executeJavaScript,
+        getURL: () => `${origin}/new/home`,
+        isDestroyed: () => false
+      },
+      XIAOHONGSHU_API_ENDPOINTS.userInfo,
+      100
+    )).resolves.toMatchObject({ status: 200 })
   })
 
   it('rejects non-whitelisted endpoints, non-official pages and non-JSON responses', async () => {

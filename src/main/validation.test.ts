@@ -22,6 +22,17 @@ describe('IPC validation', () => {
       alias: '  工作号  ',
       syncMode: 'profile_only'
     })).toEqual({ platformId: 'weibo', alias: '工作号', syncMode: 'profile_only' })
+    expect(parseCreateAccount({
+      platformId: 'xiaohongshu',
+      syncMode: 'profile_only'
+    })).toEqual({ platformId: 'xiaohongshu', syncMode: 'profile_only' })
+    expect(parseCreateAccount({
+      platformId: 'xiaohongshu',
+      alias: '   ',
+      syncMode: 'profile_only'
+    })).toEqual({ platformId: 'xiaohongshu', alias: '', syncMode: 'profile_only' })
+    expect(parseUpdateAccount({ id: 'account', alias: '   ' }))
+      .toEqual({ id: 'account', alias: '' })
   })
 
   it('rejects unknown fields when their values are invalid', () => {

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 5
+export const CURRENT_SCHEMA_VERSION = 6
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -29,6 +29,10 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 5) {
     inTransaction(db, () => migrateV4ToV5(db))
+    version = 5
+  }
+  if (version < 6) {
+    inTransaction(db, () => migrateV5ToV6(db))
   }
 }
 
@@ -310,6 +314,17 @@ function migrateV4ToV5(db: DatabaseSync): void {
 
     PRAGMA user_version = 5;
   `)
+}
+
+function migrateV5ToV6(db: DatabaseSync): void {
+  // Existing aliases were explicitly entered in releases that predate automatic
+  // profile naming, so preserve every one of them as a user customization.
+  addColumn(db, 'accounts', 'alias_customized INTEGER NOT NULL DEFAULT 1 CHECK (alias_customized IN (0, 1))')
+  addColumn(db, 'accounts', 'avatar_cache_key TEXT')
+  addColumn(db, 'accounts', 'avatar_mime TEXT')
+  addColumn(db, 'accounts', "bio TEXT NOT NULL DEFAULT ''")
+  addColumn(db, 'accounts', 'creator_level INTEGER')
+  db.exec('PRAGMA user_version = 6;')
 }
 
 function addColumn(db: DatabaseSync, table: string, definition: string): void {

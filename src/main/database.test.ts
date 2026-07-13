@@ -42,6 +42,48 @@ describe('SocialDatabase', () => {
     expect(database.listGroups()[0]?.accountCount).toBe(1)
   })
 
+  it('uses the verified profile name until the user customizes a local alias', () => {
+    const account = database.createAccount({
+      platformId: 'xiaohongshu',
+      syncMode: 'profile_only'
+    })
+    expect(account).toMatchObject({ alias: '', aliasCustomized: false, avatarUrl: '' })
+
+    const verified = database.applyManagedIdentity(account.id, {
+      remoteId: '5605904194',
+      remoteName: '平台昵称',
+      avatarCacheKey: 'abc123.webp',
+      avatarMime: 'image/webp',
+      bio: '本人简介',
+      creatorLevel: 3
+    }, '2026-07-13T07:00:00.000Z')
+    expect(verified).toMatchObject({
+      alias: '平台昵称',
+      aliasCustomized: false,
+      bio: '本人简介',
+      creatorLevel: 3,
+      avatarUrl: `app://shell/media/avatars/${account.id}/abc123.webp`
+    })
+
+    expect(database.updateAccount({ id: account.id, alias: verified.alias, note: '只改备注' }))
+      .toMatchObject({ alias: '平台昵称', aliasCustomized: false, note: '只改备注' })
+    expect(database.updateAccount({ id: account.id, alias: '' }))
+      .toMatchObject({ alias: '', aliasCustomized: false })
+    expect(database.applyManagedIdentity(account.id, {
+      remoteId: '5605904194', remoteName: '新平台昵称'
+    }, '2026-07-13T07:01:00.000Z')).toMatchObject({
+      alias: '新平台昵称', aliasCustomized: false, remoteName: '新平台昵称'
+    })
+
+    expect(database.updateAccount({ id: account.id, alias: '我的运营号' }))
+      .toMatchObject({ alias: '我的运营号', aliasCustomized: true })
+    expect(database.applyManagedIdentity(account.id, {
+      remoteId: '5605904194', remoteName: '平台再次改名'
+    }, '2026-07-13T07:02:00.000Z')).toMatchObject({
+      alias: '我的运营号', aliasCustomized: true, remoteName: '平台再次改名'
+    })
+  })
+
   it('deleting a group does not delete its account', () => {
     const group = database.createGroup({ name: '工作账号', color: '#36a76c' })
     const account = database.createAccount({
@@ -208,6 +250,28 @@ describe('SocialDatabase', () => {
     const content = database.listContents({ accountId: account.id })[0]
     expect(content?.remoteId).toBe('content-a')
     expect(content?.latestSnapshot?.views).toBe(120)
+    expect(database.getAccount(account.id)?.latestSnapshot).toMatchObject({
+      accountId: account.id,
+      followers: 12,
+      following: 3,
+      capturedAt: payload.capturedAt
+    })
+  })
+
+  it('attaches only the newest account snapshot when listing accounts', () => {
+    const account = createAccount(database, '账号快照')
+    const first = importPayload('snapshot-owner', 'snapshot-content')
+    database.commitImport(first, importMetadata(account.id))
+    const second: NormalizedImportPayload = {
+      ...first,
+      capturedAt: '2026-07-14T08:00:00.000Z',
+      profile: { ...first.profile!, followers: 99 },
+      contents: []
+    }
+    database.commitImport(second, importMetadata(account.id))
+
+    expect(database.listAccounts().find((item) => item.id === account.id)?.latestSnapshot)
+      .toMatchObject({ followers: 99, capturedAt: second.capturedAt })
   })
 
   it('commits managed sync data idempotently without creating a file import batch', () => {
@@ -263,6 +327,36 @@ describe('SocialDatabase', () => {
       jobCount: 2
     })
     expect(database.getPluginState('xiaohongshu-session-api')).toMatchObject({ successCount: 2 })
+  })
+
+  it('keeps an automatic alias and current profile fields in sync with managed profile data', () => {
+    const created = database.createAccount({ platformId: 'xiaohongshu', syncMode: 'recent_20' })
+    database.applyManagedIdentity(created.id, {
+      remoteId: 'auto-owner', remoteName: '初始昵称'
+    }, '2026-07-13T07:00:00.000Z')
+    const account = database.updateAccount({ id: created.id, syncEnabled: true })
+    const payload = importPayload('auto-owner', 'auto-note')
+    payload.profile = {
+      ...payload.profile!,
+      remoteName: '同步后的昵称',
+      avatarCacheKey: 'def456.png',
+      avatarMime: 'image/png',
+      bio: '同步后的简介',
+      creatorLevel: 5
+    }
+    const metadata = managedSyncMetadata(database, account.id, '2026-07-13T08:00:01.000Z')
+    database.markManagedSyncStarted(account.id, '2026-07-13T08:00:00.000Z')
+    database.commitManagedSync(payload, metadata)
+
+    expect(database.getAccount(account.id)).toMatchObject({
+      alias: '同步后的昵称',
+      aliasCustomized: false,
+      remoteName: '同步后的昵称',
+      avatarUrl: `app://shell/media/avatars/${account.id}/def456.png`,
+      bio: '同步后的简介',
+      creatorLevel: 5,
+      latestSnapshot: { followers: 12, following: 3 }
+    })
   })
 
   it('rejects a managed identity mismatch atomically and records a sanitized failure state', () => {
@@ -467,13 +561,18 @@ describe('SocialDatabase migrations', () => {
 
     database = new SocialDatabase(path)
 
-    expect(database.getSchemaVersion()).toBe(5)
+    expect(database.getSchemaVersion()).toBe(6)
     expect(database.getAccount('legacy-account')).toMatchObject({
       status: 'paused',
       connectionStatus: 'pending',
       ownershipStatus: 'unconfirmed',
       syncEnabled: false,
-      syncStatus: 'idle'
+      syncStatus: 'idle',
+      aliasCustomized: true,
+      avatarUrl: '',
+      bio: '',
+      creatorLevel: null,
+      latestSnapshot: null
     })
     expect(database.getStorageCounts()).toMatchObject({
       accountCount: 1,
@@ -501,7 +600,7 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(5)
+    expect(database.getSchemaVersion()).toBe(6)
     expect(database.getAccount(account.id)).toMatchObject({
       ownershipStatus: 'user_confirmed',
       ownershipConfirmedAt: '2026-07-01T00:00:00.000Z',
@@ -530,7 +629,7 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(5)
+    expect(database.getSchemaVersion()).toBe(6)
     expect(database.getAccount(account.id)).toMatchObject({
       connectionStatus: 'ready', ownershipStatus: 'user_confirmed', syncEnabled: false
     })
@@ -588,6 +687,36 @@ describe('SocialDatabase migrations', () => {
     expect(database.getPluginState('xiaohongshu-managed-browser')).toBeNull()
     expect(database.getPluginState('generic-file-import')).toBeNull()
   })
+
+  it('preserves existing aliases and adds empty profile fields when migrating v5 to v6', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v5.sqlite')
+    database = new SocialDatabase(path)
+    const account = createAccount(database, '历史本地别名')
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    previous.exec(`
+      ALTER TABLE accounts DROP COLUMN creator_level;
+      ALTER TABLE accounts DROP COLUMN bio;
+      ALTER TABLE accounts DROP COLUMN avatar_mime;
+      ALTER TABLE accounts DROP COLUMN avatar_cache_key;
+      ALTER TABLE accounts DROP COLUMN alias_customized;
+      PRAGMA user_version = 5;
+    `)
+    previous.close()
+
+    database = new SocialDatabase(path)
+    expect(database.getSchemaVersion()).toBe(6)
+    expect(database.getAccount(account.id)).toMatchObject({
+      alias: '历史本地别名',
+      aliasCustomized: true,
+      avatarUrl: '',
+      bio: '',
+      creatorLevel: null
+    })
+  })
 })
 
 describe('SocialDatabase backup images', () => {
@@ -607,6 +736,12 @@ describe('SocialDatabase backup images', () => {
     const account = database.createAccount({
       platformId: 'xiaohongshu', alias: '备份账号', syncMode: 'profile_only'
     })
+    database.applyManagedIdentity(account.id, {
+      remoteId: 'remote-backup',
+      remoteName: '备份账号',
+      avatarCacheKey: 'abc123.webp',
+      avatarMime: 'image/webp'
+    }, '2026-07-13T07:00:00.000Z')
     database.updateAccount({ id: account.id, groupIds: [group.id] })
     database.commitImport(importPayload('remote-backup', 'content-backup'), importMetadata(account.id))
     const image = database.createBackupImage()
@@ -624,6 +759,7 @@ describe('SocialDatabase backup images', () => {
       alias: '备份账号',
       groupIds: [group.id],
       connectionStatus: 'pending',
+      avatarUrl: '',
       syncEnabled: false,
       syncStatus: 'idle'
     })

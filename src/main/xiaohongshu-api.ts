@@ -2,6 +2,7 @@ const CREATOR_ORIGIN = 'https://creator.xiaohongshu.com'
 
 export const XIAOHONGSHU_API_ENDPOINTS = Object.freeze({
   personalInfo: '/api/galaxy/creator/home/personal_info',
+  userInfo: '/api/galaxy/user/info',
   accountStats: '/api/galaxy/creator/data/note_detail_new',
   noteAnalyzeList: '/api/galaxy/creator/datacenter/note/analyze/list',
   postedNotes: '/api/galaxy/v2/creator/note/user/posted',
@@ -70,11 +71,17 @@ export interface XiaohongshuIdentity {
 }
 
 export interface XiaohongshuProfile extends XiaohongshuIdentity {
+  avatarUrl: string | null
   followers: number
   following: number
   likesAndFavorites: number
   bio: string
   creatorLevel: number | null
+}
+
+export interface XiaohongshuUserInfo extends XiaohongshuIdentity {
+  avatarUrl: string | null
+  bio: string
 }
 
 export interface XiaohongshuMetricPeriod {
@@ -120,8 +127,23 @@ export class XiaohongshuApi {
   constructor(private readonly transport: XiaohongshuApiTransport) {}
 
   async getProfile(): Promise<XiaohongshuProfile> {
-    const response = await this.transport.directJson(XIAOHONGSHU_API_ENDPOINTS.personalInfo)
-    return parsePersonalInfo(response)
+    const personal = parsePersonalInfo(
+      await this.transport.directJson(XIAOHONGSHU_API_ENDPOINTS.personalInfo)
+    )
+    const user = parseUserInfo(
+      await this.transport.directJson(XIAOHONGSHU_API_ENDPOINTS.userInfo)
+    )
+    if (personal.remoteId !== user.remoteId) {
+      throw new XiaohongshuApiError(
+        'IDENTITY_MISMATCH',
+        '小红书资料接口返回了不一致的登录身份，已拒绝使用本次数据'
+      )
+    }
+    return {
+      ...personal,
+      avatarUrl: user.avatarUrl,
+      bio: personal.bio || user.bio
+    }
   }
 
   async getAccountMetrics(): Promise<XiaohongshuAccountMetrics> {
@@ -187,6 +209,7 @@ export function parsePersonalInfo(response: XiaohongshuJsonResponse): Xiaohongsh
   return {
     remoteId,
     remoteName: cleanString(record.name, 'personal_info.data.name', 80, false),
+    avatarUrl: null,
     followers: countValue(record.fans_count, 'personal_info.data.fans_count'),
     following: countValue(record.follow_count, 'personal_info.data.follow_count'),
     likesAndFavorites: countValue(record.faved_count, 'personal_info.data.faved_count'),
@@ -196,6 +219,19 @@ export function parsePersonalInfo(response: XiaohongshuJsonResponse): Xiaohongsh
     creatorLevel: grow?.level === undefined || grow.level === null
       ? null
       : countValue(grow.level, 'personal_info.data.grow_info.level')
+  }
+}
+
+export function parseUserInfo(response: XiaohongshuJsonResponse): XiaohongshuUserInfo {
+  const data = responseData(response, XIAOHONGSHU_API_ENDPOINTS.userInfo, MAX_DIRECT_RESPONSE_BYTES)
+  const record = objectValue(data, 'user_info.data')
+  return {
+    remoteId: cleanId(record.redId, 'user_info.data.redId'),
+    remoteName: cleanString(record.userName, 'user_info.data.userName', 80, false),
+    avatarUrl: safeAvatarUrl(record.userAvatar),
+    bio: record.userDesc === undefined || record.userDesc === null
+      ? ''
+      : cleanString(record.userDesc, 'user_info.data.userDesc', 1_000, true)
   }
 }
 
@@ -517,6 +553,24 @@ function cleanId(value: unknown, path: string): string {
   const id = String(value)
   if (!ID_RE.test(id)) malformed(`${path} 格式非法`)
   return id
+}
+
+function safeAvatarUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) return null
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase()
+    const officialHost = ['xhscdn.com', 'xiaohongshu.com'].some((root) =>
+      hostname === root || hostname.endsWith(`.${root}`)
+    )
+    if (
+      url.protocol !== 'https:' || !officialHost || url.username || url.password || url.port
+    ) return null
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return null
+  }
 }
 
 function countValue(value: unknown, path: string): number {

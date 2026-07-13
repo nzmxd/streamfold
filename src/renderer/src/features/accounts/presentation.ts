@@ -75,3 +75,10 @@ export function syncStatusLabel(status: SyncStatus): string {
   }
   return values[status]
 }
+
+export function accountDisplayName(
+  account: Pick<Account, 'alias' | 'remoteName'>,
+  platformName = '平台'
+): string {
+  return account.alias.trim() || account.remoteName.trim() || `${platformName}账号`
+}

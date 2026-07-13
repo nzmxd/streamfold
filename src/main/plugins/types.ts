@@ -3,6 +3,10 @@ import type { ContentSnapshot, ContentType } from '../../shared/content-contract
 export interface NormalizedImportProfile {
   remoteId: string
   remoteName: string
+  avatarCacheKey?: string | null
+  avatarMime?: string | null
+  bio?: string
+  creatorLevel?: number | null
   followers: number | null
   following: number | null
   contentCount: number | null

@@ -254,7 +254,7 @@ function closeEditGroupDialog(): void {
           <button type="button" aria-label="关闭添加账号窗口" :disabled="addBusy" @click="closeAddDialog">×</button>
         </div>
         <label>平台<select v-model="addForm.platformId"><option v-for="platform in store.platforms.value" :key="platform.id" :value="platform.id">{{ platform.name }}</option></select></label>
-        <label>本地别名<input v-model="addForm.alias" maxlength="40" required placeholder="例如：个人品牌号" /></label>
+        <label>本地备注名（可选）<input v-model="addForm.alias" maxlength="40" placeholder="留空后，绑定成功时将使用平台昵称" /></label>
         <label>默认同步范围<select v-model="addForm.syncMode"><option value="profile_only">仅账号资料与指标（推荐）</option><option value="recent_20">最近 20 条作品</option><option value="recent_100">最近 100 条作品</option><option value="disabled">不启用同步</option></select></label>
         <div class="modal-actions"><button class="button" :disabled="addBusy" type="button" @click="closeAddDialog">取消</button><button class="button primary" :disabled="addBusy" type="submit">{{ addBusy ? '创建中…' : '创建账号' }}</button></div>
       </form>

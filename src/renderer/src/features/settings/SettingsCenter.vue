@@ -7,7 +7,8 @@ import type {
   StorageOverview
 } from '../../../../shared/contracts'
 import { confirmDialog } from '../../ui/dialog'
-import { formatBytes, formatDate, formatNumber, messageOf } from '../shared/format'
+import { accountDisplayName } from '../accounts/presentation'
+import { formatBytes, formatDate, formatNumber, messageOf, platformLabel } from '../shared/format'
 
 const overview = ref<StorageOverview | null>(null)
 const accounts = ref<Account[]>([])
@@ -27,6 +28,10 @@ const restorePassword = ref('')
 const backupBusy = ref(false)
 const restoreBusy = ref(false)
 const backupResult = ref<EncryptedBackupResult | null>(null)
+
+function displayName(account: Account): string {
+  return accountDisplayName(account, platformLabel(account.platformId))
+}
 
 function safeFileName(value: string | null): string {
   if (!value) return '—'
@@ -86,7 +91,7 @@ async function exportData(): Promise<void> {
 async function clearAccountHistory(account: Account): Promise<void> {
   if (clearingAccountId.value) return
   const confirmed = await confirmDialog({
-    title: `清除“${account.alias}”的历史数据？`,
+    title: `清除“${displayName(account)}”的历史数据？`,
     description: '将删除这个账号已同步到本机的内容与统计历史，操作无法撤销。',
     details: ['账号、登录状态、分组和备注会保留', '需要留存时请先导出 JSON'],
     confirmLabel: '清除历史数据',
@@ -98,7 +103,7 @@ async function clearAccountHistory(account: Account): Promise<void> {
   success.value = ''
   try {
     await window.socialVault.content.clearAccount(account.id)
-    success.value = `已清空“${account.alias}”的内容、指标和同步历史。`
+    success.value = `已清空“${displayName(account)}”的内容、指标和同步历史。`
     await load()
   } catch (cause) {
     error.value = messageOf(cause)
@@ -194,7 +199,7 @@ onMounted(() => void load())
         <section class="feature-card setting-card">
           <div class="feature-card-head"><div><h2>导出数据</h2><p>导出用于归档或分析的数据文件</p></div></div>
           <form class="export-form" @submit.prevent="exportData">
-            <label><span>范围</span><select v-model="exportAccountId"><option value="">全部账号</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.alias }}</option></select></label>
+            <label><span>范围</span><select v-model="exportAccountId"><option value="">全部账号</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ displayName(account) }}</option></select></label>
             <label><span>格式</span><select v-model="exportFormat"><option value="json">JSON（账号、内容与快照）</option><option value="csv">CSV（内容表格）</option></select></label>
             <button class="button primary" :disabled="exporting" type="submit">{{ exporting ? '正在导出…' : '选择位置并导出' }}</button>
           </form>
@@ -230,7 +235,7 @@ onMounted(() => void load())
         <div class="feature-card-head"><div><h2>按账号管理历史数据</h2><p>清除内容、指标和同步游标；登录会话、账号备注及平台数据不受影响</p></div><span>{{ accounts.length }} 个账号</span></div>
         <div v-if="accounts.length === 0" class="compact-empty"><span>还没有本地账号</span></div>
         <div v-for="account in accounts" :key="account.id" class="data-account-row">
-          <div><strong>{{ account.alias }}</strong><small>{{ account.remoteName || '身份待确认' }} · 上次同步 {{ formatDate(account.lastSyncedAt, true) }}</small></div>
+          <div><strong>{{ displayName(account) }}</strong><small>{{ account.remoteName || '身份待确认' }} · 上次同步 {{ formatDate(account.lastSyncedAt, true) }}</small></div>
           <button class="button danger" :disabled="clearingAccountId !== null" @click="clearAccountHistory(account)">{{ clearingAccountId === account.id ? '正在清空…' : '清空历史数据' }}</button>
         </div>
       </section>

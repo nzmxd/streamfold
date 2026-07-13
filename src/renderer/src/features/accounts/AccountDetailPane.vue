@@ -12,8 +12,11 @@ import type {
   UpdateAccountInput
 } from '../../../../shared/contracts'
 import AccountContentWidget from '../content/AccountContentWidget.vue'
+import { formatNumber } from '../shared/format'
 import { confirmDialog } from '../../ui/dialog'
+import AccountAvatar from './AccountAvatar.vue'
 import {
+  accountDisplayName,
   connectionStatusLabel,
   ownershipStatusLabel,
   syncModeLabel,
@@ -47,6 +50,11 @@ const form = reactive({
   groupIds: [] as string[],
   syncMode: 'profile_only' as SyncMode,
   isDefault: false
+})
+
+const displayName = computed(() => {
+  const account = props.account
+  return account ? accountDisplayName(account, props.platform?.name) : ''
 })
 
 const syncAuthorizationReason = computed(() => {
@@ -192,7 +200,7 @@ async function syncOwnedData(): Promise<void> {
 async function disconnectAccount(): Promise<void> {
   if (!props.account || busy.value) return
   const confirmed = await confirmDialog({
-    title: `退出“${props.account.alias}”的登录？`,
+    title: `退出“${displayName.value}”的登录？`,
     description: '将清除这个账号浏览器的登录状态，稍后可以重新登录。',
     details: ['账号资料、备注与分组会保留', '内容与历史指标会保留'],
     confirmLabel: '退出登录',
@@ -212,7 +220,7 @@ async function disconnectAccount(): Promise<void> {
 async function purgeAccount(): Promise<void> {
   if (!props.account || busy.value) return
   const accountId = props.account.id
-  const alias = props.account.alias
+  const alias = displayName.value
   const confirmed = await confirmDialog({
     title: `永久删除“${alias}”？`,
     description: '这个操作无法撤销，但不会更改平台上的账号和内容。',
@@ -243,13 +251,19 @@ async function purgeAccount(): Promise<void> {
     <template v-else>
       <header class="account-head">
         <div class="account-identity">
-          <span class="avatar large">{{ platform?.shortName }}</span>
+          <AccountAvatar
+            class="large"
+            :src="account.avatarUrl"
+            :fallback="platform?.shortName"
+            :label="`${displayName}的头像`"
+          />
           <div>
             <div class="title-line">
-              <h2>{{ account.alias }}</h2>
+              <h2>{{ displayName }}</h2>
               <span v-if="account.isDefault" class="default-badge">默认</span>
             </div>
-            <p>{{ platform?.name }} · {{ connectionStatusLabel(account.connectionStatus) }} · {{ ownershipStatusLabel(account.ownershipStatus) }}</p>
+            <p>{{ platform?.name }} · {{ account.remoteName || '待绑定平台身份' }}</p>
+            <small v-if="account.remoteId" class="head-remote-id">账号 ID：{{ account.remoteId }}</small>
           </div>
         </div>
         <button class="button browser-primary" :disabled="busy" @click="openBrowserWindow">
@@ -265,6 +279,28 @@ async function purgeAccount(): Promise<void> {
       </nav>
 
       <div v-if="activeTab === 'overview'" class="detail-scroll">
+        <section class="profile-summary-card">
+          <div class="profile-summary-main">
+            <AccountAvatar
+              class="profile-avatar"
+              :src="account.avatarUrl"
+              :fallback="platform?.shortName"
+              :label="`${account.remoteName || displayName}的平台头像`"
+            />
+            <div class="profile-summary-copy">
+              <span class="eyebrow">{{ platform?.name }}平台资料</span>
+              <h3>{{ account.remoteName || '尚未同步平台资料' }}</h3>
+              <p class="profile-account-id">账号 ID：{{ account.remoteId || '—' }}</p>
+              <p class="profile-bio">{{ account.bio || '暂无简介' }}</p>
+            </div>
+          </div>
+          <dl class="profile-stat-list">
+            <div><dt>关注</dt><dd>{{ formatNumber(account.latestSnapshot?.following) }}</dd></div>
+            <div><dt>粉丝</dt><dd>{{ formatNumber(account.latestSnapshot?.followers) }}</dd></div>
+            <div><dt>累计获赞与收藏</dt><dd>{{ formatNumber(account.latestSnapshot?.likesAndFavoritesTotal) }}</dd></div>
+          </dl>
+        </section>
+
         <div class="metric-grid account-status-grid">
           <article>
             <span>连接状态</span><strong>{{ connectionStatusLabel(account.connectionStatus) }}</strong><small>{{ browserState?.windowOpen ? '浏览器窗口已打开' : '需要时可重新打开浏览器' }}</small>
@@ -284,7 +320,7 @@ async function purgeAccount(): Promise<void> {
           <div class="section-heading"><div><h3>使用步骤</h3><p>完成登录与身份核验后即可同步数据。</p></div></div>
           <ol class="steps">
             <li class="done"><b>1</b><div><strong>账号已添加</strong><span>可继续填写分组、标签和备注</span></div></li>
-            <li :class="{ done: browserState?.official }"><b>2</b><div><strong>完成平台登录</strong><span>{{ browserState?.official ? '登录页面已打开' : '请打开账号浏览器并登录' }}</span></div></li>
+            <li :class="{ done: account.connectionStatus === 'ready' }"><b>2</b><div><strong>完成平台登录</strong><span>{{ account.connectionStatus === 'ready' ? '当前登录会话可用' : '需要登录时会打开账号浏览器' }}</span></div></li>
             <li :class="{ done: account.ownershipStatus === 'plugin_verified' }"><b>3</b><div><strong>核验当前账号</strong><span>{{ account.ownershipStatus === 'plugin_verified' ? '当前账号已核验' : '登录后点击“核验当前账号”' }}</span></div></li>
             <li :class="{ done: Boolean(account.lastSyncedAt) }"><b>4</b><div><strong>同步账号数据</strong><span>{{ account.lastSyncedAt ? '已完成首次同步' : '选择同步范围后开始同步' }}</span></div></li>
           </ol>
@@ -294,14 +330,14 @@ async function purgeAccount(): Promise<void> {
             <div><h3>同步本人数据</h3><p>同步账号资料、作品列表和统计指标。</p></div>
             <button
               class="button primary"
-              :disabled="busy || account.platformId !== 'xiaohongshu' || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled || !browserState?.windowOpen"
+              :disabled="busy || account.platformId !== 'xiaohongshu' || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled"
               @click="syncOwnedData"
             >{{ busy ? '同步中…' : '立即同步' }}</button>
           </div>
           <p v-if="account.platformId !== 'xiaohongshu'" class="muted">该平台的数据同步功能仍在开发中。</p>
           <p v-else-if="account.ownershipStatus !== 'plugin_verified'" class="muted">请先登录账号，再到“浏览器”页签核验当前账号。</p>
           <p v-else-if="!account.syncEnabled" class="muted">请在“设置与备注”中启用数据同步。</p>
-          <p v-else-if="!browserState?.windowOpen" class="muted">请先打开账号浏览器。</p>
+          <p v-else class="muted">将自动使用该账号的登录会话；需要重新登录时会打开账号浏览器。</p>
           <p v-if="localMessage" class="success-message">{{ localMessage }}</p>
         </section>
       </div>
@@ -322,14 +358,13 @@ async function purgeAccount(): Promise<void> {
             <button
               v-if="account.platformId === 'xiaohongshu'"
               class="button large-action"
-              :disabled="busy || !browserState?.windowOpen"
-              :title="!browserState?.windowOpen ? '请先打开独立浏览器并登录小红书创作中心' : undefined"
+              :disabled="busy"
               @click="verifyLoginIdentity"
             >{{ busy ? '正在核验…' : '核验当前账号' }}</button>
             <button
               v-if="account.platformId === 'xiaohongshu'"
               class="button primary large-action"
-              :disabled="busy || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled || !browserState?.windowOpen"
+              :disabled="busy || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled"
               @click="syncOwnedData"
             >{{ busy ? '同步中…' : `同步账号数据（${syncModeLabel(account.syncMode)}）` }}</button>
             <p v-else class="muted">该平台的数据同步功能仍在开发中。</p>
@@ -352,7 +387,7 @@ async function purgeAccount(): Promise<void> {
 
       <form v-else class="detail-scroll settings-form" @submit.prevent="saveSettings">
         <div class="settings-grid">
-          <label>本地别名<input v-model="form.alias" maxlength="40" required /></label>
+          <label>本地备注名（可选）<input v-model="form.alias" maxlength="40" placeholder="留空时显示平台昵称" /></label>
           <label>标签<input v-model="form.tags" placeholder="使用逗号分隔，例如：工作, 重点" /></label>
         </div>
         <label>账号备注<textarea v-model="form.note" rows="4" maxlength="1000" placeholder="负责人、内容方向、登录说明等"></textarea></label>

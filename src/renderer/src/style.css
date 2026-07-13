@@ -87,6 +87,7 @@ h1, h2, h3, p { margin: 0; }
 .account-copy strong, .account-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-copy strong { font-size: var(--font-ui); line-height: var(--line-ui); }
 .account-copy small { color: #858c95; font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.account-copy .account-remote-id { color: #9aa1aa; font-size: var(--font-caption); line-height: var(--line-caption); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; }
 .status-dot.success { background: #34a66a; }
 .status-dot.warning { background: #eda03c; }
@@ -104,6 +105,7 @@ h1, h2, h3, p { margin: 0; }
 .title-line { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .title-line h2 { overflow: hidden; font-size: var(--font-title); line-height: var(--line-title); text-overflow: ellipsis; white-space: nowrap; }
 .account-identity p { margin-top: 5px; color: #818892; font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.head-remote-id { display: block; margin-top: 3px; color: #9299a2; font-size: var(--font-caption); line-height: var(--line-caption); }
 .default-badge, .read-only-badge { padding: 5px 8px; color: #276a4b; background: #e6f5ed; border-radius: 99px; font-size: var(--font-caption); line-height: var(--line-caption); }
 .tabs { display: flex; gap: 3px; margin-top: 18px; padding-bottom: 11px; border-bottom: 1px solid #e6e9ec; }
 .tabs button { min-height: 40px; padding: 8px 12px; border: 0; border-radius: 7px; color: #737b85; background: transparent; cursor: pointer; font-size: var(--font-ui); line-height: var(--line-ui); }

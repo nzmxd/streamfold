@@ -23,16 +23,16 @@ const syncModes = ['profile_only', 'recent_20', 'recent_100', 'disabled'] as con
 export function parseCreateAccount(value: unknown): CreateAccountInput {
   const record = asRecord(value)
   const platformId = asEnum(record.platformId, platformIds, '平台')
-  const alias = asText(record.alias, '本地别名', 1, 40)
   const syncMode = asEnum(record.syncMode, syncModes, '同步范围') as SyncMode
-  return { platformId, alias, syncMode }
+  if (record.alias === undefined) return { platformId, syncMode }
+  return { platformId, alias: asText(record.alias, '本地别名', 0, 40), syncMode }
 }
 
 export function parseUpdateAccount(value: unknown): UpdateAccountInput {
   const record = asRecord(value)
   const result: UpdateAccountInput = { id: asId(record.id) }
 
-  if (record.alias !== undefined) result.alias = asText(record.alias, '本地别名', 1, 40)
+  if (record.alias !== undefined) result.alias = asText(record.alias, '本地别名', 0, 40)
   if (record.note !== undefined) result.note = asText(record.note, '备注', 0, 1000)
   if (record.tags !== undefined) result.tags = asStringArray(record.tags, '标签', 20, 24)
   if (record.groupIds !== undefined) result.groupIds = asStringArray(record.groupIds, '分组', 50, 64)

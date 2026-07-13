@@ -8,6 +8,7 @@ import type {
   MetricValues,
   PlatformId
 } from '../../../../shared/contracts'
+import { accountDisplayName } from '../accounts/presentation'
 import { contentTypeLabel, delta, deltaLabel, formatDate, formatNumber, messageOf, platformLabel } from '../shared/format'
 import { contentQueryFromFilters, reconcileContentSelection } from './query'
 
@@ -146,7 +147,7 @@ onMounted(async () => {
 
     <form class="filter-bar" role="search" @submit.prevent="loadItems">
       <label class="filter-search"><span>⌕</span><input v-model="search" type="search" placeholder="搜索标题、正文摘要或标签" /></label>
-      <label><span>账号</span><select v-model="accountId"><option value="">全部账号</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.alias }}</option></select></label>
+      <label><span>账号</span><select v-model="accountId"><option value="">全部账号</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ accountDisplayName(account, platformLabel(account.platformId)) }}</option></select></label>
       <label><span>平台</span><select v-model="platformId"><option value="">全部平台</option><option value="xiaohongshu">小红书</option><option value="weibo">微博</option><option value="douyin">抖音</option><option value="zhihu">知乎</option></select></label>
       <label><span>类型</span><select v-model="type"><option value="">全部类型</option><option value="article">文章</option><option value="post">动态</option><option value="image">图文</option><option value="video">视频</option><option value="answer">回答</option></select></label>
       <label><span>开始日期</span><input v-model="from" type="date" :max="to || undefined" /></label>

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { Account, Group, PlatformDefinition } from '../../../../shared/contracts'
-import { accountHealthPresentation } from './presentation'
+import AccountAvatar from './AccountAvatar.vue'
+import { accountDisplayName, accountHealthPresentation } from './presentation'
 
 const props = defineProps<{
   accounts: Account[]
@@ -48,6 +49,10 @@ function platformOf(account: Account): PlatformDefinition | undefined {
   return props.platforms.find((platform) => platform.id === account.platformId)
 }
 
+function displayNameOf(account: Account): string {
+  return accountDisplayName(account, platformOf(account)?.name)
+}
+
 function countFor(value: string): number {
   if (value === 'all') return props.allAccounts.length
   if (value === 'ungrouped') return props.allAccounts.filter((item) => item.groupIds.length === 0).length
@@ -72,7 +77,7 @@ function countFor(value: string): number {
       <input
         :value="search"
         type="search"
-        placeholder="搜索别名、备注或标签"
+        placeholder="搜索名称、账号 ID、备注或标签"
         @input="emit('update:search', ($event.target as HTMLInputElement).value)"
       />
     </label>
@@ -145,14 +150,19 @@ function countFor(value: string): number {
           type="checkbox"
           :checked="selectedAccountIds.includes(account.id)"
           :disabled="batchBusy"
-          :aria-label="`选择${account.alias}`"
+          :aria-label="`选择${displayNameOf(account)}`"
           @change="emit('toggleAccount', account.id)"
         />
         <button class="account-row-main" @click="emit('select', account.id)">
-          <span class="avatar">{{ platformOf(account)?.shortName }}</span>
+          <AccountAvatar
+            :src="account.avatarUrl"
+            :fallback="platformOf(account)?.shortName"
+            :label="`${displayNameOf(account)}的头像`"
+          />
           <span class="account-copy">
-            <strong>{{ account.alias }}</strong>
+            <strong>{{ displayNameOf(account) }}</strong>
             <small>{{ platformOf(account)?.name }} · {{ account.remoteName || '待绑定身份' }}</small>
+            <small v-if="account.remoteId" class="account-remote-id">账号 ID：{{ account.remoteId }}</small>
           </span>
           <span class="status-dot" :class="accountHealthPresentation(account).tone" :title="accountHealthPresentation(account).label"></span>
         </button>

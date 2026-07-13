@@ -114,6 +114,7 @@ export function registerIpc(
   )))
   ipcMain.handle('accounts:disconnect', trusted(async (_event, value) => {
     const id = parseId(value)
+    if (services.xiaohongshuApi.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
     if (disconnectingAccounts.has(id)) throw new Error('账号正在断开')
     disconnectingAccounts.add(id)
     try {
@@ -125,32 +126,41 @@ export function registerIpc(
   }))
   ipcMain.handle('accounts:purge', trusted(async (_event, value) => {
     const id = parseId(value)
+    if (services.xiaohongshuApi.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理')
     disconnectingAccounts.add(id)
     try {
       await browser.disconnect(id)
+      database.disconnectAccount(id)
+      await browser.purgeAccountMedia(id)
       database.removeAccount(id)
     } finally {
       disconnectingAccounts.delete(id)
     }
   }))
   ipcMain.handle('accounts:verify-identity', trusted(async (_event, value) => {
+    const id = parseId(value)
+    if (disconnectingAccounts.has(id)) throw new Error('账号正在处理，请稍候')
     try {
-      return await services.xiaohongshuApi.verifyIdentity(parseId(value))
+      return await services.xiaohongshuApi.verifyIdentity(id)
     } finally {
       notifyAccountsChanged()
     }
   }))
   ipcMain.handle('accounts:confirm-identity', trusted(async (_event, value) => {
+    const input = parseConfirmApiIdentity(value)
+    if (disconnectingAccounts.has(input.accountId)) throw new Error('账号正在处理，请稍候')
     try {
-      return await services.xiaohongshuApi.confirmIdentity(parseConfirmApiIdentity(value))
+      return await services.xiaohongshuApi.confirmIdentity(input)
     } finally {
       notifyAccountsChanged()
     }
   }))
   ipcMain.handle('accounts:sync', trusted(async (_event, value) => {
+    const id = parseId(value)
+    if (disconnectingAccounts.has(id)) throw new Error('账号正在处理，请稍候')
     try {
-      return await services.xiaohongshuApi.sync(parseId(value))
+      return await services.xiaohongshuApi.sync(id)
     } finally {
       notifyAccountsChanged()
     }

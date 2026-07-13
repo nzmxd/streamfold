@@ -115,8 +115,13 @@ interface AccountRow {
   id: string
   platform_id: PlatformId
   alias: string
+  alias_customized: number
   remote_name: string
   remote_id: string | null
+  avatar_cache_key: string | null
+  avatar_mime: string | null
+  bio: string
+  creator_level: number | null
   status: AccountStatus
   connection_status: ConnectionStatus
   ownership_status: OwnershipStatus
@@ -168,6 +173,15 @@ interface SnapshotRow {
   shares: number | null
   favorites: number | null
   captured_at: string
+}
+
+interface AccountSnapshotRow extends SnapshotRow {
+  account_id: string
+  followers: number | null
+  following: number | null
+  content_count: number | null
+  views_total: number | null
+  likes_favorites_total: number | null
 }
 
 interface JobRow {
@@ -249,7 +263,7 @@ export class SocialDatabase {
       const now = new Date().toISOString()
       this.db.prepare(`
         UPDATE accounts SET connection_status = 'pending', status = 'pending', sync_enabled = 0,
-          sync_status = 'idle', cooldown_until = NULL,
+          sync_status = 'idle', cooldown_until = NULL, avatar_cache_key = NULL, avatar_mime = NULL,
           last_sync_error = '备份已恢复，请重新打开官方页面并核验登录身份', updated_at = ?
       `).run(now)
       this.recoverInterruptedJobs()
@@ -279,12 +293,13 @@ export class SocialDatabase {
 
   listAccounts(): Account[] {
     const rows = this.db.prepare('SELECT * FROM accounts ORDER BY updated_at DESC').all() as unknown as AccountRow[]
+    const latestSnapshots = this.latestAccountSnapshots()
     const groupStatement = this.db.prepare(
       'SELECT group_id FROM account_groups WHERE account_id = ? ORDER BY group_id'
     )
     return rows.map((row) => {
       const groups = groupStatement.all(row.id) as unknown as Array<{ group_id: string }>
-      return mapAccount(row, groups.map((item) => item.group_id))
+      return mapAccount(row, groups.map((item) => item.group_id), latestSnapshots.get(row.id) ?? null)
     })
   }
 
@@ -294,7 +309,7 @@ export class SocialDatabase {
     const groups = this.db.prepare(
       'SELECT group_id FROM account_groups WHERE account_id = ? ORDER BY group_id'
     ).all(id) as unknown as Array<{ group_id: string }>
-    return mapAccount(row, groups.map((item) => item.group_id))
+    return mapAccount(row, groups.map((item) => item.group_id), this.latestAccountSnapshot(id))
   }
 
   accountExists(id: string): boolean {
@@ -305,6 +320,8 @@ export class SocialDatabase {
     const id = randomUUID()
     const now = new Date().toISOString()
     const partition = `persist:social:${id}`
+    const alias = input.alias ?? ''
+    const aliasCustomized = alias.length > 0
     // A newly-created account has neither a verified identity nor a ready login
     // connection. Synchronization is an explicit, per-account authorization that
     // can only be granted after both conditions have been established.
@@ -317,20 +334,32 @@ export class SocialDatabase {
     })
     this.db.prepare(`
       INSERT INTO accounts (
-        id, platform_id, alias, remote_name, remote_id, status, connection_status,
+        id, platform_id, alias, alias_customized, remote_name, remote_id, status, connection_status,
         ownership_status, sync_enabled, sync_status, cooldown_until, last_sync_error,
         ownership_confirmed_at, identity_verified_at, note, tags_json, session_partition, sync_mode, is_default,
         created_at, updated_at, last_synced_at
-      ) VALUES (?, ?, ?, '', NULL, ?, 'pending', 'unconfirmed', ?, 'idle', NULL, '',
+      ) VALUES (?, ?, ?, ?, '', NULL, ?, 'pending', 'unconfirmed', ?, 'idle', NULL, '',
         NULL, NULL, '', '[]', ?, ?, 0, ?, ?, NULL)
-    `).run(id, input.platformId, input.alias, status, syncEnabled ? 1 : 0, partition, input.syncMode, now, now)
+    `).run(
+      id, input.platformId, alias, aliasCustomized ? 1 : 0, status,
+      syncEnabled ? 1 : 0, partition, input.syncMode, now, now
+    )
     return requireAccount(this.getAccount(id))
   }
 
   updateAccount(input: UpdateAccountInput): Account {
     const current = requireAccount(this.getAccount(input.id))
+    const alias = input.alias ?? current.alias
+    const aliasCustomized = input.alias === undefined
+      ? current.aliasCustomized
+      : input.alias.length === 0
+        ? false
+        : input.alias === current.alias
+          ? current.aliasCustomized
+          : true
     const next = {
-      alias: input.alias ?? current.alias,
+      alias,
+      aliasCustomized,
       note: input.note ?? current.note,
       tags: input.tags ?? current.tags,
       syncEnabled: input.syncEnabled ?? current.syncEnabled,
@@ -352,10 +381,11 @@ export class SocialDatabase {
         this.db.prepare('UPDATE accounts SET is_default = 0 WHERE platform_id = ?').run(current.platformId)
       }
       this.db.prepare(`
-        UPDATE accounts SET alias = ?, note = ?, tags_json = ?, status = ?, sync_enabled = ?,
+        UPDATE accounts SET alias = ?, alias_customized = ?, note = ?, tags_json = ?, status = ?, sync_enabled = ?,
           sync_mode = ?, is_default = ?, updated_at = ? WHERE id = ?
       `).run(
         next.alias,
+        next.aliasCustomized ? 1 : 0,
         next.note,
         JSON.stringify(next.tags),
         status,
@@ -452,7 +482,14 @@ export class SocialDatabase {
 
   applyManagedIdentity(
     accountId: string,
-    identity: { remoteId: string; remoteName: string },
+    identity: {
+      remoteId: string
+      remoteName: string
+      avatarCacheKey?: string | null
+      avatarMime?: string | null
+      bio?: string
+      creatorLevel?: number | null
+    },
     verifiedAt: string
   ): Account {
     const account = requireAccount(this.getAccount(accountId))
@@ -476,11 +513,37 @@ export class SocialDatabase {
       syncStatus: 'idle',
       syncMode: account.syncMode
     })
+    const hasAvatarCacheKey = identity.avatarCacheKey !== undefined
+    const hasAvatarMime = identity.avatarMime !== undefined
+    const hasBio = identity.bio !== undefined
+    const hasCreatorLevel = identity.creatorLevel !== undefined
     this.db.prepare(`
-      UPDATE accounts SET remote_id = ?, remote_name = ?, ownership_status = 'plugin_verified',
+      UPDATE accounts SET remote_id = ?, remote_name = ?,
+        alias = CASE WHEN alias_customized = 0 THEN ? ELSE alias END,
+        avatar_cache_key = CASE WHEN ? = 1 THEN ? ELSE avatar_cache_key END,
+        avatar_mime = CASE WHEN ? = 1 THEN ? ELSE avatar_mime END,
+        bio = CASE WHEN ? = 1 THEN ? ELSE bio END,
+        creator_level = CASE WHEN ? = 1 THEN ? ELSE creator_level END,
+        ownership_status = 'plugin_verified',
         identity_verified_at = ?, connection_status = 'ready', status = ?, sync_status = 'idle',
         cooldown_until = NULL, last_sync_error = '', updated_at = ? WHERE id = ?
-    `).run(identity.remoteId, identity.remoteName, verifiedAt, status, verifiedAt, accountId)
+    `).run(
+      identity.remoteId,
+      identity.remoteName,
+      identity.remoteName,
+      hasAvatarCacheKey ? 1 : 0,
+      identity.avatarCacheKey ?? null,
+      hasAvatarMime ? 1 : 0,
+      identity.avatarMime ?? null,
+      hasBio ? 1 : 0,
+      identity.bio ?? '',
+      hasCreatorLevel ? 1 : 0,
+      identity.creatorLevel ?? null,
+      verifiedAt,
+      status,
+      verifiedAt,
+      accountId
+    )
     return requireAccount(this.getAccount(accountId))
   }
 
@@ -594,6 +657,28 @@ export class SocialDatabase {
     this.db.prepare('DELETE FROM groups WHERE id = ?').run(id)
   }
 
+  private latestAccountSnapshots(accountId?: string): Map<string, AccountSnapshot> {
+    const rows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT account_id, followers, following, content_count, views_total,
+          likes_favorites_total, views, likes, comments, shares, favorites, captured_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY account_id ORDER BY captured_at DESC, id DESC
+          ) AS snapshot_rank
+        FROM account_snapshots
+        ${accountId ? 'WHERE account_id = ?' : ''}
+      )
+      SELECT account_id, followers, following, content_count, views_total,
+        likes_favorites_total, views, likes, comments, shares, favorites, captured_at
+      FROM ranked WHERE snapshot_rank = 1
+    `).all(...(accountId ? [accountId] : [])) as unknown as AccountSnapshotRow[]
+    return new Map(rows.map((row) => [row.account_id, mapAccountSnapshot(row)]))
+  }
+
+  private latestAccountSnapshot(accountId: string): AccountSnapshot | null {
+    return this.latestAccountSnapshots(accountId).get(accountId) ?? null
+  }
+
   listAccountSnapshots(accountId?: string): AccountSnapshot[] {
     const rows = this.db.prepare(`
       SELECT account_id, followers, following, content_count, views_total, likes_favorites_total,
@@ -601,34 +686,8 @@ export class SocialDatabase {
       FROM account_snapshots
       ${accountId ? 'WHERE account_id = ?' : ''}
       ORDER BY captured_at ASC
-    `).all(...(accountId ? [accountId] : [])) as unknown as Array<{
-      account_id: string
-      followers: number | null
-      following: number | null
-      content_count: number | null
-      views_total: number | null
-      likes_favorites_total: number | null
-      views: number | null
-      likes: number | null
-      comments: number | null
-      shares: number | null
-      favorites: number | null
-      captured_at: string
-    }>
-    return rows.map((row) => ({
-      accountId: row.account_id,
-      followers: row.followers,
-      following: row.following,
-      contentCount: row.content_count,
-      viewsTotal: row.views_total,
-      likesAndFavoritesTotal: row.likes_favorites_total,
-      views: row.views,
-      likes: row.likes,
-      comments: row.comments,
-      shares: row.shares,
-      favorites: row.favorites,
-      capturedAt: row.captured_at
-    }))
+    `).all(...(accountId ? [accountId] : [])) as unknown as AccountSnapshotRow[]
+    return rows.map(mapAccountSnapshot)
   }
 
   listContents(query: ContentQuery = {}): ContentSummary[] {
@@ -775,12 +834,31 @@ export class SocialDatabase {
         syncStatus: 'idle',
         syncMode: account.syncMode
       })
+      const hasAvatarCacheKey = profile.avatarCacheKey !== undefined
+      const hasAvatarMime = profile.avatarMime !== undefined
+      const hasBio = profile.bio !== undefined
+      const hasCreatorLevel = profile.creatorLevel !== undefined
       this.db.prepare(`
-        UPDATE accounts SET remote_name = ?, identity_verified_at = ?, sync_status = 'idle', cooldown_until = NULL,
+        UPDATE accounts SET remote_name = ?,
+          alias = CASE WHEN alias_customized = 0 THEN ? ELSE alias END,
+          avatar_cache_key = CASE WHEN ? = 1 THEN ? ELSE avatar_cache_key END,
+          avatar_mime = CASE WHEN ? = 1 THEN ? ELSE avatar_mime END,
+          bio = CASE WHEN ? = 1 THEN ? ELSE bio END,
+          creator_level = CASE WHEN ? = 1 THEN ? ELSE creator_level END,
+          identity_verified_at = ?, sync_status = 'idle', cooldown_until = NULL,
           last_sync_error = '', status = ?, last_synced_at = ?,
           updated_at = ? WHERE id = ?
       `).run(
         profile.remoteName,
+        profile.remoteName,
+        hasAvatarCacheKey ? 1 : 0,
+        profile.avatarCacheKey ?? null,
+        hasAvatarMime ? 1 : 0,
+        profile.avatarMime ?? null,
+        hasBio ? 1 : 0,
+        profile.bio ?? '',
+        hasCreatorLevel ? 1 : 0,
+        profile.creatorLevel ?? null,
         metadata.finishedAt,
         status,
         payload.capturedAt,
@@ -1264,7 +1342,7 @@ export class SocialDatabase {
       const owned = contents.filter((content) => content.accountId === account.id)
       return {
         accountId: account.id,
-        accountAlias: account.alias,
+        accountAlias: localAccountName(account),
         platformId: account.platformId,
         contentCount: owned.length,
         views: sum(owned.map((content) => content.latestSnapshot?.views)),
@@ -1299,11 +1377,12 @@ export class SocialDatabase {
     const imported = this.db.prepare('SELECT MAX(created_at) AS last_at FROM import_batches').get() as unknown as { last_at: string | null }
     const reminders: DashboardOverview['reminders'] = []
     for (const account of accounts) {
+      const accountName = localAccountName(account)
       if (account.connectionStatus === 'expired' || account.connectionStatus === 'mismatch') {
         reminders.push({
           id: `connection:${account.id}`,
           tone: 'danger',
-          title: `${account.alias} 需要重新连接`,
+          title: `${accountName} 需要重新连接`,
           detail: account.connectionStatus === 'expired' ? '登录会话已过期' : '当前身份与绑定账号不一致',
           accountId: account.id
         })
@@ -1311,7 +1390,7 @@ export class SocialDatabase {
         reminders.push({
           id: `disconnected:${account.id}`,
           tone: 'info',
-          title: `${account.alias} 已断开`,
+          title: `${accountName} 已断开`,
           detail: '历史数据仍保留在本机',
           accountId: account.id
         })
@@ -1320,7 +1399,7 @@ export class SocialDatabase {
         reminders.push({
           id: `sync:${account.id}`,
           tone: 'warning',
-          title: `${account.alias} 同步失败`,
+          title: `${accountName} 同步失败`,
           detail: account.lastSyncError || '请检查插件和登录状态',
           accountId: account.id
         })
@@ -1328,7 +1407,7 @@ export class SocialDatabase {
         reminders.push({
           id: `cooldown:${account.id}`,
           tone: 'warning',
-          title: `${account.alias} 处于冷却期`,
+          title: `${accountName} 处于冷却期`,
           detail: account.cooldownUntil ? `恢复时间：${account.cooldownUntil}` : '稍后可再次同步',
           accountId: account.id
         })
@@ -1455,7 +1534,11 @@ export class SocialDatabase {
   }
 }
 
-function mapAccount(row: AccountRow, groupIds: string[]): Account {
+function mapAccount(
+  row: AccountRow,
+  groupIds: string[],
+  latestSnapshot: AccountSnapshot | null
+): Account {
   const syncEnabled = Boolean(row.sync_enabled)
   const status = deriveAccountStatus({
     connectionStatus: row.connection_status,
@@ -1467,8 +1550,15 @@ function mapAccount(row: AccountRow, groupIds: string[]): Account {
     id: row.id,
     platformId: row.platform_id,
     alias: row.alias,
+    aliasCustomized: Boolean(row.alias_customized),
     remoteName: row.remote_name,
     remoteId: row.remote_id,
+    avatarUrl: row.avatar_cache_key
+      ? `app://shell/media/avatars/${encodeURIComponent(row.id)}/${encodeURIComponent(row.avatar_cache_key)}`
+      : '',
+    bio: row.bio,
+    creatorLevel: nullableNumber(row.creator_level),
+    latestSnapshot,
     status,
     connectionStatus: row.connection_status,
     ownershipStatus: row.ownership_status,
@@ -1487,6 +1577,23 @@ function mapAccount(row: AccountRow, groupIds: string[]): Account {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastSyncedAt: row.last_synced_at
+  }
+}
+
+function mapAccountSnapshot(row: AccountSnapshotRow): AccountSnapshot {
+  return {
+    accountId: row.account_id,
+    followers: nullableNumber(row.followers),
+    following: nullableNumber(row.following),
+    contentCount: nullableNumber(row.content_count),
+    viewsTotal: nullableNumber(row.views_total),
+    likesAndFavoritesTotal: nullableNumber(row.likes_favorites_total),
+    views: nullableNumber(row.views),
+    likes: nullableNumber(row.likes),
+    comments: nullableNumber(row.comments),
+    shares: nullableNumber(row.shares),
+    favorites: nullableNumber(row.favorites),
+    capturedAt: row.captured_at
   }
 }
 
@@ -1738,6 +1845,10 @@ function nullableNumber(value: number | null): number | null {
 
 function interactionValues(metrics: MetricValues | null | undefined): Array<number | null> {
   return metrics ? [metrics.likes, metrics.comments, metrics.shares, metrics.favorites] : []
+}
+
+function localAccountName(account: Pick<Account, 'alias' | 'remoteName'>): string {
+  return account.alias.trim() || account.remoteName.trim() || '平台账号'
 }
 
 function sum(values: Array<number | null | undefined>): number {

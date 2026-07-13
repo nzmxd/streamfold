@@ -49,7 +49,7 @@ export function useAccounts() {
         !account.groupIds.includes(selectedGroup.value)
       ) return false
       if (!keyword) return true
-      return [account.alias, account.remoteName, account.note, ...account.tags]
+      return [account.alias, account.remoteName, account.remoteId, account.bio, account.note, ...account.tags]
         .join(' ')
         .toLocaleLowerCase()
         .includes(keyword)
