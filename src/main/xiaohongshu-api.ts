@@ -1,4 +1,5 @@
 const CREATOR_ORIGIN = 'https://creator.xiaohongshu.com'
+const PUBLIC_NOTE_ORIGIN = 'https://www.xiaohongshu.com'
 
 export const XIAOHONGSHU_API_ENDPOINTS = Object.freeze({
   personalInfo: '/api/galaxy/creator/home/personal_info',
@@ -430,7 +431,7 @@ function parseContent(value: unknown): XiaohongshuContent {
       ? null
       : countValue(item.share_count, 'note.share_count'),
     type: contentType(item.type ?? item.note_type),
-    url: `${CREATOR_ORIGIN}/statistics/note-detail?noteId=${encodeURIComponent(id)}`
+    url: publicNoteUrl(id)
   }
 }
 
@@ -461,8 +462,34 @@ function parsePostedContent(value: unknown): XiaohongshuContent {
     commentCount: optionalCount(firstDefined(item, ['comment_count', 'comments']), 'posted_note.comment_count'),
     shareCount: optionalCount(firstDefined(item, ['share_count', 'shares']), 'posted_note.share_count'),
     type: contentType(firstDefined(item, ['type', 'note_type'])),
-    url: `${CREATOR_ORIGIN}/statistics/note-detail?noteId=${encodeURIComponent(id)}`
+    url: publicNoteUrl(
+      id,
+      safeXsecToken(firstDefined(item, ['xsec_token', 'xsecToken'])),
+      safeXsecSource(firstDefined(item, ['xsec_source', 'xsecSource']))
+    )
   }
+}
+
+function publicNoteUrl(id: string, token: string | null = null, source: string | null = null): string {
+  const url = new URL(`/explore/${encodeURIComponent(id)}`, PUBLIC_NOTE_ORIGIN)
+  if (token) {
+    url.searchParams.set('xsec_token', token)
+    if (source) url.searchParams.set('xsec_source', source)
+  }
+  return url.toString()
+}
+
+function safeXsecToken(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const token = value.trim()
+  if (token.length < 1 || token.length > 1_024 || /\s|[\u0000-\u001f\u007f]/u.test(token)) return null
+  return /^[A-Za-z0-9._~+/_=-]+$/.test(token) ? token : null
+}
+
+function safeXsecSource(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const source = value.trim()
+  return /^[A-Za-z0-9_-]{1,64}$/.test(source) ? source : null
 }
 
 function responseData(

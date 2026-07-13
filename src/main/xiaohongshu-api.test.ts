@@ -202,7 +202,7 @@ describe('XiaohongshuApi JSON-only adapter', () => {
         commentCount: 7,
         shareCount: 2,
         type: 'image',
-        url: `${origin}/statistics/note-detail?noteId=aaaaaaaaaaaaaaaaaaaaaaaa`
+        url: 'https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa'
       }]
     })
     expect(captureSignedJson).toHaveBeenNthCalledWith(
@@ -223,6 +223,22 @@ describe('XiaohongshuApi JSON-only adapter', () => {
   it('keeps a fresh note empty title without using a page fallback', () => {
     expect(parseAnalyzeCaptures([capture([note(undefined, { title: '', share_count: undefined })])], 1)[0])
       .toMatchObject({ title: '', shareCount: null })
+  })
+
+  it('stores the canonical public note URL and only preserves a validated xsec context', () => {
+    const signed = parsePostedCaptures([postedCapture([postedNote(undefined, {
+      xsec_token: 'abc_DEF-123',
+      xsec_source: 'pc_user'
+    })])], 1)[0]
+    expect(signed?.url).toBe(
+      'https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa?xsec_token=abc_DEF-123&xsec_source=pc_user'
+    )
+
+    const fallback = parsePostedCaptures([postedCapture([postedNote(undefined, {
+      xsec_token: 'bad token\nwith whitespace',
+      xsec_source: 'pc_user'
+    })])], 1)[0]
+    expect(fallback?.url).toBe('https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa')
   })
 
   it('merges the full posted-note list with available analytics by note id', async () => {

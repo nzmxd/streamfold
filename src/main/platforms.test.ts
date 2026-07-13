@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isOfficialUrl } from './platforms'
+import { isOfficialContentUrl, isOfficialUrl } from './platforms'
 
 describe('isOfficialUrl', () => {
   it('allows only explicitly reviewed HTTPS hosts', () => {
@@ -22,5 +22,40 @@ describe('isOfficialUrl', () => {
     expect(isOfficialUrl('weibo', 'https://user:pass@weibo.com/')).toBe(false)
     expect(isOfficialUrl('weibo', 'https://weibo.com:8443/')).toBe(false)
     expect(isOfficialUrl('weibo', 'https://127.0.0.1/')).toBe(false)
+  })
+})
+
+describe('isOfficialContentUrl', () => {
+  const noteId = 'aaaaaaaaaaaaaaaaaaaaaaaa'
+
+  it('accepts only the matching Xiaohongshu public note path and validated xsec context', () => {
+    expect(isOfficialContentUrl(
+      'xiaohongshu',
+      `https://www.xiaohongshu.com/explore/${noteId}`,
+      noteId
+    )).toBe(true)
+    expect(isOfficialContentUrl(
+      'xiaohongshu',
+      `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=abc_DEF-123&xsec_source=pc_user`,
+      noteId
+    )).toBe(true)
+  })
+
+  it('rejects mismatched posts, extra parameters and unsafe token values', () => {
+    expect(isOfficialContentUrl(
+      'xiaohongshu',
+      'https://www.xiaohongshu.com/explore/bbbbbbbbbbbbbbbbbbbbbbbb',
+      noteId
+    )).toBe(false)
+    expect(isOfficialContentUrl(
+      'xiaohongshu',
+      `https://www.xiaohongshu.com/explore/${noteId}?redirect=https://evil.test`,
+      noteId
+    )).toBe(false)
+    expect(isOfficialContentUrl(
+      'xiaohongshu',
+      `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=bad%20token`,
+      noteId
+    )).toBe(false)
   })
 })

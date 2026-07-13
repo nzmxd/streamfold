@@ -5,7 +5,7 @@ import type { BackupService } from './backup-service'
 import type { SocialDatabase } from './database'
 import type { ExportService } from './export-service'
 import type { PluginService } from './plugin-service'
-import { listPlatforms } from './platforms'
+import { isOfficialContentUrl, listPlatforms } from './platforms'
 import type { SettingsService } from './settings-service'
 import type { XiaohongshuApiService } from './xiaohongshu-api-service'
 import { isTrustedShellUrl } from './shell-security'
@@ -180,6 +180,13 @@ export function registerIpc(
 
   ipcMain.handle('content:list', trusted((_event, value) => database.listContents(parseContentQuery(value))))
   ipcMain.handle('content:detail', trusted((_event, value) => database.getContentDetail(parseId(value))))
+  ipcMain.handle('content:open-original', trusted(async (_event, value) => {
+    const content = database.getContentDetail(parseId(value))
+    if (!content.url || !isOfficialContentUrl(content.platformId, content.url, content.remoteId)) {
+      throw new Error('该内容没有可用的官方原帖链接')
+    }
+    return browser.openAt(content.accountId, content.url)
+  }))
   ipcMain.handle('content:update', trusted((_event, value) => database.updateContent(parseUpdateContent(value))))
   ipcMain.handle('content:clear-account', trusted((_event, value) => database.clearAccountData(parseId(value))))
   ipcMain.handle('analytics:overview', trusted((_event, value) => database.getAnalytics(parseAnalyticsQuery(value))))
@@ -254,6 +261,7 @@ export function unregisterIpc(): void {
     'browser:open',
     'content:list',
     'content:detail',
+    'content:open-original',
     'content:update',
     'content:clear-account',
     'analytics:overview',

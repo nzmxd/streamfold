@@ -6,15 +6,19 @@ import {
   app,
   BrowserWindow,
   dialog,
+  Menu,
   net,
   nativeTheme,
   protocol,
-  session
+  session,
+  Tray,
+  type NativeImage
 } from 'electron'
 import { BrowserManager } from './browser-manager'
 import { BackupService } from './backup-service'
 import { SocialDatabase } from './database'
 import { ExportService } from './export-service'
+import { loadApplicationIcon, loadTrayIcon } from './icon-assets'
 import { registerIpc, unregisterIpc } from './ipc'
 import { PluginService } from './plugin-service'
 import { ProfileMediaStore } from './profile-media'
@@ -27,6 +31,7 @@ const currentDir = dirname(fileURLToPath(import.meta.url))
 const smokeMode = process.env.SOCIAL_VAULT_SMOKE === '1'
 const reviewMode = process.env.SOCIAL_VAULT_REVIEW === '1'
 app.setName('Streamfold')
+if (process.platform === 'win32') app.setAppUserModelId('com.streamfold.app')
 if (smokeMode) app.disableHardwareAcceleration()
 if (smokeMode || reviewMode) {
   app.setPath('userData', join(tmpdir(), `social-vault-${smokeMode ? 'smoke' : 'review'}-${process.pid}`))
@@ -57,11 +62,11 @@ let database: SocialDatabase | null = null
 let browserManager: BrowserManager | null = null
 let profileMediaStore: ProfileMediaStore | null = null
 let smokeVisualAccountId: string | null = null
+let applicationIcon: NativeImage | null = null
+let tray: Tray | null = null
 
 app.on('second-instance', () => {
-  if (!mainWindow) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  mainWindow.focus()
+  showMainWindow()
 })
 
 app.on('certificate-error', (event, _contents, _url, _error, _certificate, callback) => {
@@ -79,12 +84,15 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.whenReady().then(async () => {
+  applicationIcon = loadApplicationIcon()
   profileMediaStore = new ProfileMediaStore(join(app.getPath('userData'), 'profile-media'))
   await registerShellProtocol(profileMediaStore)
   createWindow()
+  if (!smokeMode) createTray()
+  nativeTheme.on('updated', updateTrayIcon)
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    showMainWindow()
   })
 })
 
@@ -93,12 +101,47 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  nativeTheme.off('updated', updateTrayIcon)
+  tray?.destroy()
+  tray = null
   browserManager?.destroy()
   browserManager = null
   unregisterIpc()
   database?.close()
   database = null
 })
+
+function showMainWindow(): void {
+  if (!app.isReady()) return
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+function createTray(): void {
+  if (tray) return
+  const icon = loadTrayIcon()
+  if (!icon) return
+
+  tray = new Tray(icon)
+  tray.setToolTip('归页 · Streamfold')
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '显示归页', click: showMainWindow },
+    { type: 'separator' },
+    { label: '退出', click: () => app.quit() }
+  ]))
+  tray.on('click', showMainWindow)
+}
+
+function updateTrayIcon(): void {
+  if (!tray) return
+  const icon = loadTrayIcon()
+  if (icon) tray.setImage(icon)
+}
 
 function createWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) return
@@ -124,6 +167,7 @@ function createWindow(): void {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d1016' : '#f6f7fb',
     show: false,
     autoHideMenuBar: process.platform !== 'darwin',
+    ...(applicationIcon ? { icon: applicationIcon } : {}),
     ...(process.platform === 'darwin'
       ? {
           titleBarStyle: 'hiddenInset' as const,
@@ -175,7 +219,8 @@ function createWindow(): void {
       ? new URL('browser.html', process.env.ELECTRON_RENDERER_URL).toString()
       : 'app://browser/browser.html',
     !smokeMode,
-    profileMediaStore
+    profileMediaStore,
+    applicationIcon
   )
   const pluginService = new PluginService(database)
   pluginService.initialize()
@@ -318,10 +363,25 @@ function createWindow(): void {
         await browserManager?.purgeAccountMedia(smokeVisualAccountId)
         smokeVisualAccountId = null
       }
+      const smokeTrayIcon = loadTrayIcon()
+      let nativeTrayReady = false
+      if (smokeTrayIcon && !smokeTrayIcon.isEmpty()) {
+        const validationTray = new Tray(smokeTrayIcon)
+        nativeTrayReady = !validationTray.isDestroyed()
+        validationTray.destroy()
+      }
+      const iconResult = {
+        applicationReady: Boolean(applicationIcon && !applicationIcon.isEmpty()),
+        applicationSize: applicationIcon?.getSize() ?? null,
+        trayReady: Boolean(smokeTrayIcon && !smokeTrayIcon.isEmpty()),
+        traySize: smokeTrayIcon?.getSize() ?? null,
+        nativeTrayReady
+      }
       const smokePayload = {
         shell: shellResult,
         workspace: workspaceResult,
         partitionIsolation,
+        icons: iconResult,
         capturePath: capturePath ?? null
       }
       const shell = shellResult as {
@@ -340,7 +400,8 @@ function createWindow(): void {
       if (
         !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady ||
         !shell.appearanceReady || !shell.v04ApiReady ||
-        !workspace?.hasApi || !workspace.accountId || !workspace.appearanceReady || !partitionIsolation
+        !workspace?.hasApi || !workspace.accountId || !workspace.appearanceReady || !partitionIsolation ||
+        !iconResult.applicationReady || !iconResult.trayReady || !iconResult.nativeTrayReady
       ) {
         console.error(`SOCIAL_VAULT_SMOKE_FAILED ${JSON.stringify(smokePayload)}`)
         app.exit(1)

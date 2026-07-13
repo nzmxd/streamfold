@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 6
+export const CURRENT_SCHEMA_VERSION = 7
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -33,6 +33,10 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 6) {
     inTransaction(db, () => migrateV5ToV6(db))
+    version = 6
+  }
+  if (version < 7) {
+    inTransaction(db, () => migrateV6ToV7(db))
   }
 }
 
@@ -325,6 +329,20 @@ function migrateV5ToV6(db: DatabaseSync): void {
   addColumn(db, 'accounts', "bio TEXT NOT NULL DEFAULT ''")
   addColumn(db, 'accounts', 'creator_level INTEGER')
   db.exec('PRAGMA user_version = 6;')
+}
+
+function migrateV6ToV7(db: DatabaseSync): void {
+  db.exec(`
+    UPDATE contents
+    SET url = 'https://www.xiaohongshu.com/explore/' || remote_id
+    WHERE account_id IN (
+      SELECT id FROM accounts WHERE platform_id = 'xiaohongshu'
+    ) AND (
+      url = '' OR
+      url LIKE 'https://creator.xiaohongshu.com/statistics/note-detail?noteId=%'
+    );
+    PRAGMA user_version = 7;
+  `)
 }
 
 function addColumn(db: DatabaseSync, table: string, definition: string): void {

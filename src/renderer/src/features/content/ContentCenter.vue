@@ -21,6 +21,7 @@ const detail = ref<ContentDetail | null>(null)
 const loading = ref(true)
 const detailLoading = ref(false)
 const saving = ref(false)
+const openingOriginalId = ref<string | null>(null)
 const error = ref('')
 const success = ref('')
 const search = ref('')
@@ -111,6 +112,20 @@ async function saveMetadata(): Promise<void> {
   }
 }
 
+async function openOriginal(): Promise<void> {
+  if (!detail.value?.url || openingOriginalId.value) return
+  const targetId = detail.value.id
+  openingOriginalId.value = targetId
+  error.value = ''
+  try {
+    await window.socialVault.content.openOriginal(targetId)
+  } catch (cause) {
+    error.value = `无法打开原帖：${messageOf(cause)}`
+  } finally {
+    if (openingOriginalId.value === targetId) openingOriginalId.value = null
+  }
+}
+
 function metricValue(item: ContentSummary, key: MetricKey): number | null {
   return item.latestSnapshot?.[key] ?? null
 }
@@ -184,7 +199,21 @@ onMounted(async () => {
         <template v-else>
           <header class="content-detail-head">
             <div><span class="content-kind">{{ contentTypeLabel(detail.type) }}</span><h2>{{ detail.title || '未命名内容' }}</h2><p>{{ detail.accountAlias }} · {{ platformLabel(detail.platformId) }} · 发布于 {{ formatDate(detail.publishedAt) }}</p></div>
-            <span class="snapshot-time">最新快照 {{ formatDate(detail.latestSnapshot?.capturedAt, true) }}</span>
+            <div class="content-detail-actions">
+              <span class="snapshot-time">最新快照 {{ formatDate(detail.latestSnapshot?.capturedAt, true) }}</span>
+              <button
+                v-if="detail.url"
+                class="button content-original-button"
+                type="button"
+                :disabled="openingOriginalId === detail.id"
+                :aria-busy="openingOriginalId === detail.id"
+                :aria-label="`在账号浏览器中查看《${detail.title || '未命名内容'}》原帖`"
+                @click="openOriginal"
+              >
+                {{ openingOriginalId === detail.id ? '正在打开…' : '↗ 查看原帖' }}
+              </button>
+              <span v-else class="content-original-unavailable">暂无原帖链接</span>
+            </div>
           </header>
           <p v-if="detail.bodyExcerpt" class="content-excerpt">{{ detail.bodyExcerpt }}</p>
 

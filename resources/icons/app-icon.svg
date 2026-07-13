@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>归页 Streamfold 应用图标</title>
+  <desc>两层内容页向中心折叠汇入，表达账号归位、内容成册。</desc>
+  <defs>
+    <linearGradient id="surface" x1="176" y1="112" x2="880" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7B7CF4" />
+      <stop offset="0.48" stop-color="#5D5EE2" />
+      <stop offset="1" stop-color="#4546BE" />
+    </linearGradient>
+    <radialGradient id="light" cx="0" cy="0" r="1" gradientTransform="translate(250 176) rotate(46) scale(690 600)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.24" />
+      <stop offset="0.58" stop-color="#FFFFFF" stop-opacity="0.04" />
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <rect x="48" y="48" width="928" height="928" rx="224" fill="url(#surface)" />
+  <rect x="56" y="56" width="912" height="912" rx="216" fill="url(#light)" />
+  <rect x="56" y="56" width="912" height="912" rx="216" stroke="#FFFFFF" stroke-opacity="0.13" stroke-width="8" />
+
+  <g transform="translate(128 128) scale(24)" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.55">
+    <path d="M7 8.5h11.5c3.6 0 6.5 2.9 6.5 6.5v8.5H13.5A6.5 6.5 0 0 1 7 17Z" fill="#FFFFFF" fill-opacity="0.14" />
+    <path d="M11 4.5h9.5c3.6 0 6.5 2.9 6.5 6.5v8.5h-9.5A6.5 6.5 0 0 1 11 13Z" fill="#FFFFFF" fill-opacity="0.08" />
+    <path d="m7.5 13.5 9 5.5 9-5.5" />
+  </g>
+</svg>

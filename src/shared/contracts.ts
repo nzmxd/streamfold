@@ -174,6 +174,7 @@ export interface SocialVaultApi {
   content: {
     list(query?: import('./content-contracts').ContentQuery): Promise<import('./content-contracts').ContentSummary[]>
     detail(id: string): Promise<import('./content-contracts').ContentDetail>
+    openOriginal(id: string): Promise<BrowserState>
     update(input: import('./content-contracts').UpdateContentInput): Promise<import('./content-contracts').ContentDetail>
     clearAccount(accountId: string): Promise<void>
   }

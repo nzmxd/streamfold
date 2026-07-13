@@ -4,6 +4,7 @@ import {
   session as electronSession,
   WebContentsView,
   type IpcMainInvokeEvent,
+  type NativeImage,
   type Session,
   type WebContents
 } from 'electron'
@@ -67,7 +68,8 @@ export class BrowserManager {
     private readonly browserPreload: string,
     private readonly browserShellUrl: string,
     private readonly showWindows = true,
-    private readonly profileMedia: ProfileMediaStore | null = null
+    private readonly profileMedia: ProfileMediaStore | null = null,
+    private readonly windowIcon: NativeImage | null = null
   ) {}
 
   async open(accountId: string, loadRemote = true): Promise<BrowserState> {
@@ -91,6 +93,39 @@ export class BrowserManager {
       this.emitState(managed)
     })
     return { ...managed.state }
+  }
+
+  async openAt(accountId: string, targetUrl: string): Promise<BrowserState> {
+    if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
+    const account = this.findAccount(accountId)
+    if (!account) throw new Error('账号不存在')
+    if (!isOfficialUrl(account.platformId, targetUrl)) throw new Error('原帖链接不是已审核的官方地址')
+
+    let managed = this.workspaces.get(accountId)
+    if (managed && !managed.disposed && !managed.window.isDestroyed() &&
+      !managed.view.webContents.isDestroyed()) {
+      if (managed.apiLeaseCount > 0 || this.activeApiCaptures.has(accountId)) {
+        throw new Error('账号正在同步或核验，请稍候查看原帖')
+      }
+      this.showWorkspace(managed)
+    } else {
+      if (managed) this.disposeWorkspace(managed, true)
+      managed = await this.createWorkspace(account, true)
+    }
+
+    try {
+      await this.safeLoad(managed, targetUrl)
+      this.refreshState(managed)
+      return { ...managed.state }
+    } catch {
+      managed.state = {
+        ...managed.state,
+        loading: false,
+        message: '原帖加载失败，请检查网络后重试'
+      }
+      this.emitState(managed)
+      throw new Error(managed.state.message)
+    }
   }
 
   async acquireXiaohongshuApiTransport(accountId: string): Promise<XiaohongshuApiTransportLease> {
@@ -355,6 +390,7 @@ export class BrowserManager {
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d1016' : '#f6f7fb',
       show: false,
       autoHideMenuBar: true,
+      ...(this.windowIcon ? { icon: this.windowIcon } : {}),
       ...(process.platform === 'darwin'
         ? {
             titleBarStyle: 'hiddenInset' as const,

@@ -53,6 +53,7 @@ const api: SocialVaultApi = {
   content: {
     list: (query) => ipcRenderer.invoke('content:list', query),
     detail: (id) => ipcRenderer.invoke('content:detail', id),
+    openOriginal: (id) => ipcRenderer.invoke('content:open-original', id),
     update: (input) => ipcRenderer.invoke('content:update', input),
     clearAccount: (accountId) => ipcRenderer.invoke('content:clear-account', accountId)
   },

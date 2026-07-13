@@ -561,7 +561,7 @@ describe('SocialDatabase migrations', () => {
 
     database = new SocialDatabase(path)
 
-    expect(database.getSchemaVersion()).toBe(6)
+    expect(database.getSchemaVersion()).toBe(7)
     expect(database.getAccount('legacy-account')).toMatchObject({
       status: 'paused',
       connectionStatus: 'pending',
@@ -600,7 +600,7 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(6)
+    expect(database.getSchemaVersion()).toBe(7)
     expect(database.getAccount(account.id)).toMatchObject({
       ownershipStatus: 'user_confirmed',
       ownershipConfirmedAt: '2026-07-01T00:00:00.000Z',
@@ -629,7 +629,7 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(6)
+    expect(database.getSchemaVersion()).toBe(7)
     expect(database.getAccount(account.id)).toMatchObject({
       connectionStatus: 'ready', ownershipStatus: 'user_confirmed', syncEnabled: false
     })
@@ -708,7 +708,7 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(6)
+    expect(database.getSchemaVersion()).toBe(7)
     expect(database.getAccount(account.id)).toMatchObject({
       alias: '历史本地别名',
       aliasCustomized: true,
@@ -716,6 +716,39 @@ describe('SocialDatabase migrations', () => {
       bio: '',
       creatorLevel: null
     })
+  })
+
+  it('backfills legacy Xiaohongshu analytics links with canonical public note URLs in v7', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v6.sqlite')
+    database = new SocialDatabase(path)
+    const account = database.createAccount({
+      platformId: 'xiaohongshu', alias: '历史小红书账号', syncMode: 'profile_only'
+    })
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    previous.prepare(`
+      INSERT INTO contents (
+        id, account_id, remote_id, type, title, body_excerpt, url, published_at,
+        first_captured_at, updated_at, note, tags_json
+      ) VALUES (?, ?, ?, 'image', '历史笔记', '', ?, NULL, ?, ?, '', '[]')
+    `).run(
+      'legacy-content',
+      account.id,
+      'aaaaaaaaaaaaaaaaaaaaaaaa',
+      'https://creator.xiaohongshu.com/statistics/note-detail?noteId=aaaaaaaaaaaaaaaaaaaaaaaa',
+      '2026-07-01T00:00:00.000Z',
+      '2026-07-01T00:00:00.000Z'
+    )
+    previous.exec('PRAGMA user_version = 6')
+    previous.close()
+
+    database = new SocialDatabase(path)
+    expect(database.getSchemaVersion()).toBe(7)
+    expect(database.getContentDetail('legacy-content').url)
+      .toBe('https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa')
   })
 })
 

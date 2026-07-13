@@ -70,6 +70,36 @@ export function isOfficialUrl(platformId: PlatformId, value: string): boolean {
   return definitions[platformId].officialHosts.includes(hostname)
 }
 
+export function isOfficialContentUrl(
+  platformId: PlatformId,
+  value: string,
+  remoteId: string
+): boolean {
+  if (!isOfficialUrl(platformId, value)) return false
+
+  if (platformId === 'xiaohongshu') {
+    try {
+      const url = new URL(value)
+      if (url.hostname.toLowerCase() !== 'www.xiaohongshu.com' ||
+        url.pathname !== `/explore/${encodeURIComponent(remoteId)}` || url.hash) return false
+      const keys = [...url.searchParams.keys()]
+      if (keys.some((key) => key !== 'xsec_token' && key !== 'xsec_source')) return false
+      if (new Set(keys).size !== keys.length) return false
+      if (keys.length === 0) return true
+
+      const token = url.searchParams.get('xsec_token')
+      if (!token || token.length > 1_024 || /\s|[\u0000-\u001f\u007f]/u.test(token) ||
+        !/^[A-Za-z0-9._~+/_=-]+$/.test(token)) return false
+      const source = url.searchParams.get('xsec_source')
+      return source === null || /^[A-Za-z0-9_-]{1,64}$/.test(source)
+    } catch {
+      return false
+    }
+  }
+
+  return true
+}
+
 function isIpAddress(hostname: string): boolean {
   if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) return true
   return hostname.includes(':')
