@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { isOfficialContentUrl, isOfficialUrl } from './platforms'
+import {
+  getPlatform,
+  isOfficialContentUrl,
+  isOfficialUrl,
+  shouldBlockRemoteNavigation
+} from './platforms'
+
+describe('platform definitions', () => {
+  it('opens Zhihu sign-in with an explicit official creator destination', () => {
+    const zhihu = getPlatform('zhihu')
+    expect(zhihu.loginUrl).toBe('https://www.zhihu.com/signin?next=%2Fcreator')
+    expect(isOfficialUrl('zhihu', zhihu.loginUrl)).toBe(true)
+    expect(isOfficialUrl('zhihu', zhihu.homeUrl)).toBe(true)
+  })
+})
 
 describe('isOfficialUrl', () => {
   it('allows only explicitly reviewed HTTPS hosts', () => {
@@ -22,6 +36,18 @@ describe('isOfficialUrl', () => {
     expect(isOfficialUrl('weibo', 'https://user:pass@weibo.com/')).toBe(false)
     expect(isOfficialUrl('weibo', 'https://weibo.com:8443/')).toBe(false)
     expect(isOfficialUrl('weibo', 'https://127.0.0.1/')).toBe(false)
+  })
+})
+
+describe('shouldBlockRemoteNavigation', () => {
+  it('blocks nonofficial top-level navigation without breaking isolated verification frames', () => {
+    expect(shouldBlockRemoteNavigation('zhihu', 'https://example.com/', true)).toBe(true)
+    expect(shouldBlockRemoteNavigation('zhihu', 'https://www.zhihu.com/signin', true)).toBe(false)
+    expect(shouldBlockRemoteNavigation('zhihu', 'https://captcha.example/', false)).toBe(false)
+    expect(shouldBlockRemoteNavigation('zhihu', 'about:blank', false)).toBe(false)
+    expect(shouldBlockRemoteNavigation('zhihu', 'blob:https://captcha.example/id', false)).toBe(false)
+    expect(shouldBlockRemoteNavigation('zhihu', 'http://captcha.example/', false)).toBe(true)
+    expect(shouldBlockRemoteNavigation('zhihu', 'file:///C:/private.txt', false)).toBe(true)
   })
 })
 

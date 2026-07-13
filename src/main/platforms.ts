@@ -32,7 +32,7 @@ const definitions: Record<PlatformId, PlatformDefinition> = {
     id: 'zhihu',
     name: '知乎',
     shortName: '知',
-    loginUrl: 'https://www.zhihu.com/signin',
+    loginUrl: 'https://www.zhihu.com/signin?next=%2Fcreator',
     homeUrl: 'https://www.zhihu.com/creator',
     officialHosts: ['www.zhihu.com'],
     riskNote: '仅打开知乎官方登录与创作页面；不自动填写登录信息。'
@@ -68,6 +68,26 @@ export function isOfficialUrl(platformId: PlatformId, value: string): boolean {
   if (!hostname || hostname === 'localhost' || isIpAddress(hostname)) return false
 
   return definitions[platformId].officialHosts.includes(hostname)
+}
+
+export function shouldBlockRemoteNavigation(
+  platformId: PlatformId,
+  value: string,
+  isMainFrame: boolean
+): boolean {
+  if (isMainFrame) return !isOfficialUrl(platformId, value)
+
+  try {
+    const url = new URL(value)
+    if (url.protocol === 'https:') return false
+    if (url.protocol === 'about:') return url.pathname !== 'blank' && url.pathname !== 'srcdoc'
+    if (url.protocol === 'blob:' && url.origin !== 'null') {
+      return new URL(url.origin).protocol !== 'https:'
+    }
+    return true
+  } catch {
+    return true
+  }
 }
 
 export function isOfficialContentUrl(

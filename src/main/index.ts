@@ -317,18 +317,24 @@ function createWindow(): void {
         }
       })()`)
       let workspaceResult: unknown = null
+      let zhihuWorkspaceResult: unknown = null
       let partitionIsolation = false
       if (database && browserManager) {
         const first = database.createAccount({ platformId: 'xiaohongshu', alias: 'Smoke A', syncMode: 'disabled' })
         const second = database.createAccount({ platformId: 'xiaohongshu', alias: 'Smoke B', syncMode: 'disabled' })
+        const zhihu = database.createAccount({ platformId: 'zhihu', alias: 'Smoke Zhihu', syncMode: 'disabled' })
         workspaceResult = await browserManager.smokeWorkspace(first.id)
+        zhihuWorkspaceResult = await browserManager.smokeWorkspace(zhihu.id)
         partitionIsolation = await verifyPartitionIsolation(first.sessionPartition, second.sessionPartition)
         await browserManager.disconnect(first.id)
         await browserManager.disconnect(second.id)
+        await browserManager.disconnect(zhihu.id)
         database.removeAccount(first.id)
         database.removeAccount(second.id)
+        database.removeAccount(zhihu.id)
         await browserManager.purgeAccountMedia(first.id)
         await browserManager.purgeAccountMedia(second.id)
+        await browserManager.purgeAccountMedia(zhihu.id)
       }
       const capturePath = process.env.SOCIAL_VAULT_SMOKE_CAPTURE
       if (capturePath && mainWindow) {
@@ -380,6 +386,7 @@ function createWindow(): void {
       const smokePayload = {
         shell: shellResult,
         workspace: workspaceResult,
+        zhihuWorkspace: zhihuWorkspaceResult,
         partitionIsolation,
         icons: iconResult,
         capturePath: capturePath ?? null
@@ -397,10 +404,19 @@ function createWindow(): void {
         appearanceReady?: boolean
         accountId?: string
       } | null
+      const zhihuWorkspace = zhihuWorkspaceResult as {
+        hasApi?: boolean
+        accountId?: string
+        remoteUserAgent?: string
+      } | null
       if (
         !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady ||
         !shell.appearanceReady || !shell.v04ApiReady ||
-        !workspace?.hasApi || !workspace.accountId || !workspace.appearanceReady || !partitionIsolation ||
+        !workspace?.hasApi || !workspace.accountId || !workspace.appearanceReady ||
+        !zhihuWorkspace?.hasApi || !zhihuWorkspace.accountId ||
+        !zhihuWorkspace.remoteUserAgent?.includes(`Chrome/${process.versions.chrome}`) ||
+        zhihuWorkspace.remoteUserAgent.includes('Electron/') ||
+        zhihuWorkspace.remoteUserAgent.includes(`${app.getName()}/`) || !partitionIsolation ||
         !iconResult.applicationReady || !iconResult.trayReady || !iconResult.nativeTrayReady
       ) {
         console.error(`SOCIAL_VAULT_SMOKE_FAILED ${JSON.stringify(smokePayload)}`)

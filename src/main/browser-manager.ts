@@ -1,4 +1,5 @@
 import {
+  app,
   BrowserWindow,
   nativeTheme,
   session as electronSession,
@@ -9,7 +10,8 @@ import {
   type WebContents
 } from 'electron'
 import type { Account, AppearanceState, BrowserState } from '../shared/contracts'
-import { getPlatform, isOfficialUrl } from './platforms'
+import { normalizePlatformUserAgent } from './browser-compatibility'
+import { getPlatform, isOfficialUrl, shouldBlockRemoteNavigation } from './platforms'
 import type { CachedProfileAvatar, ProfileMediaStore } from './profile-media'
 import { isTrustedBrowserUrl } from './shell-security'
 import {
@@ -259,6 +261,7 @@ export class BrowserManager {
     appearanceReady: boolean
     accountId: string | null
     toolbarUrl: string
+    remoteUserAgent: string
   }> {
     await this.open(accountId, false)
     const managed = this.workspaces.get(accountId)
@@ -276,7 +279,10 @@ export class BrowserManager {
           toolbarUrl: location.href
         }
       })()`)
-      return result
+      return {
+        ...result,
+        remoteUserAgent: managed.view.webContents.getUserAgent()
+      }
     } finally {
       this.disposeWorkspace(managed, true)
     }
@@ -434,6 +440,13 @@ export class BrowserManager {
       }
     })
 
+    // Keep the actual OS and bundled Chromium version. Zhihu currently rejects
+    // Electron wrapper product tokens as an obsolete client during login.
+    view.webContents.setUserAgent(normalizePlatformUserAgent(
+      account.platformId,
+      view.webContents.getUserAgent(),
+      app.getName()
+    ))
     this.configureSession(account.sessionPartition, view.webContents.session)
     const managed: ManagedWorkspace = {
       account,
@@ -504,8 +517,8 @@ export class BrowserManager {
 
   private installRemoteGuards(managed: ManagedWorkspace): void {
     const contents = managed.view.webContents
-    const guard = (event: Electron.Event, url: string): void => {
-      if (isOfficialUrl(managed.account.platformId, url)) return
+    const guard = (event: Electron.Event, url: string, isMainFrame = true): void => {
+      if (!shouldBlockRemoteNavigation(managed.account.platformId, url, isMainFrame)) return
       event.preventDefault()
       managed.state = {
         ...managed.state,
@@ -517,8 +530,8 @@ export class BrowserManager {
     }
 
     contents.on('will-navigate', (details) => guard(details, details.url))
-    contents.on('will-frame-navigate', (details) => guard(details, details.url))
-    contents.on('will-redirect', (details) => guard(details, details.url))
+    contents.on('will-frame-navigate', (details) => guard(details, details.url, details.isMainFrame))
+    contents.on('will-redirect', (details) => guard(details, details.url, details.isMainFrame))
     contents.setWindowOpenHandler(({ url }) => {
       managed.state = {
         ...managed.state,
