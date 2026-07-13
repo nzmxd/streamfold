@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import type { PlatformId, SyncMode } from '../../../../shared/contracts'
+import type { Group, PlatformId, SyncMode } from '../../../../shared/contracts'
 import AccountDetailPane from './AccountDetailPane.vue'
 import AccountListPane from './AccountListPane.vue'
 import { useAccounts } from './useAccounts'
@@ -8,15 +8,19 @@ import { useAccounts } from './useAccounts'
 const store = useAccounts()
 const addDialog = ref(false)
 const groupDialog = ref(false)
+const editGroupDialog = ref(false)
 const toast = ref('')
 const addBusy = ref(false)
 const groupBusy = ref(false)
+const batchBusy = ref(false)
+const selectedAccountIds = ref<string[]>([])
 const addForm = reactive<{ platformId: PlatformId; alias: string; syncMode: SyncMode }>({
   platformId: 'xiaohongshu',
   alias: '',
   syncMode: 'profile_only'
 })
 const groupForm = reactive({ name: '', color: '#339cff' })
+const editGroupForm = reactive({ id: '', name: '', color: '#339cff' })
 
 const selectedPlatform = computed(() => {
   const account = store.selectedAccount.value
@@ -31,6 +35,10 @@ onMounted(() => store.initialize())
 onBeforeUnmount(() => store.dispose())
 watch(store.selectedId, () => {
   toast.value = ''
+})
+watch(store.accounts, (accounts) => {
+  const existingIds = new Set(accounts.map((account) => account.id))
+  selectedAccountIds.value = selectedAccountIds.value.filter((id) => existingIds.has(id))
 })
 
 async function createAccount(): Promise<void> {
@@ -64,11 +72,94 @@ async function createGroup(): Promise<void> {
 }
 
 async function removeGroup(id: string, name: string): Promise<void> {
-  if (!window.confirm(`删除分组“${name}”？账号和会话不会被删除。`)) return
+  if (!window.confirm(`删除分组“${name}”？\n\n只会解除账号与该分组的关联；账号、登录会话、备注、内容和历史统计都会保留。`)) return
   try {
     await store.removeGroup(id)
+    showToast('分组已删除，账号与历史数据均已保留。')
   } catch {
     // Store exposes the sanitized error in the page alert.
+  }
+}
+
+function openEditGroup(group: Group): void {
+  editGroupForm.id = group.id
+  editGroupForm.name = group.name
+  editGroupForm.color = group.color
+  editGroupDialog.value = true
+}
+
+async function updateGroup(): Promise<void> {
+  if (groupBusy.value) return
+  groupBusy.value = true
+  try {
+    await store.updateGroup({ ...editGroupForm })
+    editGroupDialog.value = false
+    showToast('分组名称和颜色已更新。')
+  } catch {
+    // Store exposes the sanitized error in the page alert.
+  } finally {
+    groupBusy.value = false
+  }
+}
+
+async function moveGroup(value: { group: Group; direction: 'up' | 'down' }): Promise<void> {
+  if (batchBusy.value) return
+  batchBusy.value = true
+  try {
+    await store.moveGroup({ id: value.group.id, direction: value.direction })
+  } catch {
+    // Store exposes the sanitized error in the page alert.
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+function toggleAccountSelection(id: string): void {
+  selectedAccountIds.value = selectedAccountIds.value.includes(id)
+    ? selectedAccountIds.value.filter((selectedId) => selectedId !== id)
+    : [...selectedAccountIds.value, id]
+}
+
+function toggleVisibleSelection(ids: string[]): void {
+  const selected = new Set(selectedAccountIds.value)
+  if (ids.every((id) => selected.has(id))) ids.forEach((id) => selected.delete(id))
+  else ids.forEach((id) => selected.add(id))
+  selectedAccountIds.value = [...selected]
+}
+
+async function bulkGroup(value: { groupId: string; action: 'add' | 'remove' }): Promise<void> {
+  if (batchBusy.value || selectedAccountIds.value.length === 0) return
+  batchBusy.value = true
+  try {
+    const count = selectedAccountIds.value.length
+    await store.bulkUpdateAccounts({
+      accountIds: selectedAccountIds.value,
+      groupChange: value
+    })
+    showToast(`已将 ${count} 个账号${value.action === 'add' ? '加入' : '移出'}分组。`)
+  } catch {
+    // Store exposes the sanitized error in the page alert.
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function bulkSync(enabled: boolean): Promise<void> {
+  if (batchBusy.value || selectedAccountIds.value.length === 0) return
+  batchBusy.value = true
+  try {
+    const selected = store.accounts.value.filter((account) => selectedAccountIds.value.includes(account.id))
+    await store.bulkUpdateAccounts({ accountIds: selectedAccountIds.value, syncEnabled: enabled })
+    const ineligible = enabled
+      ? selected.filter((account) => account.connectionStatus !== 'ready' || account.syncMode === 'disabled').length
+      : 0
+    showToast(enabled && ineligible > 0
+      ? `已恢复符合条件的账号；${ineligible} 个未通过身份核验或禁用的账号仍保持暂停。`
+      : `已${enabled ? '恢复' : '暂停'} ${selected.length} 个账号的同步。`)
+  } catch {
+    // Store exposes the sanitized error in the page alert.
+  } finally {
+    batchBusy.value = false
   }
 }
 
@@ -85,6 +176,10 @@ function closeAddDialog(): void {
 
 function closeGroupDialog(): void {
   if (!groupBusy.value) groupDialog.value = false
+}
+
+function closeEditGroupDialog(): void {
+  if (!groupBusy.value) editGroupDialog.value = false
 }
 </script>
 
@@ -114,11 +209,20 @@ function closeGroupDialog(): void {
         :selected-group="store.selectedGroup.value"
         :search="store.search.value"
         :loading="store.loading.value"
+        :selected-account-ids="selectedAccountIds"
+        :batch-busy="batchBusy"
         @select="store.selectedId.value = $event"
         @update:selected-group="store.selectedGroup.value = $event"
         @update:search="store.search.value = $event"
         @create-group="groupDialog = true"
+        @edit-group="openEditGroup"
+        @move-group="moveGroup"
         @remove-group="removeGroup($event.id, $event.name)"
+        @toggle-account="toggleAccountSelection"
+        @toggle-visible="toggleVisibleSelection"
+        @clear-selection="selectedAccountIds = []"
+        @bulk-group="bulkGroup"
+        @bulk-sync="bulkSync"
       />
       <AccountDetailPane
         :account="store.selectedAccount.value"
@@ -127,6 +231,8 @@ function closeGroupDialog(): void {
         :browser-state="selectedBrowserState"
         :save="store.updateAccount"
         :open-browser="store.openBrowser"
+        :verify-identity="store.verifyIdentity"
+        :confirm-identity="store.confirmIdentity"
         :disconnect="store.disconnectAccount"
         :purge="store.purgeAccount"
       />
@@ -152,6 +258,15 @@ function closeGroupDialog(): void {
         <label>分组名称<input v-model="groupForm.name" maxlength="30" required /></label>
         <label>标识颜色<input v-model="groupForm.color" type="color" /></label>
         <div class="modal-actions"><button class="button" :disabled="groupBusy" type="button" @click="closeGroupDialog">取消</button><button class="button primary" :disabled="groupBusy" type="submit">{{ groupBusy ? '创建中…' : '创建' }}</button></div>
+      </form>
+    </div>
+
+    <div v-if="editGroupDialog" class="modal-backdrop" @click.self="closeEditGroupDialog">
+      <form class="modal compact" @submit.prevent="updateGroup">
+        <div class="modal-head"><div><span class="page-eyebrow">EDIT LOCAL GROUP</span><h2>编辑分组</h2><p>名称、颜色和排序仅影响本地管理视图。</p></div><button type="button" :disabled="groupBusy" @click="closeEditGroupDialog">×</button></div>
+        <label>分组名称<input v-model="editGroupForm.name" maxlength="30" required /></label>
+        <label>标识颜色<input v-model="editGroupForm.color" type="color" /></label>
+        <div class="modal-actions"><button class="button" :disabled="groupBusy" type="button" @click="closeEditGroupDialog">取消</button><button class="button primary" :disabled="groupBusy" type="submit">{{ groupBusy ? '保存中…' : '保存分组' }}</button></div>
       </form>
     </div>
 

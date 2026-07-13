@@ -6,6 +6,8 @@ import {
   type Session
 } from 'electron'
 import type { Account, BrowserState } from '../shared/contracts'
+import type { AdapterOperation, ManagedBrowserAdapter } from './adapters'
+import { verifyPinnedScript } from './adapters'
 import { getPlatform, isOfficialUrl } from './platforms'
 import { isTrustedBrowserUrl } from './shell-security'
 
@@ -65,6 +67,7 @@ export class BrowserManager {
     title: string
     accountId: string | null
     toolbarUrl: string
+    hasIdentityApi: boolean
   }> {
     await this.open(accountId, false)
     const managed = this.workspaces.get(accountId)
@@ -77,12 +80,63 @@ export class BrowserManager {
           hasApi,
           title: document.title,
           accountId: state.accountId,
-          toolbarUrl: location.href
+          toolbarUrl: location.href,
+          hasIdentityApi: typeof window.browserWorkspace.verifyIdentity === 'function' &&
+            typeof window.browserWorkspace.confirmIdentity === 'function'
         }
       })()`)
     } finally {
       this.disposeWorkspace(managed, true)
     }
+  }
+
+  async runAdapterOperation(
+    accountId: string,
+    adapter: ManagedBrowserAdapter,
+    operation: AdapterOperation
+  ): Promise<unknown> {
+    const managed = this.workspaces.get(accountId)
+    if (!managed || managed.window.isDestroyed() || managed.view.webContents.isDestroyed()) {
+      throw new Error('请先打开该账号的内置浏览器并完成登录')
+    }
+    if (managed.account.platformId !== adapter.metadata.platformId) throw new Error('适配器与账号平台不匹配')
+    if (managed.view.webContents.isLoading()) throw new Error('官方页面仍在加载，请稍后再核验')
+
+    let current: URL
+    try {
+      current = new URL(managed.view.webContents.getURL())
+    } catch {
+      throw new Error('当前页面地址无效，请重新打开官方创作中心')
+    }
+    const hostname = current.hostname.toLowerCase().replace(/\.$/, '')
+    if (
+      current.protocol !== 'https:' || current.username || current.password ||
+      (current.port && current.port !== '443') ||
+      !adapter.metadata.allowedHosts.includes(hostname)
+    ) throw new Error('请在已审核的平台创作中心页面执行身份核验')
+
+    const pinned = adapter.scripts[operation]
+    if (pinned.metadata.executionWorld !== 'isolated' || !verifyPinnedScript(pinned)) {
+      throw new Error('适配器脚本完整性校验失败')
+    }
+    let result: unknown
+    try {
+      result = await managed.view.webContents.executeJavaScriptInIsolatedWorld(
+        1201,
+        [{ code: pinned.script }],
+        false
+      )
+    } catch {
+      throw new Error('平台页面核验脚本执行失败，请刷新官方页面后重试')
+    }
+    let serialized = ''
+    try {
+      serialized = JSON.stringify(result)
+    } catch {
+      throw new Error('平台页面返回了无效的核验结果')
+    }
+    if (serialized.length > 32_768) throw new Error('平台页面核验结果超过安全上限')
+    return result
   }
 
   getStateForSender(event: IpcMainInvokeEvent): BrowserState {
@@ -129,14 +183,7 @@ export class BrowserManager {
       const managed = this.workspaces.get(accountId)
       if (managed) this.disposeWorkspace(managed, true)
 
-      const session = electronSession.fromPartition(account.sessionPartition)
-      await session.closeAllConnections()
-      await session.clearAuthCache()
-      await session.clearCache()
-      // The partition belongs to exactly one account. Clearing without a storage filter avoids
-      // leaving newer Chromium storage types behind when Electron adds support for them.
-      await session.clearStorageData()
-      this.configuredSessions.delete(account.sessionPartition)
+      await this.clearPartitions([account.sessionPartition])
     } finally {
       this.disconnecting.delete(accountId)
     }
@@ -144,9 +191,27 @@ export class BrowserManager {
 
   destroy(): void {
     this.shuttingDown = true
+    this.closeAll()
+  }
+
+  closeAll(): void {
     for (const managed of [...this.workspaces.values()]) this.disposeWorkspace(managed, true)
     this.workspaces.clear()
     this.senderAccounts.clear()
+  }
+
+  async clearPartitions(partitions: readonly string[]): Promise<void> {
+    for (const partition of new Set(partitions)) {
+      if (!/^persist:social:[0-9a-f-]{36}$/i.test(partition)) continue
+      const session = electronSession.fromPartition(partition)
+      await session.closeAllConnections()
+      await session.clearAuthCache()
+      await session.clearCache()
+      // Each partition belongs to one account. Clear every Chromium storage type so restored or
+      // deleted accounts cannot leave an unreachable authenticated session on disk.
+      await session.clearStorageData()
+      this.configuredSessions.delete(partition)
+    }
   }
 
   private async createWorkspace(account: Account): Promise<ManagedWorkspace> {
@@ -199,7 +264,8 @@ export class BrowserManager {
       disposed: false,
       state: {
         accountId: account.id,
-      accountAlias: sanitizeTitle(account.alias),
+        platformId: account.platformId,
+        accountAlias: sanitizeTitle(account.alias),
         platformName: platform.name,
         url: '',
         title: '',

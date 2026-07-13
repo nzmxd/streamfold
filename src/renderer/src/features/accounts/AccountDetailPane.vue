@@ -3,7 +3,9 @@ import { reactive, ref, watch } from 'vue'
 import type {
   Account,
   BrowserState,
+  ConfirmManagedIdentityInput,
   Group,
+  ManagedIdentityCheckResult,
   PlatformDefinition,
   SyncMode,
   UpdateAccountInput
@@ -25,6 +27,8 @@ const props = defineProps<{
   browserState?: BrowserState
   save: (input: UpdateAccountInput) => Promise<Account>
   openBrowser: (id: string) => Promise<BrowserState>
+  verifyIdentity: (id: string) => Promise<ManagedIdentityCheckResult>
+  confirmIdentity: (input: ConfirmManagedIdentityInput) => Promise<ManagedIdentityCheckResult>
   disconnect: (id: string) => Promise<void>
   purge: (id: string) => Promise<void>
 }>()
@@ -32,6 +36,7 @@ const props = defineProps<{
 const activeTab = ref<DetailTab>('overview')
 const busy = ref(false)
 const localMessage = ref('')
+const verification = ref<ManagedIdentityCheckResult | null>(null)
 const form = reactive({
   alias: '',
   note: '',
@@ -48,6 +53,7 @@ watch(
     if (previous?.id !== account.id) {
       activeTab.value = 'overview'
       localMessage.value = ''
+      verification.value = null
     }
     form.alias = account.alias
     form.note = account.note
@@ -101,6 +107,45 @@ async function openBrowserWindow(): Promise<void> {
   busy.value = true
   try {
     await props.openBrowser(props.account.id)
+  } catch {
+    // The account store renders the sanitized error at page level.
+  } finally {
+    busy.value = false
+  }
+}
+
+async function verifyLoginIdentity(): Promise<void> {
+  if (!props.account || busy.value) return
+  busy.value = true
+  localMessage.value = ''
+  verification.value = null
+  try {
+    verification.value = await props.verifyIdentity(props.account.id)
+    localMessage.value = verification.value.message
+  } catch {
+    // The account store renders the sanitized error at page level.
+  } finally {
+    busy.value = false
+  }
+}
+
+async function confirmLoginIdentity(): Promise<void> {
+  if (!props.account || busy.value || !verification.value?.confirmationToken) return
+  const candidate = verification.value
+  const confirmationToken = candidate.confirmationToken!
+  const confirmed = window.confirm(
+    `确认绑定当前可见的小红书身份？\n\n昵称：${candidate.remoteName}\n远端 ID：${candidate.remoteId}\n\n确认后会再次读取当前页面；只有身份仍完全一致才会写入本地绑定。`
+  )
+  if (!confirmed) return
+  busy.value = true
+  localMessage.value = ''
+  try {
+    verification.value = await props.confirmIdentity({
+      accountId: props.account.id,
+      token: confirmationToken,
+      confirmIdentity: true
+    })
+    localMessage.value = verification.value.message
   } catch {
     // The account store renders the sanitized error at page level.
   } finally {
@@ -196,7 +241,7 @@ async function purgeAccount(): Promise<void> {
           <ol class="steps">
             <li class="done"><b>1</b><div><strong>账号空间已创建</strong><span>Session Partition 与其他账号完全隔离</span></div></li>
             <li :class="{ done: browserState?.official }"><b>2</b><div><strong>打开平台官方页面</strong><span>这里只校验当前域名属于平台，不代表已经登录</span></div></li>
-            <li :class="{ done: account.ownershipStatus !== 'unconfirmed' }"><b>3</b><div><strong>确认数据归属</strong><span>由用户核对文件身份并确认本人归属；通用导入插件不验证平台登录身份</span></div></li>
+            <li :class="{ done: account.ownershipStatus !== 'unconfirmed' }"><b>3</b><div><strong>确认数据归属</strong><span>{{ account.ownershipStatus === 'plugin_verified' ? '平台插件已核验当前可见登录身份' : '文件导入由用户确认归属；平台身份需专用插件核验' }}</span></div></li>
             <li :class="{ done: Boolean(account.lastSyncedAt) }"><b>4</b><div><strong>导入本人数据</strong><span>文件插件只读用户确认归属的数据并写入本机</span></div></li>
           </ol>
         </section>
@@ -219,6 +264,19 @@ async function purgeAccount(): Promise<void> {
             <button class="button primary large-action" :disabled="busy" @click="openBrowserWindow">
               {{ browserState?.windowOpen ? '切换到已打开的窗口' : account.connectionStatus === 'disconnected' ? `重新连接 ${platform?.name} 官方入口` : `打开 ${platform?.name} 官方入口` }} ↗
             </button>
+            <button
+              v-if="account.platformId === 'xiaohongshu'"
+              class="button large-action"
+              :disabled="busy || !browserState?.windowOpen"
+              :title="!browserState?.windowOpen ? '请先打开独立浏览器并登录小红书创作中心' : undefined"
+              @click="verifyLoginIdentity"
+            >{{ busy ? '正在核验…' : '只读核验当前登录身份' }}</button>
+            <p v-else class="muted">该平台的固定身份核验适配器仍在规划中。</p>
+            <p v-if="verification" :class="{ 'success-message': verification.status === 'verified', 'danger-text': verification.status === 'identity_mismatch', muted: !['verified', 'identity_mismatch'].includes(verification.status) }">{{ verification.message }}<template v-if="verification.remoteName"> 当前身份：{{ verification.remoteName }}</template></p>
+            <div v-if="verification?.status === 'confirmation_required'" class="form-actions">
+              <button class="button primary" :disabled="busy" @click="confirmLoginIdentity">确认是本人账号并再次核验</button>
+              <button class="button" :disabled="busy" @click="verification = null">暂不绑定</button>
+            </div>
           </div>
         </section>
         <section v-if="browserState" class="browser-session-status">

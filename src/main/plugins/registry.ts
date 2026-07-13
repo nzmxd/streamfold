@@ -3,6 +3,7 @@ import type {
   PluginInstallation,
   PluginManifest
 } from '../../shared/plugin-contracts'
+import { xiaohongshuManagedBrowserAdapter } from '../adapters'
 import { SafeImportError } from './errors'
 
 export const GENERIC_FILE_IMPORT_PLUGIN_ID = 'generic-file-import'
@@ -44,12 +45,6 @@ export const genericFileImportManifest = manifest({
 
 const plannedAdapters: PluginManifest[] = [
   {
-    id: 'xiaohongshu-managed-browser',
-    name: '小红书管理浏览器适配器',
-    description: '小红书本人账号的只读管理浏览器适配器（计划中）。',
-    allowedHosts: ['creator.xiaohongshu.com', 'www.xiaohongshu.com']
-  },
-  {
     id: 'weibo-managed-browser',
     name: '微博管理浏览器适配器',
     description: '微博本人账号的只读管理浏览器适配器（计划中）。',
@@ -83,11 +78,35 @@ const plannedAdapters: PluginManifest[] = [
   ...item
 }))
 
+const xiaohongshuManagedBrowserManifest = manifest({
+  schemaVersion: 1,
+  id: xiaohongshuManagedBrowserAdapter.metadata.id,
+  name: '小红书登录身份核验',
+  version: xiaohongshuManagedBrowserAdapter.metadata.version,
+  description: '在已登录的小红书创作中心中只读核验本人身份；当前不读取文章或指标。',
+  license: 'builtin',
+  source: 'builtin',
+  commitHash: `sha256:${xiaohongshuManagedBrowserAdapter.scripts.probe.metadata.sha256}:${xiaohongshuManagedBrowserAdapter.scripts.whoami.metadata.sha256}`,
+  mode: 'managed_browser',
+  readOnly: true,
+  ownedAccountOnly: true,
+  capabilities: ['account.identity'],
+  allowedHosts: [...xiaohongshuManagedBrowserAdapter.metadata.allowedHosts],
+  minimumIntervalSeconds: 60,
+  recommendedSyncIntervalHours: 24,
+  riskLevel: 'medium'
+})
+
 const definitions: readonly PluginDefinition[] = Object.freeze([
   Object.freeze({
     manifest: genericFileImportManifest,
     availability: 'available' as const,
     defaultEnabled: true
+  }),
+  Object.freeze({
+    manifest: xiaohongshuManagedBrowserManifest,
+    availability: 'available' as const,
+    defaultEnabled: false
   }),
   ...plannedAdapters.map((plannedManifest) => Object.freeze({
     manifest: plannedManifest,

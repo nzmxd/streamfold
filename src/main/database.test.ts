@@ -31,7 +31,7 @@ describe('SocialDatabase', () => {
       id: account.id,
       note: '只保存在本机',
       tags: ['重点', '图文'],
-      groupIds: [group.id],
+      groupIds: [group.id, group.id],
       isDefault: true
     })
 
@@ -51,11 +51,87 @@ describe('SocialDatabase', () => {
       syncMode: 'disabled'
     })
     database.updateAccount({ id: account.id, groupIds: [group.id] })
+    database.commitImport(importPayload('remote-grouped', 'content-grouped'), importMetadata(account.id))
 
     database.removeGroup(group.id)
 
     expect(database.getAccount(account.id)?.groupIds).toEqual([])
     expect(database.listAccounts()).toHaveLength(1)
+    expect(database.listContents({ accountId: account.id })).toHaveLength(1)
+    expect(database.getStorageCounts()).toMatchObject({ contentSnapshotCount: 1, accountSnapshotCount: 1 })
+  })
+
+  it('renames, recolors and safely reorders groups', () => {
+    const first = database.createGroup({ name: '第一组', color: '#111111' })
+    const second = database.createGroup({ name: '第二组', color: '#222222' })
+    const third = database.createGroup({ name: '第三组', color: '#333333' })
+
+    expect(database.updateGroup({ id: second.id, name: '重点组', color: '#339cff' }))
+      .toMatchObject({ id: second.id, name: '重点组', color: '#339cff' })
+    expect(database.moveGroup({ id: third.id, direction: 'up' }).map((group) => group.id))
+      .toEqual([first.id, third.id, second.id])
+    expect(database.moveGroup({ id: first.id, direction: 'up' }).map((group) => group.id))
+      .toEqual([first.id, third.id, second.id])
+    expect(database.moveGroup({ id: first.id, direction: 'down' }).map((group) => group.id))
+      .toEqual([third.id, first.id, second.id])
+  })
+
+  it('batch assigns and removes groups atomically with deduplicated account ids', () => {
+    const group = database.createGroup({ name: '批量分组', color: '#339cff' })
+    const first = createAccount(database, '账号 A')
+    const second = createAccount(database, '账号 B')
+
+    const assigned = database.bulkUpdateAccounts({
+      accountIds: [first.id, first.id, second.id],
+      groupChange: { groupId: group.id, action: 'add' }
+    })
+    expect(assigned).toHaveLength(2)
+    expect(database.listGroups()[0]?.accountCount).toBe(2)
+
+    database.bulkUpdateAccounts({
+      accountIds: [first.id],
+      groupChange: { groupId: group.id, action: 'remove' }
+    })
+    expect(database.getAccount(first.id)?.groupIds).toEqual([])
+    expect(database.getAccount(second.id)?.groupIds).toEqual([group.id])
+
+    expect(() => database.bulkUpdateAccounts({
+      accountIds: [first.id, 'missing-account'],
+      groupChange: { groupId: group.id, action: 'add' }
+    })).toThrow('账号不存在')
+    expect(database.getAccount(first.id)?.groupIds).toEqual([])
+    expect(database.getAccount(second.id)?.groupIds).toEqual([group.id])
+  })
+
+  it('batch pauses accounts but resumes only identity-verified ready accounts', () => {
+    const regular = createAccount(database, '可同步账号')
+    database.applyManagedIdentity(regular.id, {
+      remoteId: 'ready-account', remoteName: '已核验账号'
+    }, '2026-07-13T08:00:00.000Z')
+    const disconnected = createAccount(database, '已断开账号')
+    const pending = createAccount(database, '待核验账号')
+    const disabled = database.createAccount({
+      platformId: 'weibo', alias: '禁用账号', syncMode: 'disabled'
+    })
+    database.disconnectAccount(disconnected.id)
+
+    database.bulkUpdateAccounts({
+      accountIds: [regular.id, disconnected.id, pending.id, disabled.id],
+      syncEnabled: false
+    })
+    expect(database.getAccount(regular.id)?.syncEnabled).toBe(false)
+
+    const resumed = database.bulkUpdateAccounts({
+      accountIds: [regular.id, disconnected.id, pending.id, disabled.id],
+      syncEnabled: true
+    })
+    expect(resumed.map((account) => [account.alias, account.syncEnabled])).toEqual([
+      ['可同步账号', true],
+      ['已断开账号', false],
+      ['待核验账号', false],
+      ['禁用账号', false]
+    ])
+    expect(database.getAccount(disconnected.id)?.connectionStatus).toBe('disconnected')
   })
 
   it('removes only the selected local account record', () => {
@@ -379,6 +455,52 @@ describe('SocialDatabase migrations', () => {
       ownershipConfirmedAt: '2026-07-01T00:00:00.000Z',
       identityVerifiedAt: null
     })
+  })
+})
+
+describe('SocialDatabase backup images', () => {
+  let directory = ''
+  let database: SocialDatabase | null = null
+
+  afterEach(() => {
+    database?.close()
+    database = null
+    if (directory) rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('restores a validated SQLite image and requires login verification again', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-backup-'))
+    database = new SocialDatabase(join(directory, 'vault.sqlite'))
+    const group = database.createGroup({ name: '备份分组', color: '#339cff' })
+    const account = database.createAccount({
+      platformId: 'xiaohongshu', alias: '备份账号', syncMode: 'profile_only'
+    })
+    database.updateAccount({ id: account.id, groupIds: [group.id] })
+    database.commitImport(importPayload('remote-backup', 'content-backup'), importMetadata(account.id))
+    const image = database.createBackupImage()
+
+    database.updateAccount({ id: account.id, alias: '已修改', groupIds: [] })
+    expect(() => database?.restoreBackupImage(image, () => {
+      throw new Error('post-restore initialization failed')
+    })).toThrow('原数据库已保留')
+    expect(database.getAccount(account.id)?.alias).toBe('已修改')
+
+    database.restoreBackupImage(image)
+    image.fill(0)
+
+    expect(database.getAccount(account.id)).toMatchObject({
+      alias: '备份账号',
+      groupIds: [group.id],
+      connectionStatus: 'pending',
+      syncEnabled: false,
+      syncStatus: 'idle'
+    })
+    expect(database.listContents({ accountId: account.id })).toHaveLength(1)
+    expect(database.getAccount(account.id)?.lastSyncError).toContain('重新打开官方页面')
+
+    expect(() => database?.restoreBackupImage(Buffer.from('not a sqlite database')))
+      .toThrow('数据库格式无效')
+    expect(database.getAccount(account.id)?.alias).toBe('备份账号')
   })
 })
 

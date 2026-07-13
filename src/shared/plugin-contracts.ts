@@ -1,4 +1,5 @@
 export const pluginCapabilities = [
+  'account.identity',
   'account.profile',
   'account.metrics',
   'content.list',

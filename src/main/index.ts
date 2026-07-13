@@ -1,7 +1,7 @@
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import {
   app,
   BrowserWindow,
@@ -11,6 +11,7 @@ import {
   session
 } from 'electron'
 import { BrowserManager } from './browser-manager'
+import { BackupService } from './backup-service'
 import { SocialDatabase } from './database'
 import { ExportService } from './export-service'
 import { registerIpc, unregisterIpc } from './ipc'
@@ -18,6 +19,7 @@ import { PluginService } from './plugin-service'
 import { SettingsService } from './settings-service'
 import { ImportService } from './services/import-service'
 import { JobService } from './services/job-service'
+import { ManagedAdapterService } from './managed-adapter-service'
 import { isTrustedShellUrl } from './shell-security'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
@@ -144,6 +146,11 @@ function createWindow(): void {
   )
   const pluginService = new PluginService(database)
   pluginService.initialize()
+  const managedAdapterService = new ManagedAdapterService({
+    repository: database,
+    browser: browserManager,
+    plugins: pluginService
+  })
   const jobService = new JobService(database)
   const importService = new ImportService({
     dialog: {
@@ -157,18 +164,43 @@ function createWindow(): void {
     getSetting: (key) => database!.getSetting<string>(key),
     setSetting: (key, value) => { database!.setSetting(key, value) }
   }, database.databasePath, {
-    appVersion: app.getVersion(),
+    appVersion: readApplicationVersion(),
     electronVersion: process.versions.electron,
     chromiumVersion: process.versions.chrome,
     nodeVersion: process.versions.node
   })
   const exportService = new ExportService(mainWindow, database)
+  let restorePartitions: string[] = []
+  const backupService = new BackupService({
+    dialog: {
+      showSaveDialog: (options) => dialog.showSaveDialog(mainWindow!, options),
+      showOpenDialog: (options) => dialog.showOpenDialog(mainWindow!, options)
+    },
+    repository: database,
+    beforeRestore: () => {
+      restorePartitions = database!.listAccounts().map((account) => account.sessionPartition)
+      browserManager?.closeAll()
+      importService.invalidatePreviews()
+      managedAdapterService.invalidatePreviews()
+    },
+    afterRestore: () => pluginService.initialize(),
+    afterCommit: async () => {
+      try {
+        const restoredPartitions = database!.listAccounts().map((account) => account.sessionPartition)
+        await browserManager?.clearPartitions([...restorePartitions, ...restoredPartitions])
+      } finally {
+        restorePartitions = []
+      }
+    }
+  })
   registerIpc(mainWindow, database, browserManager, {
     imports: importService,
     jobs: jobService,
     plugins: pluginService,
     settings: settingsService,
-    exporter: exportService
+    exporter: exportService,
+    backup: backupService,
+    adapters: managedAdapterService
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -199,6 +231,12 @@ function createWindow(): void {
           jobCount: jobs.length,
           dashboardReady: Boolean(dashboard),
           settingsReady: Boolean(settings?.appVersion),
+          v03ApiReady: typeof window.socialVault.accounts.verifyIdentity === 'function' &&
+            typeof window.socialVault.accounts.confirmIdentity === 'function' &&
+            typeof window.socialVault.accounts.bulkUpdate === 'function' &&
+            typeof window.socialVault.groups.update === 'function' &&
+            typeof window.socialVault.settings.createBackup === 'function' &&
+            typeof window.socialVault.settings.restoreBackup === 'function',
           text: document.body.innerText.slice(0, 80)
         }
       })()`)
@@ -257,11 +295,16 @@ function createWindow(): void {
         hasApp?: boolean
         dashboardReady?: boolean
         settingsReady?: boolean
+        v03ApiReady?: boolean
       } | null
-      const workspace = workspaceResult as { hasApi?: boolean; accountId?: string } | null
+      const workspace = workspaceResult as {
+        hasApi?: boolean
+        accountId?: string
+        hasIdentityApi?: boolean
+      } | null
       if (
-        !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady ||
-        !workspace?.hasApi || !workspace.accountId || !partitionIsolation
+        !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady || !shell.v03ApiReady ||
+        !workspace?.hasApi || !workspace.accountId || !workspace.hasIdentityApi || !partitionIsolation
       ) {
         console.error(`SOCIAL_VAULT_SMOKE_FAILED ${JSON.stringify(smokePayload)}`)
         app.exit(1)
@@ -312,4 +355,18 @@ async function verifyPartitionIsolation(firstPartition: string, secondPartition:
   const firstCookies = await first.cookies.get({ url, name: 'partition-smoke' })
   const secondCookies = await second.cookies.get({ url, name: 'partition-smoke' })
   return firstCookies.length === 1 && secondCookies.length === 0
+}
+
+function readApplicationVersion(): string {
+  try {
+    const value = JSON.parse(readFileSync(resolve(currentDir, '../../package.json'), 'utf8')) as {
+      version?: unknown
+    }
+    if (typeof value.version === 'string' && /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value.version)) {
+      return value.version
+    }
+  } catch {
+    // Packaged builds may provide version metadata without a readable package.json.
+  }
+  return app.getVersion()
 }

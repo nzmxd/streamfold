@@ -178,6 +178,12 @@ export class ImportService {
     return toPublicPreview(preview)
   }
 
+  invalidatePreviews(): void {
+    if (this.inFlight.size > 0) throw new Error('仍有导入任务正在提交')
+    this.previews.clear()
+    this.consumedTokens.clear()
+  }
+
   async commit(input: {
     token: string
     accountId: string

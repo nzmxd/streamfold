@@ -28,6 +28,7 @@ const importBusy = ref(false)
 let removeJobListener: (() => void) | null = null
 
 const capabilityLabels: Record<PluginCapability, string> = {
+  'account.identity': '核验当前登录身份',
   'account.profile': '读取账号资料',
   'account.metrics': '读取账号指标',
   'content.list': '读取内容列表',
@@ -201,7 +202,7 @@ onBeforeUnmount(() => removeJobListener?.())
 
           <dl class="manifest-list">
             <div><dt>权限</dt><dd><span v-for="capability in plugin.manifest.capabilities" :key="capability">{{ capabilityLabels[capability] }}</span></dd></div>
-            <div><dt>网络访问</dt><dd>{{ plugin.manifest.allowedHosts.length ? plugin.manifest.allowedHosts.join('、') : '无网络访问权限' }}</dd></div>
+            <div><dt>{{ plugin.manifest.mode === 'managed_browser' ? '允许页面' : '网络访问' }}</dt><dd>{{ plugin.manifest.allowedHosts.length ? plugin.manifest.allowedHosts.join('、') : '无网络访问权限' }}</dd></div>
             <div><dt>版本与来源标识</dt><dd>{{ plugin.manifest.commitHash || '随应用内置版本锁定' }}</dd></div>
             <div><dt>运行记录</dt><dd>成功 {{ plugin.successCount }} 次 · 失败 {{ plugin.failureCount }} 次 · 最近 {{ formatDate(plugin.lastRunAt, true) }}</dd></div>
           </dl>

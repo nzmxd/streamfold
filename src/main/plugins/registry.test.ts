@@ -5,7 +5,7 @@ import {
 } from './registry'
 
 describe('PluginRegistry', () => {
-  it('exposes the low-risk builtin generic importer and non-executable planned adapters', () => {
+  it('exposes audited available plugins and keeps unfinished adapters non-executable', () => {
     const registry = new PluginRegistry()
     const generic = registry.get(GENERIC_FILE_IMPORT_PLUGIN_ID)
     expect(generic).toMatchObject({
@@ -28,9 +28,21 @@ describe('PluginRegistry', () => {
       'content.metrics'
     ])
 
+    const xiaohongshu = registry.get('xiaohongshu-managed-browser')
+    expect(xiaohongshu).toMatchObject({
+      availability: 'available',
+      defaultEnabled: false,
+      manifest: {
+        version: '0.1.0',
+        mode: 'managed_browser',
+        capabilities: ['account.identity'],
+        allowedHosts: ['creator.xiaohongshu.com']
+      }
+    })
+    expect(xiaohongshu?.manifest.commitHash).toMatch(/^sha256:[a-f0-9]{64}:[a-f0-9]{64}$/)
+
     const planned = registry.list().filter((item) => item.availability === 'planned')
     expect(planned.map((item) => item.manifest.id)).toEqual([
-      'xiaohongshu-managed-browser',
       'weibo-managed-browser',
       'douyin-managed-browser',
       'zhihu-managed-browser'

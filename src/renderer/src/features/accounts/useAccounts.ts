@@ -2,11 +2,16 @@ import { computed, reactive, ref, watch } from 'vue'
 import type {
   Account,
   BrowserState,
+  BulkUpdateAccountsInput,
+  ConfirmManagedIdentityInput,
   CreateAccountInput,
   CreateGroupInput,
   Group,
+  ManagedIdentityCheckResult,
+  MoveGroupInput,
   PlatformDefinition,
-  UpdateAccountInput
+  UpdateAccountInput,
+  UpdateGroupInput
 } from '../../../../shared/contracts'
 
 export function useAccounts() {
@@ -108,6 +113,14 @@ export function useAccounts() {
     })
   }
 
+  async function bulkUpdateAccounts(input: BulkUpdateAccountsInput): Promise<Account[]> {
+    return run(async () => {
+      const updated = await window.socialVault.accounts.bulkUpdate(input)
+      await reload()
+      return updated
+    })
+  }
+
   async function disconnectAccount(id: string): Promise<void> {
     await run(async () => {
       await window.socialVault.accounts.disconnect(id)
@@ -132,6 +145,21 @@ export function useAccounts() {
     })
   }
 
+  async function updateGroup(input: UpdateGroupInput): Promise<Group> {
+    return run(async () => {
+      const group = await window.socialVault.groups.update(input)
+      await reload()
+      return group
+    })
+  }
+
+  async function moveGroup(input: MoveGroupInput): Promise<void> {
+    await run(async () => {
+      await window.socialVault.groups.move(input)
+      await reload()
+    })
+  }
+
   async function removeGroup(id: string): Promise<void> {
     await run(async () => {
       await window.socialVault.groups.remove(id)
@@ -146,6 +174,22 @@ export function useAccounts() {
       browserStates.set(id, state)
       await reload()
       return state
+    })
+  }
+
+  async function verifyIdentity(id: string): Promise<ManagedIdentityCheckResult> {
+    return run(async () => {
+      const result = await window.socialVault.accounts.verifyIdentity(id)
+      await reload()
+      return result
+    })
+  }
+
+  async function confirmIdentity(input: ConfirmManagedIdentityInput): Promise<ManagedIdentityCheckResult> {
+    return run(async () => {
+      const result = await window.socialVault.accounts.confirmIdentity(input)
+      await reload()
+      return result
     })
   }
 
@@ -177,11 +221,16 @@ export function useAccounts() {
     reload,
     createAccount,
     updateAccount,
+    bulkUpdateAccounts,
     disconnectAccount,
     purgeAccount,
     createGroup,
+    updateGroup,
+    moveGroup,
     removeGroup,
-    openBrowser
+    openBrowser,
+    verifyIdentity,
+    confirmIdentity
   }
 }
 

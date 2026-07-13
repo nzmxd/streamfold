@@ -9,12 +9,17 @@ const api: SocialVaultApi = {
     list: () => ipcRenderer.invoke('accounts:list'),
     create: (input) => ipcRenderer.invoke('accounts:create', input),
     update: (input) => ipcRenderer.invoke('accounts:update', input),
+    bulkUpdate: (input) => ipcRenderer.invoke('accounts:bulk-update', input),
     disconnect: (id) => ipcRenderer.invoke('accounts:disconnect', id),
-    purge: (id) => ipcRenderer.invoke('accounts:purge', id)
+    purge: (id) => ipcRenderer.invoke('accounts:purge', id),
+    verifyIdentity: (id) => ipcRenderer.invoke('accounts:verify-identity', id),
+    confirmIdentity: (input) => ipcRenderer.invoke('accounts:confirm-identity', input)
   },
   groups: {
     list: () => ipcRenderer.invoke('groups:list'),
     create: (input) => ipcRenderer.invoke('groups:create', input),
+    update: (input) => ipcRenderer.invoke('groups:update', input),
+    move: (input) => ipcRenderer.invoke('groups:move', input),
     remove: (id) => ipcRenderer.invoke('groups:remove', id)
   },
   browser: {
@@ -55,7 +60,9 @@ const api: SocialVaultApi = {
   settings: {
     overview: () => ipcRenderer.invoke('settings:overview'),
     update: (input) => ipcRenderer.invoke('settings:update', input),
-    exportData: (input) => ipcRenderer.invoke('settings:export', input)
+    exportData: (input) => ipcRenderer.invoke('settings:export', input),
+    createBackup: (input) => ipcRenderer.invoke('settings:backup-create', input),
+    restoreBackup: (input) => ipcRenderer.invoke('settings:backup-restore', input)
   }
 }
 

@@ -212,6 +212,13 @@
 .export-result { display: grid; gap: 3px; margin-top: 11px; padding: 9px 10px; color: #246b49; background: #ebf8f1; border-radius: 7px; font-size: 9px; }
 .export-result.cancelled { color: #707781; background: #f2f4f6; }
 .local-data-card { margin-top: 11px; padding: 16px; }
+.backup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 14px; }
+.backup-form { display: flex; min-width: 0; flex-direction: column; align-items: stretch; gap: 10px; padding: 14px; background: #f8fafb; border: 1px solid #e5e9ed; border-radius: 10px; }
+.backup-form > strong { color: #252a30; font-size: 13px; }
+.backup-form label { display: grid; min-width: 0; gap: 5px; color: #555d66; font-size: 10px; }
+.backup-form input { width: 100%; }
+.backup-form > small { min-height: 30px; color: #808892; font-size: 9px; line-height: 1.6; }
+.backup-form .button { align-self: flex-start; }
 .data-account-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid #edf0f2; }
 .data-account-row > div { display: grid; gap: 4px; }
 .data-account-row strong { font-size: 11px; }
@@ -246,7 +253,7 @@
 }
 
 @media (max-width: 980px) {
-  .dashboard-columns, .analytics-lower, .settings-columns { grid-template-columns: 1fr; }
+  .dashboard-columns, .analytics-lower, .settings-columns, .backup-grid { grid-template-columns: 1fr; }
   .onboarding-card { grid-template-columns: auto minmax(0, 1fr); }
   .onboarding-actions { grid-column: 1 / -1; justify-content: flex-end; }
   .content-workspace {

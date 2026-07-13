@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import type { Account, ExportDataResult, StorageOverview } from '../../../../shared/contracts'
+import type {
+  Account,
+  EncryptedBackupResult,
+  ExportDataResult,
+  StorageOverview
+} from '../../../../shared/contracts'
 import { formatBytes, formatDate, formatNumber, messageOf } from '../shared/format'
 
 const overview = ref<StorageOverview | null>(null)
@@ -15,6 +20,12 @@ const exportAccountId = ref('')
 const exporting = ref(false)
 const exportResult = ref<ExportDataResult | null>(null)
 const clearingAccountId = ref<string | null>(null)
+const backupPassword = ref('')
+const backupPasswordConfirm = ref('')
+const restorePassword = ref('')
+const backupBusy = ref(false)
+const restoreBusy = ref(false)
+const backupResult = ref<EncryptedBackupResult | null>(null)
 
 function safeFileName(value: string | null): string {
   if (!value) return '—'
@@ -91,6 +102,55 @@ async function clearAccountHistory(account: Account): Promise<void> {
   }
 }
 
+async function createEncryptedBackup(): Promise<void> {
+  if (backupBusy.value || backupPassword.value.length < 12 || backupPassword.value !== backupPasswordConfirm.value) return
+  backupBusy.value = true
+  error.value = ''
+  success.value = ''
+  backupResult.value = null
+  try {
+    backupResult.value = await window.socialVault.settings.createBackup({ password: backupPassword.value })
+    if (!backupResult.value.cancelled) {
+      success.value = `加密备份已创建：${safeFileName(backupResult.value.fileName)}`
+      await load()
+    }
+  } catch (cause) {
+    error.value = messageOf(cause)
+  } finally {
+    backupPassword.value = ''
+    backupPasswordConfirm.value = ''
+    backupBusy.value = false
+  }
+}
+
+async function restoreEncryptedBackup(): Promise<void> {
+  if (restoreBusy.value || restorePassword.value.length < 12) return
+  const confirmed = window.confirm(
+    '从加密备份恢复本地数据库？\n\n当前账号、分组、内容、快照、任务和设置将被备份中的版本替换。所有账号都会暂停同步并要求重新打开官方页面核验身份。恢复前请先为当前数据创建新备份。'
+  )
+  if (!confirmed) return
+  restoreBusy.value = true
+  error.value = ''
+  success.value = ''
+  backupResult.value = null
+  try {
+    backupResult.value = await window.socialVault.settings.restoreBackup({
+      password: restorePassword.value,
+      confirmReplace: true
+    })
+    if (!backupResult.value.cancelled) {
+      success.value = `已恢复 ${safeFileName(backupResult.value.fileName)}；账号同步已暂停，请重新核验登录身份。`
+      if (backupResult.value.warning) success.value += ` ${backupResult.value.warning}`
+      await load()
+    }
+  } catch (cause) {
+    error.value = messageOf(cause)
+  } finally {
+    restorePassword.value = ''
+    restoreBusy.value = false
+  }
+}
+
 onMounted(() => void load())
 </script>
 
@@ -123,7 +183,7 @@ onMounted(() => void load())
         </section>
 
         <section class="feature-card setting-card">
-          <div class="feature-card-head"><div><h2>导出本地数据</h2><p>生成便于归档或二次分析的结构化文件；当前不提供恢复功能</p></div></div>
+          <div class="feature-card-head"><div><h2>导出本地数据</h2><p>生成便于归档或二次分析的结构化文件；结构化导出不用于数据库恢复</p></div></div>
           <form class="export-form" @submit.prevent="exportData">
             <label><span>范围</span><select v-model="exportAccountId"><option value="">全部账号</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ account.alias }}</option></select></label>
             <label><span>格式</span><select v-model="exportFormat"><option value="json">JSON（账号、内容与快照）</option><option value="csv">CSV（内容表格）</option></select></label>
@@ -136,6 +196,26 @@ onMounted(() => void load())
           </div>
         </section>
       </div>
+
+      <section class="feature-card local-data-card">
+        <div class="feature-card-head"><div><h2>加密备份与恢复</h2><p>AES-256-GCM 加密完整本地数据库；密码不会保存，遗失后无法找回</p></div><span>最近备份 {{ formatDate(overview.lastBackupAt, true) }}</span></div>
+        <div class="backup-grid">
+          <form class="backup-form" @submit.prevent="createEncryptedBackup">
+            <strong>创建完整备份</strong>
+            <label><span>备份密码</span><input v-model="backupPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" placeholder="至少 12 个字符" /></label>
+            <label><span>再次输入</span><input v-model="backupPasswordConfirm" type="password" minlength="12" maxlength="256" autocomplete="new-password" /></label>
+            <small v-if="backupPasswordConfirm && backupPassword !== backupPasswordConfirm" class="danger-text">两次密码不一致</small>
+            <button class="button primary" :disabled="backupBusy || backupPassword.length < 12 || backupPassword !== backupPasswordConfirm" type="submit">{{ backupBusy ? '正在加密…' : '选择位置并备份' }}</button>
+          </form>
+          <form class="backup-form" @submit.prevent="restoreEncryptedBackup">
+            <strong>恢复完整备份</strong>
+            <label><span>备份密码</span><input v-model="restorePassword" type="password" minlength="12" maxlength="256" autocomplete="current-password" placeholder="输入该备份的密码" /></label>
+            <small>恢复会关闭账号浏览器、替换当前本地数据，并暂停所有账号同步等待身份复验。最近恢复 {{ formatDate(overview.lastRestoreAt, true) }}</small>
+            <button class="button danger" :disabled="restoreBusy || restorePassword.length < 12" type="submit">{{ restoreBusy ? '正在校验并恢复…' : '选择备份并恢复' }}</button>
+          </form>
+        </div>
+        <div v-if="backupResult?.cancelled" class="export-result cancelled"><strong>已取消</strong><span>没有写入或替换任何数据。</span></div>
+      </section>
 
       <section class="feature-card local-data-card">
         <div class="feature-card-head"><div><h2>按账号管理历史数据</h2><p>清除内容、指标、导入任务和同步游标；登录会话、账号备注及平台数据不受影响</p></div><span>{{ accounts.length }} 个账号</span></div>

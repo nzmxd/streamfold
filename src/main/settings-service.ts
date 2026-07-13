@@ -37,7 +37,9 @@ export class SettingsService {
       databaseBytes: await fileSize(this.databasePath),
       ...counts,
       rawRetentionDays: readIntegerSetting(this.database, 'raw_retention_days', 7),
-      lastExportAt: this.database.getSetting('last_export_at')
+      lastExportAt: this.database.getSetting('last_export_at'),
+      lastBackupAt: this.database.getSetting('last_backup_at'),
+      lastRestoreAt: this.database.getSetting('last_restore_at')
     }
   }
 

@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
   parseAnalyticsQuery,
+  parseBulkUpdateAccounts,
   parseCommitFileImport,
+  parseConfirmManagedIdentity,
   parseContentQuery,
   parseCreateAccount,
+  parseCreateEncryptedBackup,
   parseExportData,
+  parseMoveGroup,
+  parseRestoreEncryptedBackup,
   parseUpdateAccount,
   parseUpdateContent,
+  parseUpdateGroup,
   parseUpdateSettings
 } from './validation'
 
@@ -46,6 +52,26 @@ describe('IPC validation', () => {
       .toEqual({ id: 'content', note: '本地备注', tags: ['重点'] })
   })
 
+  it('validates group edits, ordering and bounded batch operations', () => {
+    expect(parseUpdateGroup({ id: 'group', name: '  工作号  ', color: '#339cFF' })).toEqual({
+      id: 'group', name: '工作号', color: '#339cFF'
+    })
+    expect(parseMoveGroup({ id: 'group', direction: 'down' })).toEqual({ id: 'group', direction: 'down' })
+    expect(parseBulkUpdateAccounts({
+      accountIds: ['a', 'a', 'b'],
+      groupChange: { groupId: 'group', action: 'add' },
+      syncEnabled: false
+    })).toEqual({
+      accountIds: ['a', 'b'],
+      groupChange: { groupId: 'group', action: 'add' },
+      syncEnabled: false
+    })
+    expect(() => parseUpdateGroup({ id: 'group' })).toThrow('没有需要更新')
+    expect(() => parseMoveGroup({ id: 'group', direction: 'first' })).toThrow('移动方向无效')
+    expect(() => parseBulkUpdateAccounts({ accountIds: [] })).toThrow('至少选择一个账号')
+    expect(() => parseBulkUpdateAccounts({ accountIds: ['a'] })).toThrow('没有需要执行')
+  })
+
   it('validates settings and export requests', () => {
     expect(parseUpdateSettings({ rawRetentionDays: 7 })).toEqual({ rawRetentionDays: 7 })
     expect(parseExportData({ format: 'csv', accountId: 'account' })).toEqual({
@@ -53,6 +79,28 @@ describe('IPC validation', () => {
     })
     expect(() => parseUpdateSettings({ rawRetentionDays: 366 })).toThrow('原始响应保留天数无效')
     expect(() => parseExportData({ format: 'xlsx' })).toThrow('导出格式无效')
+  })
+
+  it('requires an explicit strong-enough backup password and restore confirmation', () => {
+    expect(parseCreateEncryptedBackup({ password: 'correct horse battery staple' }))
+      .toEqual({ password: 'correct horse battery staple' })
+    expect(parseRestoreEncryptedBackup({
+      password: 'correct horse battery staple', confirmReplace: true
+    })).toEqual({ password: 'correct horse battery staple', confirmReplace: true })
+    expect(() => parseCreateEncryptedBackup({ password: 'short' })).toThrow('12-256')
+    expect(() => parseCreateEncryptedBackup({ password: '中文中文' })).toThrow('12-256')
+    expect(() => parseRestoreEncryptedBackup({
+      password: 'correct horse battery staple', confirmReplace: 'yes'
+    })).toThrow('恢复确认无效')
+  })
+
+  it('binds identity confirmation to an account and one explicit boolean', () => {
+    expect(parseConfirmManagedIdentity({
+      accountId: 'account', token: 'preview-token', confirmIdentity: true
+    })).toEqual({ accountId: 'account', token: 'preview-token', confirmIdentity: true })
+    expect(() => parseConfirmManagedIdentity({
+      accountId: 'account', token: 'preview-token', confirmIdentity: 'yes'
+    })).toThrow('本人身份确认无效')
   })
 
 })

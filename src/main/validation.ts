@@ -2,13 +2,19 @@ import {
   contentTypes,
   platformIds,
   type AnalyticsQuery,
+  type BulkUpdateAccountsInput,
   type CommitFileImportInput,
+  type ConfirmManagedIdentityInput,
   type ContentQuery,
   type CreateAccountInput,
+  type CreateEncryptedBackupInput,
   type CreateGroupInput,
   type ExportDataInput,
+  type MoveGroupInput,
+  type RestoreEncryptedBackupInput,
   type SyncMode,
   type UpdateContentInput,
+  type UpdateGroupInput,
   type UpdateSettingsInput,
   type UpdateAccountInput
 } from '../shared/contracts'
@@ -47,6 +53,49 @@ export function parseCreateGroup(value: unknown): CreateGroupInput {
   const color = asText(record.color, '分组颜色', 4, 20)
   if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error('分组颜色格式无效')
   return { name: asText(record.name, '分组名称', 1, 30), color }
+}
+
+export function parseUpdateGroup(value: unknown): UpdateGroupInput {
+  const record = asRecord(value)
+  const result: UpdateGroupInput = { id: asId(record.id) }
+  if (record.name !== undefined) result.name = asText(record.name, '分组名称', 1, 30)
+  if (record.color !== undefined) {
+    const color = asText(record.color, '分组颜色', 4, 20)
+    if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new Error('分组颜色格式无效')
+    result.color = color
+  }
+  if (result.name === undefined && result.color === undefined) throw new Error('没有需要更新的分组字段')
+  return result
+}
+
+export function parseMoveGroup(value: unknown): MoveGroupInput {
+  const record = asRecord(value)
+  return {
+    id: asId(record.id),
+    direction: asEnum(record.direction, ['up', 'down'] as const, '移动方向')
+  }
+}
+
+export function parseBulkUpdateAccounts(value: unknown): BulkUpdateAccountsInput {
+  const record = asRecord(value)
+  const result: BulkUpdateAccountsInput = {
+    accountIds: asStringArray(record.accountIds, '账号', 500, 80)
+  }
+  if (result.accountIds.length === 0) throw new Error('请至少选择一个账号')
+  if (record.groupChange !== undefined) {
+    const groupChange = asRecord(record.groupChange)
+    result.groupChange = {
+      groupId: asId(groupChange.groupId),
+      action: asEnum(groupChange.action, ['add', 'remove'] as const, '分组操作')
+    }
+  }
+  if (record.syncEnabled !== undefined) {
+    result.syncEnabled = asBoolean(record.syncEnabled, '同步开关')
+  }
+  if (result.groupChange === undefined && result.syncEnabled === undefined) {
+    throw new Error('没有需要执行的批量操作')
+  }
+  return result
 }
 
 export function parseId(value: unknown): string {
@@ -120,6 +169,28 @@ export function parseExportData(value: unknown): ExportDataInput {
   return result
 }
 
+export function parseCreateEncryptedBackup(value: unknown): CreateEncryptedBackupInput {
+  const record = asRecord(value)
+  return { password: asPassword(record.password) }
+}
+
+export function parseConfirmManagedIdentity(value: unknown): ConfirmManagedIdentityInput {
+  const record = asRecord(value)
+  return {
+    accountId: asId(record.accountId),
+    token: asText(record.token, '身份确认令牌', 1, 80),
+    confirmIdentity: asBoolean(record.confirmIdentity, '本人身份确认')
+  }
+}
+
+export function parseRestoreEncryptedBackup(value: unknown): RestoreEncryptedBackupInput {
+  const record = asRecord(value)
+  return {
+    password: asPassword(record.password),
+    confirmReplace: asBoolean(record.confirmReplace, '恢复确认')
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('请求参数无效')
   return value as Record<string, unknown>
@@ -138,6 +209,14 @@ function asText(value: unknown, label: string, min: number, max: number): string
 
 function asBoolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${label}无效`)
+  return value
+}
+
+function asPassword(value: unknown): string {
+  if (typeof value !== 'string' || value.includes('\u0000')) throw new Error('备份密码无效')
+  const characters = [...value].length
+  const bytes = Buffer.byteLength(value, 'utf8')
+  if (characters < 12 || characters > 256 || bytes > 1024) throw new Error('备份密码应为 12-256 个字符')
   return value
 }
 

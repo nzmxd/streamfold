@@ -1,17 +1,28 @@
 import { randomUUID } from 'node:crypto'
+import {
+  existsSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import type {
   Account,
   AccountStatus,
+  BulkUpdateAccountsInput,
   ConnectionStatus,
   CreateAccountInput,
   CreateGroupInput,
   Group,
+  MoveGroupInput,
   OwnershipStatus,
   PlatformId,
   SyncMode,
   SyncStatus,
-  UpdateAccountInput
+  UpdateAccountInput,
+  UpdateGroupInput
 } from '../shared/contracts'
 import type {
   AccountSnapshot,
@@ -173,17 +184,12 @@ interface PluginRow {
 }
 
 export class SocialDatabase {
-  private readonly db: DatabaseSync
+  private db: DatabaseSync
   readonly databasePath: string
 
   constructor(path: string) {
     this.databasePath = path
-    this.db = new DatabaseSync(path, {
-      timeout: 5000,
-      allowExtension: false,
-      defensive: true
-    })
-    migrateDatabase(this.db)
+    this.db = openDatabase(path)
   }
 
   get path(): string {
@@ -192,6 +198,64 @@ export class SocialDatabase {
 
   close(): void {
     if (this.db.isOpen) this.db.close()
+  }
+
+  createBackupImage(): Buffer {
+    if (this.databasePath === ':memory:') throw new Error('内存数据库不能创建文件备份')
+    checkpointDatabase(this.db)
+    const size = statSync(this.databasePath).size
+    if (size <= 0 || size > 48 * 1024 * 1024) throw new Error('本地数据库超过 48 MB 备份上限')
+    return readFileSync(this.databasePath)
+  }
+
+  restoreBackupImage(image: Uint8Array, afterReplace?: () => void): void {
+    if (this.databasePath === ':memory:') throw new Error('内存数据库不能恢复文件备份')
+    const bytes = Buffer.from(image)
+    if (bytes.length < 100 || bytes.subarray(0, 16).toString('utf8') !== 'SQLite format 3\0') {
+      bytes.fill(0)
+      throw new Error('备份中的数据库格式无效')
+    }
+
+    const temporaryPath = `${this.databasePath}.restore-${randomUUID()}.tmp`
+    const previousPath = `${this.databasePath}.before-restore-${randomUUID()}.tmp`
+    let movedCurrent = false
+    try {
+      writeFileSync(temporaryPath, bytes, { flag: 'wx', mode: 0o600 })
+      validateBackupDatabase(temporaryPath)
+
+      checkpointDatabase(this.db)
+      this.db.close()
+      removeSqliteSidecars(this.databasePath)
+      renameSync(this.databasePath, previousPath)
+      movedCurrent = true
+      renameSync(temporaryPath, this.databasePath)
+
+      this.db = openDatabase(this.databasePath)
+      const now = new Date().toISOString()
+      this.db.prepare(`
+        UPDATE accounts SET connection_status = 'pending', status = 'pending', sync_enabled = 0,
+          sync_status = 'idle', cooldown_until = NULL,
+          last_sync_error = '备份已恢复，请重新打开官方页面并核验登录身份', updated_at = ?
+      `).run(now)
+      this.recoverInterruptedJobs()
+      afterReplace?.()
+      rmSync(previousPath, { force: true })
+      movedCurrent = false
+    } catch {
+      if (this.db.isOpen) this.db.close()
+      removeSqliteSidecars(this.databasePath)
+      if (movedCurrent && existsSync(previousPath)) {
+        rmSync(this.databasePath, { force: true })
+        renameSync(previousPath, this.databasePath)
+        movedCurrent = false
+      }
+      this.db = openDatabase(this.databasePath)
+      throw new Error('备份恢复失败，原数据库已保留')
+    } finally {
+      bytes.fill(0)
+      rmSync(temporaryPath, { force: true })
+      if (movedCurrent) rmSync(previousPath, { force: true })
+    }
   }
 
   getSchemaVersion(): number {
@@ -254,7 +318,7 @@ export class SocialDatabase {
       syncEnabled: input.syncEnabled ?? current.syncEnabled,
       syncMode: input.syncMode ?? current.syncMode,
       isDefault: input.isDefault ?? current.isDefault,
-      groupIds: input.groupIds ?? current.groupIds
+      groupIds: [...new Set(input.groupIds ?? current.groupIds)]
     }
     if (next.syncMode === 'disabled') next.syncEnabled = false
     if (current.connectionStatus === 'disconnected') next.syncEnabled = false
@@ -294,6 +358,59 @@ export class SocialDatabase {
     return requireAccount(this.getAccount(input.id))
   }
 
+  bulkUpdateAccounts(input: BulkUpdateAccountsInput): Account[] {
+    const accountIds = [...new Set(input.accountIds)]
+    if (accountIds.length === 0) throw new Error('请至少选择一个账号')
+    if (input.groupChange === undefined && input.syncEnabled === undefined) {
+      throw new Error('没有需要执行的批量操作')
+    }
+
+    const accounts = accountIds.map((id) => requireAccount(this.getAccount(id)))
+    if (input.groupChange && !this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(input.groupChange.groupId)) {
+      throw new Error('分组不存在')
+    }
+
+    const now = new Date().toISOString()
+    this.transaction(() => {
+      if (input.groupChange) {
+        const { groupId, action } = input.groupChange
+        if (action === 'add') {
+          const insert = this.db.prepare(
+            'INSERT OR IGNORE INTO account_groups (account_id, group_id) VALUES (?, ?)'
+          )
+          for (const account of accounts) insert.run(account.id, groupId)
+        } else {
+          const remove = this.db.prepare(
+            'DELETE FROM account_groups WHERE account_id = ? AND group_id = ?'
+          )
+          for (const account of accounts) remove.run(account.id, groupId)
+        }
+      }
+
+      if (input.syncEnabled !== undefined) {
+        const update = this.db.prepare(`
+          UPDATE accounts SET sync_enabled = ?, status = ?, updated_at = ? WHERE id = ?
+        `)
+        for (const account of accounts) {
+          const syncEnabled = input.syncEnabled &&
+            account.connectionStatus === 'ready' && account.syncMode !== 'disabled'
+          const status = deriveAccountStatus({
+            connectionStatus: account.connectionStatus,
+            syncEnabled,
+            syncStatus: account.syncStatus,
+            syncMode: account.syncMode
+          })
+          update.run(syncEnabled ? 1 : 0, status, now, account.id)
+        }
+      } else if (input.groupChange) {
+        const touch = this.db.prepare('UPDATE accounts SET updated_at = ? WHERE id = ?')
+        for (const account of accounts) touch.run(now, account.id)
+      }
+    })
+
+    return accountIds.map((id) => requireAccount(this.getAccount(id)))
+  }
+
   disconnectAccount(id: string): Account {
     requireAccount(this.getAccount(id))
     const now = new Date().toISOString()
@@ -315,6 +432,64 @@ export class SocialDatabase {
       WHERE id = ? AND connection_status = 'disconnected'
     `).run(now, id)
     return requireAccount(this.getAccount(id))
+  }
+
+  applyManagedIdentity(
+    accountId: string,
+    identity: { remoteId: string; remoteName: string },
+    verifiedAt: string
+  ): Account {
+    const account = requireAccount(this.getAccount(accountId))
+    const duplicate = this.db.prepare(`
+      SELECT id FROM accounts WHERE platform_id = ? AND remote_id = ? AND id <> ? LIMIT 1
+    `).get(account.platformId, identity.remoteId, accountId) as unknown as { id: string } | undefined
+    const mismatch = Boolean(
+      account.remoteId && account.remoteId !== identity.remoteId || duplicate
+    )
+    if (mismatch) {
+      this.db.prepare(`
+        UPDATE accounts SET connection_status = 'mismatch', status = 'mismatch', sync_enabled = 0,
+          sync_status = 'idle', last_sync_error = ?, updated_at = ? WHERE id = ?
+      `).run('当前登录身份与本地账号绑定不一致，已停止同步', verifiedAt, accountId)
+      return requireAccount(this.getAccount(accountId))
+    }
+
+    const status = deriveAccountStatus({
+      connectionStatus: 'ready',
+      syncEnabled: account.syncEnabled,
+      syncStatus: 'idle',
+      syncMode: account.syncMode
+    })
+    this.db.prepare(`
+      UPDATE accounts SET remote_id = ?, remote_name = ?, ownership_status = 'plugin_verified',
+        identity_verified_at = ?, connection_status = 'ready', status = ?, sync_status = 'idle',
+        cooldown_until = NULL, last_sync_error = '', updated_at = ? WHERE id = ?
+    `).run(identity.remoteId, identity.remoteName, verifiedAt, status, verifiedAt, accountId)
+    return requireAccount(this.getAccount(accountId))
+  }
+
+  applyManagedProbeStatus(
+    accountId: string,
+    probeStatus: 'login_required' | 'challenge' | 'page_not_ready' | 'unsupported',
+    message: string,
+    observedAt: string
+  ): Account {
+    requireAccount(this.getAccount(accountId))
+    const connectionStatus: ConnectionStatus = probeStatus === 'login_required' ? 'expired' : 'pending'
+    const syncStatus: SyncStatus = probeStatus === 'challenge'
+      ? 'cooldown'
+      : probeStatus === 'unsupported' ? 'unsupported' : 'idle'
+    const status: AccountStatus = probeStatus === 'login_required'
+      ? 'expired'
+      : probeStatus === 'challenge' ? 'cooldown' : probeStatus === 'unsupported' ? 'unsupported' : 'paused'
+    const cooldownUntil = probeStatus === 'challenge'
+      ? new Date(new Date(observedAt).getTime() + 30 * 60_000).toISOString()
+      : null
+    this.db.prepare(`
+      UPDATE accounts SET connection_status = ?, status = ?, sync_enabled = 0, sync_status = ?,
+        cooldown_until = ?, last_sync_error = ?, updated_at = ? WHERE id = ?
+    `).run(connectionStatus, status, syncStatus, cooldownUntil, message, observedAt, accountId)
+    return requireAccount(this.getAccount(accountId))
   }
 
   /** Permanently deletes the account and all data owned by it. */
@@ -346,6 +521,34 @@ export class SocialDatabase {
     const group = this.listGroups().find((item) => item.id === id)
     if (!group) throw new Error('创建分组失败')
     return group
+  }
+
+  updateGroup(input: UpdateGroupInput): Group {
+    const current = this.listGroups().find((group) => group.id === input.id)
+    if (!current) throw new Error('分组不存在')
+    const name = input.name ?? current.name
+    const color = input.color ?? current.color
+    this.db.prepare('UPDATE groups SET name = ?, color = ? WHERE id = ?').run(name, color, input.id)
+    const group = this.listGroups().find((item) => item.id === input.id)
+    if (!group) throw new Error('更新分组失败')
+    return group
+  }
+
+  moveGroup(input: MoveGroupInput): Group[] {
+    const groups = this.listGroups()
+    const index = groups.findIndex((group) => group.id === input.id)
+    if (index < 0) throw new Error('分组不存在')
+    const targetIndex = input.direction === 'up' ? index - 1 : index + 1
+    if (targetIndex < 0 || targetIndex >= groups.length) return groups
+    const reordered = [...groups]
+    const moving = reordered[index]!
+    reordered.splice(index, 1)
+    reordered.splice(targetIndex, 0, moving)
+    this.transaction(() => {
+      const update = this.db.prepare('UPDATE groups SET sort_order = ? WHERE id = ?')
+      reordered.forEach((group, order) => update.run((order + 1) * 10, group.id))
+    })
+    return this.listGroups()
   }
 
   removeGroup(id: string): void {
@@ -1141,11 +1344,11 @@ function deriveAccountStatus(state: {
   syncStatus: SyncStatus
   syncMode: SyncMode
 }): AccountStatus {
-  if (!state.syncEnabled || state.syncMode === 'disabled' || state.connectionStatus === 'disconnected') return 'paused'
-  if (state.syncStatus === 'cooldown') return 'cooldown'
-  if (state.syncStatus === 'unsupported') return 'unsupported'
   if (state.connectionStatus === 'expired') return 'expired'
   if (state.connectionStatus === 'mismatch') return 'mismatch'
+  if (state.syncStatus === 'cooldown') return 'cooldown'
+  if (state.syncStatus === 'unsupported') return 'unsupported'
+  if (!state.syncEnabled || state.syncMode === 'disabled' || state.connectionStatus === 'disconnected') return 'paused'
   return state.connectionStatus === 'ready' ? 'ready' : 'pending'
 }
 
@@ -1262,6 +1465,56 @@ function requirePlugin(plugin: PluginInstallation | null): PluginInstallation {
 
 function isActiveJob(status: JobStatus): boolean {
   return status === 'validating' || status === 'committing'
+}
+
+function openDatabase(path: string): DatabaseSync {
+  const database = new DatabaseSync(path, {
+    timeout: 5000,
+    allowExtension: false,
+    defensive: true
+  })
+  try {
+    migrateDatabase(database)
+    return database
+  } catch (error) {
+    database.close()
+    throw error
+  }
+}
+
+function validateBackupDatabase(path: string): void {
+  const database = new DatabaseSync(path, {
+    readOnly: true,
+    timeout: 5000,
+    allowExtension: false,
+    defensive: true
+  })
+  try {
+    const version = readUserVersion(database)
+    if (version < 1 || version > CURRENT_SCHEMA_VERSION) throw new Error('数据库版本不受支持')
+    const integrity = database.prepare('PRAGMA integrity_check').all() as unknown as Array<{ integrity_check: string }>
+    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') throw new Error('数据库完整性校验失败')
+    const foreignKeyErrors = database.prepare('PRAGMA foreign_key_check').all()
+    if (foreignKeyErrors.length > 0) throw new Error('数据库外键校验失败')
+  } finally {
+    database.close()
+  }
+}
+
+function removeSqliteSidecars(path: string): void {
+  rmSync(`${path}-wal`, { force: true })
+  rmSync(`${path}-shm`, { force: true })
+}
+
+function checkpointDatabase(database: DatabaseSync): void {
+  const result = database.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as unknown as {
+    busy: number
+    log: number
+    checkpointed: number
+  }
+  if (Number(result.busy) !== 0 || Number(result.log) !== Number(result.checkpointed)) {
+    throw new Error('数据库仍有未完成写入，请稍后重试备份')
+  }
 }
 
 function isTerminalJob(status: JobStatus): boolean {

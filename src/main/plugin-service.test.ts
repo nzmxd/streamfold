@@ -14,14 +14,17 @@ describe('PluginService', () => {
 
   afterEach(() => database.close())
 
-  it('enables only the built-in audited file plugin', () => {
+  it('enables only available audited plugins', () => {
     const plugins = service.list()
     expect(plugins).toHaveLength(5)
     expect(plugins.find((plugin) => plugin.manifest.id === 'generic-file-import'))
       .toMatchObject({ enabled: true, availability: 'available' })
     expect(plugins.filter((plugin) => plugin.availability === 'planned').every((plugin) => !plugin.enabled))
       .toBe(true)
-    expect(() => service.setEnabled('xiaohongshu-managed-browser', true)).toThrow('计划中的插件不能启用')
+    expect(service.setEnabled('xiaohongshu-managed-browser', true)).toMatchObject({
+      enabled: true, availability: 'available'
+    })
+    expect(() => service.setEnabled('weibo-managed-browser', true)).toThrow('计划中的插件不能启用')
   })
 
   it('persists the user toggle for the available plugin', () => {

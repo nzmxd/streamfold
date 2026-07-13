@@ -12,6 +12,8 @@ export interface StorageOverview {
   importCount: number
   rawRetentionDays: number
   lastExportAt: string | null
+  lastBackupAt: string | null
+  lastRestoreAt: string | null
 }
 
 export interface UpdateSettingsInput {
@@ -28,3 +30,9 @@ export interface ExportDataResult {
   fileName: string | null
   exportedContentCount: number
 }
+
+export type {
+  CreateEncryptedBackupInput,
+  EncryptedBackupResult,
+  RestoreEncryptedBackupInput
+} from './backup-contracts'

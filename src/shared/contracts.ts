@@ -87,8 +87,29 @@ export interface CreateGroupInput {
   color: string
 }
 
+export interface UpdateGroupInput {
+  id: string
+  name?: string
+  color?: string
+}
+
+export interface MoveGroupInput {
+  id: string
+  direction: 'up' | 'down'
+}
+
+export interface BulkUpdateAccountsInput {
+  accountIds: string[]
+  groupChange?: {
+    groupId: string
+    action: 'add' | 'remove'
+  }
+  syncEnabled?: boolean
+}
+
 export interface BrowserState {
   accountId: string | null
+  platformId: PlatformId | null
   accountAlias: string
   platformName: string
   url: string
@@ -109,12 +130,17 @@ export interface SocialVaultApi {
     list(): Promise<Account[]>
     create(input: CreateAccountInput): Promise<Account>
     update(input: UpdateAccountInput): Promise<Account>
+    bulkUpdate(input: BulkUpdateAccountsInput): Promise<Account[]>
     disconnect(id: string): Promise<void>
     purge(id: string): Promise<void>
+    verifyIdentity(id: string): Promise<import('./managed-adapter-contracts').ManagedIdentityCheckResult>
+    confirmIdentity(input: import('./managed-adapter-contracts').ConfirmManagedIdentityInput): Promise<import('./managed-adapter-contracts').ManagedIdentityCheckResult>
   }
   groups: {
     list(): Promise<Group[]>
     create(input: CreateGroupInput): Promise<Group>
+    update(input: UpdateGroupInput): Promise<Group>
+    move(input: MoveGroupInput): Promise<Group[]>
     remove(id: string): Promise<void>
   }
   browser: {
@@ -148,6 +174,8 @@ export interface SocialVaultApi {
     overview(): Promise<import('./settings-contracts').StorageOverview>
     update(input: import('./settings-contracts').UpdateSettingsInput): Promise<import('./settings-contracts').StorageOverview>
     exportData(input: import('./settings-contracts').ExportDataInput): Promise<import('./settings-contracts').ExportDataResult>
+    createBackup(input: import('./backup-contracts').CreateEncryptedBackupInput): Promise<import('./backup-contracts').EncryptedBackupResult>
+    restoreBackup(input: import('./backup-contracts').RestoreEncryptedBackupInput): Promise<import('./backup-contracts').EncryptedBackupResult>
   }
 }
 
@@ -158,6 +186,8 @@ export interface BrowserWorkspaceApi {
   reload(): Promise<void>
   home(): Promise<void>
   close(): Promise<void>
+  verifyIdentity(): Promise<import('./managed-adapter-contracts').ManagedIdentityCheckResult>
+  confirmIdentity(input: import('./managed-adapter-contracts').ConfirmManagedIdentityInput): Promise<import('./managed-adapter-contracts').ManagedIdentityCheckResult>
   onState(callback: (state: BrowserState) => void): () => void
 }
 
@@ -166,3 +196,5 @@ export * from './import-contracts'
 export * from './job-contracts'
 export * from './plugin-contracts'
 export * from './settings-contracts'
+export * from './backup-contracts'
+export * from './managed-adapter-contracts'
