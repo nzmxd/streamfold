@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
 export type AppSection = 'dashboard' | 'accounts' | 'content' | 'analytics' | 'plugins' | 'settings'
 
-defineProps<{ modelValue: AppSection }>()
+const props = defineProps<{ modelValue: AppSection; collapsed: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: AppSection] }>()
 
 const items: Array<{ id: AppSection; label: string; description: string }> = [
@@ -12,10 +14,49 @@ const items: Array<{ id: AppSection; label: string; description: string }> = [
   { id: 'plugins', label: '插件', description: '平台能力' },
   { id: 'settings', label: '设置', description: '偏好与存储' }
 ]
+
+const tooltip = ref<{ id: AppSection; label: string; left: number; top: number } | null>(null)
+
+function showTooltip(event: MouseEvent | FocusEvent, item: (typeof items)[number]): void {
+  if (!props.collapsed || !(event.currentTarget instanceof HTMLElement)) return
+  const bounds = event.currentTarget.getBoundingClientRect()
+  tooltip.value = {
+    id: item.id,
+    label: item.label,
+    left: bounds.right + 10,
+    top: bounds.top + bounds.height / 2
+  }
+}
+
+function hideTooltip(): void {
+  tooltip.value = null
+}
+
+function onDocumentKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') hideTooltip()
+}
+
+watch(() => props.collapsed, (collapsed) => {
+  if (!collapsed) hideTooltip()
+})
+
+onMounted(() => {
+  document.addEventListener('keydown', onDocumentKeydown)
+  window.addEventListener('resize', hideTooltip)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onDocumentKeydown)
+  window.removeEventListener('resize', hideTooltip)
+})
 </script>
 
 <template>
-  <aside class="main-nav">
+  <aside
+    id="app-sidebar"
+    class="main-nav"
+    :data-collapsed="collapsed"
+    @scroll.passive="hideTooltip"
+  >
     <div class="sidebar-heading">
       <span>工作空间</span>
       <p>账号归位，内容成册</p>
@@ -24,8 +65,15 @@ const items: Array<{ id: AppSection; label: string; description: string }> = [
       <button
         v-for="item in items"
         :key="item.id"
+        type="button"
+        :data-section="item.id"
         :class="{ active: modelValue === item.id }"
+        :aria-label="`${item.label}，${item.description}`"
         :aria-current="modelValue === item.id ? 'page' : undefined"
+        @mouseenter="showTooltip($event, item)"
+        @mouseleave="hideTooltip"
+        @focus="showTooltip($event, item)"
+        @blur="hideTooltip"
         @click="emit('update:modelValue', item.id)"
       >
         <span class="nav-icon" aria-hidden="true">
@@ -39,9 +87,23 @@ const items: Array<{ id: AppSection; label: string; description: string }> = [
         <span class="nav-copy"><strong>{{ item.label }}</strong><small>{{ item.description }}</small></span>
       </button>
     </nav>
-    <div class="sidebar-footer">
+    <div
+      class="sidebar-footer"
+      :aria-label="collapsed ? '本地工作区，数据保存在此设备' : undefined"
+      :title="collapsed ? '本地工作区 · 数据保存在此设备' : undefined"
+    >
       <span class="local-indicator"><i /></span>
       <span><strong>本地工作区</strong><small>数据保存在此设备</small></span>
     </div>
+    <Teleport to="body">
+      <div
+        v-if="collapsed && tooltip"
+        class="sidebar-nav-tooltip"
+        aria-hidden="true"
+        :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px` }"
+      >
+        {{ tooltip.label }}
+      </div>
+    </Teleport>
   </aside>
 </template>

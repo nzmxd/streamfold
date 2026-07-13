@@ -5,7 +5,8 @@ import { useTheme } from '../ui/theme'
 import type { AppSection } from './AppSidebar.vue'
 import BrandGlyph from './BrandGlyph.vue'
 
-const props = defineProps<{ section: AppSection }>()
+const props = defineProps<{ section: AppSection; sidebarCollapsed: boolean }>()
+const emit = defineEmits<{ 'toggle-sidebar': [] }>()
 const theme = useTheme()
 const menuOpen = ref(false)
 
@@ -59,6 +60,21 @@ onBeforeUnmount(() => {
       <span>Streamfold</span>
     </div>
     <div class="titlebar-location" aria-label="当前位置">
+      <button
+        class="titlebar-button sidebar-collapse-toggle"
+        type="button"
+        aria-controls="app-sidebar"
+        :aria-expanded="!sidebarCollapsed"
+        :aria-label="sidebarCollapsed ? '展开左侧导航' : '折叠左侧导航'"
+        :data-tooltip="sidebarCollapsed ? '展开导航' : '折叠导航'"
+        @click="emit('toggle-sidebar')"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="3" />
+          <path d="M8 4v16" />
+          <path :d="sidebarCollapsed ? 'm12.5 9 3 3-3 3' : 'm16 9-3 3 3 3'" />
+        </svg>
+      </button>
       <span>个人社媒工作台</span>
       <i>/</i>
       <strong>{{ sectionLabel }}</strong>
