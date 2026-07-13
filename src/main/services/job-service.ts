@@ -73,6 +73,12 @@ export class JobService {
     return cloneJob(job)
   }
 
+  /** Emits a job that was finalized atomically by a repository transaction. */
+  publishPersisted(job: JobRecord): JobRecord {
+    this.emit(job)
+    return cloneJob(job)
+  }
+
   async cancel(id: string): Promise<JobRecord> {
     const job = await this.repository.getJob(id)
     if (!job) throw new SafeImportError('JOB_NOT_FOUND', '任务不存在')
@@ -90,16 +96,25 @@ export class JobService {
     return () => this.listeners.delete(listener)
   }
 
-  async createValidating(accountId: string, pluginId: string): Promise<JobRecord> {
+  async createManagedSync(accountId: string, pluginId: string): Promise<JobRecord> {
+    return this.createActive(accountId, pluginId, 'managed_sync', '复验当前登录身份')
+  }
+
+  private async createActive(
+    accountId: string,
+    pluginId: string,
+    kind: JobRecord['kind'],
+    stage: string
+  ): Promise<JobRecord> {
     const now = this.nowIso()
     const job = await this.repository.createJob({
       id: this.createId(),
-      kind: 'file_import',
+      kind,
       accountId,
       pluginId,
       status: 'validating',
       progress: 10,
-      stage: '校验导入内容',
+      stage,
       result: null,
       errorCode: '',
       errorMessage: '',

@@ -28,9 +28,5 @@ const items: Array<{ id: AppSection; label: string; icon: string }> = [
         <span>{{ item.icon }}</span>{{ item.label }}
       </button>
     </nav>
-    <div class="security-note">
-      <strong>账号安全优先</strong>
-      <span>官方入口 · 独立会话 · 本地存储</span>
-    </div>
   </aside>
 </template>

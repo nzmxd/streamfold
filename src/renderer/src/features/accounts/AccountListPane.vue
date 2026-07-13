@@ -127,7 +127,7 @@ function countFor(value: string): number {
     </label>
 
     <div class="account-list" role="listbox" aria-label="账号列表">
-      <div v-if="loading" class="empty-list">正在读取本地数据库…</div>
+      <div v-if="loading" class="empty-list">正在加载账号…</div>
       <div v-else-if="accounts.length === 0" class="empty-list">
         <strong>当前筛选下没有账号</strong>
         <span>可以调整分组或创建新的账号空间。</span>

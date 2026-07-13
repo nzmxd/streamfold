@@ -14,16 +14,13 @@ const state = ref<BrowserState>({
   canGoForward: false,
   official: false,
   windowOpen: true,
-  message: '正在连接安全浏览器会话…'
+  message: '正在打开账号浏览器…'
 })
 const error = ref('')
-const verificationMessage = ref('')
-const verifying = ref(false)
 let removeListener: (() => void) | null = null
 
 onMounted(async () => {
   removeListener = window.browserWorkspace.onState((value) => {
-    verificationMessage.value = ''
     state.value = value
   })
   try {
@@ -48,38 +45,6 @@ const reload = (): void => run(() => window.browserWorkspace.reload())
 const goHome = (): void => run(() => window.browserWorkspace.home())
 const closeWindow = (): void => run(() => window.browserWorkspace.close())
 
-async function verifyIdentity(): Promise<void> {
-  if (verifying.value) return
-  verifying.value = true
-  error.value = ''
-  verificationMessage.value = ''
-  try {
-    let result = await window.browserWorkspace.verifyIdentity()
-    if (result.status === 'confirmation_required' && result.confirmationToken && state.value.accountId) {
-      const confirmed = window.confirm(
-        `确认绑定当前可见的小红书身份？\n\n昵称：${result.remoteName}\n远端 ID：${result.remoteId}\n\n确认后会再次核验当前页面，身份一致才会保存。`
-      )
-      if (confirmed) {
-        result = await window.browserWorkspace.confirmIdentity({
-          accountId: state.value.accountId,
-          token: result.confirmationToken,
-          confirmIdentity: true
-        })
-      } else {
-        verificationMessage.value = '已取消首次身份绑定，未写入任何账号身份。'
-        return
-      }
-    }
-    verificationMessage.value = result.remoteName
-      ? `${result.message} 当前身份：${result.remoteName}`
-      : result.message
-  } catch (cause) {
-    error.value = messageOf(cause)
-  } finally {
-    verifying.value = false
-  }
-}
-
 function messageOf(value: unknown): string {
   return value instanceof Error ? value.message : String(value)
 }
@@ -92,7 +57,7 @@ function messageOf(value: unknown): string {
         <span class="product-mark">S</span>
         <div>
           <strong>{{ state.platformName || '内置 Chromium' }} · {{ state.accountAlias || '账号会话' }}</strong>
-          <small>独立登录会话</small>
+          <small>账号浏览器</small>
         </div>
       </div>
 
@@ -112,13 +77,11 @@ function messageOf(value: unknown): string {
       <span class="official-badge" :class="{ verified: state.official }">
         {{ state.official ? '官方域名' : '域名校验中' }}
       </span>
-      <button v-if="state.platformId === 'xiaohongshu'" class="verify-identity" :disabled="verifying || state.loading || !state.official" @click="verifyIdentity">{{ verifying ? '核验中…' : '核验身份' }}</button>
       <button class="close-browser" aria-label="关闭浏览器窗口" title="关闭窗口（保留登录态）" @click="closeWindow">关闭</button>
     </div>
 
     <div class="status-row" :class="{ error: error }">
-      <span>{{ error || verificationMessage || state.message }}</span>
-      <span>登录阶段不运行采集插件 · 不读取密码和验证码</span>
+      <span>{{ error || state.message }}</span>
     </div>
   </header>
 </template>

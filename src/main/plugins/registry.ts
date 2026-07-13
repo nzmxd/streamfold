@@ -3,10 +3,7 @@ import type {
   PluginInstallation,
   PluginManifest
 } from '../../shared/plugin-contracts'
-import { xiaohongshuManagedBrowserAdapter } from '../adapters'
-import { SafeImportError } from './errors'
-
-export const GENERIC_FILE_IMPORT_PLUGIN_ID = 'generic-file-import'
+import { XIAOHONGSHU_API_PLUGIN_ID } from '../xiaohongshu-api-service'
 
 export interface PluginDefinition {
   manifest: PluginManifest
@@ -14,9 +11,7 @@ export interface PluginDefinition {
   defaultEnabled: boolean
 }
 
-function manifest(
-  value: PluginManifest
-): PluginManifest {
+function manifest(value: PluginManifest): PluginManifest {
   return Object.freeze({
     ...value,
     capabilities: Object.freeze([...value.capabilities]) as unknown as PluginManifest['capabilities'],
@@ -24,42 +19,42 @@ function manifest(
   })
 }
 
-export const genericFileImportManifest = manifest({
+export const xiaohongshuSessionApiManifest = manifest({
   schemaVersion: 1,
-  id: GENERIC_FILE_IMPORT_PLUGIN_ID,
-  name: '通用文件导入',
-  version: '1.0.0',
-  description: '导入用户主动选择的 JSON/CSV 文件，不访问任何远程站点。',
+  id: XIAOHONGSHU_API_PLUGIN_ID,
+  name: '小红书数据同步',
+  version: '0.1.0',
+  description: '使用当前账号的登录会话，同步本人资料、作品和统计指标。',
   license: 'builtin',
   source: 'builtin',
-  commitHash: 'builtin:generic-file-import@1.0.0',
-  mode: 'file_import',
+  commitHash: 'builtin:xiaohongshu-session-api@0.1.0+opencli-b0f84c99',
+  mode: 'session_api',
   readOnly: true,
   ownedAccountOnly: true,
-  capabilities: ['file.import', 'account.profile', 'content.list', 'content.metrics'],
-  allowedHosts: [],
-  minimumIntervalSeconds: 0,
-  recommendedSyncIntervalHours: 0,
-  riskLevel: 'low'
+  capabilities: ['account.identity', 'account.profile', 'account.metrics', 'content.list', 'content.metrics'],
+  allowedHosts: ['creator.xiaohongshu.com'],
+  minimumIntervalSeconds: 60,
+  recommendedSyncIntervalHours: 24,
+  riskLevel: 'high'
 })
 
 const plannedAdapters: PluginManifest[] = [
   {
-    id: 'weibo-managed-browser',
-    name: '微博管理浏览器适配器',
-    description: '微博本人账号的只读管理浏览器适配器（计划中）。',
+    id: 'weibo-session-api',
+    name: '微博数据同步',
+    description: '微博账号数据同步功能（计划中）。',
     allowedHosts: ['weibo.com', 'www.weibo.com', 'passport.weibo.com', 'login.sina.com.cn']
   },
   {
-    id: 'douyin-managed-browser',
-    name: '抖音管理浏览器适配器',
-    description: '抖音本人账号的只读管理浏览器适配器（计划中）。',
+    id: 'douyin-session-api',
+    name: '抖音数据同步',
+    description: '抖音账号数据同步功能（计划中）。',
     allowedHosts: ['creator.douyin.com', 'www.douyin.com']
   },
   {
-    id: 'zhihu-managed-browser',
-    name: '知乎管理浏览器适配器',
-    description: '知乎本人账号的只读管理浏览器适配器（计划中）。',
+    id: 'zhihu-session-api',
+    name: '知乎数据同步',
+    description: '知乎账号数据同步功能（计划中）。',
     allowedHosts: ['www.zhihu.com']
   }
 ].map((item) => manifest({
@@ -68,43 +63,19 @@ const plannedAdapters: PluginManifest[] = [
   license: 'builtin',
   source: 'builtin',
   commitHash: `planned:${item.id}`,
-  mode: 'managed_browser',
+  mode: 'session_api',
   readOnly: true,
   ownedAccountOnly: true,
-  capabilities: ['account.profile', 'account.metrics', 'content.list', 'content.metrics'],
+  capabilities: ['account.identity', 'account.profile', 'account.metrics', 'content.list', 'content.metrics'],
   minimumIntervalSeconds: 300,
   recommendedSyncIntervalHours: 24,
-  riskLevel: 'medium',
+  riskLevel: 'high',
   ...item
 }))
 
-const xiaohongshuManagedBrowserManifest = manifest({
-  schemaVersion: 1,
-  id: xiaohongshuManagedBrowserAdapter.metadata.id,
-  name: '小红书登录身份核验',
-  version: xiaohongshuManagedBrowserAdapter.metadata.version,
-  description: '在已登录的小红书创作中心中只读核验本人身份；当前不读取文章或指标。',
-  license: 'builtin',
-  source: 'builtin',
-  commitHash: `sha256:${xiaohongshuManagedBrowserAdapter.scripts.probe.metadata.sha256}:${xiaohongshuManagedBrowserAdapter.scripts.whoami.metadata.sha256}`,
-  mode: 'managed_browser',
-  readOnly: true,
-  ownedAccountOnly: true,
-  capabilities: ['account.identity'],
-  allowedHosts: [...xiaohongshuManagedBrowserAdapter.metadata.allowedHosts],
-  minimumIntervalSeconds: 60,
-  recommendedSyncIntervalHours: 24,
-  riskLevel: 'medium'
-})
-
 const definitions: readonly PluginDefinition[] = Object.freeze([
   Object.freeze({
-    manifest: genericFileImportManifest,
-    availability: 'available' as const,
-    defaultEnabled: true
-  }),
-  Object.freeze({
-    manifest: xiaohongshuManagedBrowserManifest,
+    manifest: xiaohongshuSessionApiManifest,
     availability: 'available' as const,
     defaultEnabled: false
   }),
@@ -115,7 +86,7 @@ const definitions: readonly PluginDefinition[] = Object.freeze([
   }))
 ])
 
-/** Immutable catalog of plugins shipped with the application. */
+/** Immutable catalog: platform adapters only. File import plugins are intentionally unsupported. */
 export class PluginRegistry {
   list(): PluginDefinition[] {
     return definitions.map(cloneDefinition)
@@ -124,25 +95,6 @@ export class PluginRegistry {
   get(id: string): PluginDefinition | null {
     const found = definitions.find((definition) => definition.manifest.id === id)
     return found ? cloneDefinition(found) : null
-  }
-
-  isExecutable(id: string): boolean {
-    const definition = definitions.find((item) => item.manifest.id === id)
-    return definition?.availability === 'available' && definition.manifest.mode === 'file_import'
-  }
-
-  requireExecutable(id: string): PluginDefinition {
-    const definition = this.get(id)
-    if (!definition) {
-      throw new SafeImportError('PLUGIN_NOT_FOUND', '插件不存在')
-    }
-    if (definition.availability !== 'available') {
-      throw new SafeImportError('PLUGIN_NOT_AVAILABLE', '该插件尚未开放')
-    }
-    if (definition.manifest.mode !== 'file_import') {
-      throw new SafeImportError('PLUGIN_MODE_NOT_EXECUTABLE', '该插件不支持文件导入')
-    }
-    return definition
   }
 
   toInstallations(

@@ -47,21 +47,21 @@ export class PluginService {
     return this.database.setPluginEnabled(id, enabled)
   }
 
-  requireEnabledManagedBrowser(id: string): PluginInstallation {
+  requireEnabledSessionApi(id: string): PluginInstallation {
     const definition = this.registry.get(id)
-    if (!definition || definition.availability !== 'available' || definition.manifest.mode !== 'managed_browser') {
-      throw new Error('该平台身份核验插件尚不可用')
+    if (!definition || definition.availability !== 'available' || definition.manifest.mode !== 'session_api') {
+      throw new Error('该平台的数据同步功能尚不可用')
     }
     const state = this.database.getPluginState(id)
-    if (!state?.enabled) throw new Error('请先在插件中心启用该平台的身份核验插件')
+    if (!state?.enabled) throw new Error('请先在插件中心启用该平台的数据同步')
     return state
   }
 
-  recordManagedRun(id: string, succeeded: boolean, error = ''): PluginInstallation {
+  recordSessionApiRun(id: string, succeeded: boolean, error = ''): PluginInstallation {
     const definition = this.registry.get(id)
     const current = this.database.getPluginState(id)
-    if (!definition || !current || definition.manifest.mode !== 'managed_browser') {
-      throw new Error('平台身份核验插件不存在')
+    if (!definition || !current || definition.manifest.mode !== 'session_api') {
+      throw new Error('平台数据同步插件不存在')
     }
     return this.database.upsertPluginState(definition.manifest, {
       lastRunAt: new Date().toISOString(),

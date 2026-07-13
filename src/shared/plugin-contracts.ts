@@ -3,11 +3,10 @@ export const pluginCapabilities = [
   'account.profile',
   'account.metrics',
   'content.list',
-  'content.metrics',
-  'file.import'
+  'content.metrics'
 ] as const
 export type PluginCapability = (typeof pluginCapabilities)[number]
-export type PluginMode = 'file_import' | 'managed_browser'
+export type PluginMode = 'session_api'
 export type PluginRiskLevel = 'low' | 'medium' | 'high'
 export type PluginAvailability = 'available' | 'planned' | 'disabled'
 

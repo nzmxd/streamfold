@@ -37,8 +37,8 @@ export function accountHealthPresentation(account: Account): { label: string; to
 export function syncModeLabel(mode: SyncMode): string {
   const values: Record<SyncMode, string> = {
     profile_only: '仅账号资料',
-    recent_20: '最近 20 条',
-    recent_100: '最近 100 条',
+    recent_20: '最近 20 条作品',
+    recent_100: '最近 100 条作品',
     disabled: '不允许平台同步'
   }
   return values[mode]
@@ -59,7 +59,7 @@ export function ownershipStatusLabel(status: OwnershipStatus): string {
   const values: Record<OwnershipStatus, string> = {
     unconfirmed: '尚未确认',
     user_confirmed: '本人已确认',
-    plugin_verified: '平台插件已校验'
+    plugin_verified: '已核验'
   }
   return values[status]
 }

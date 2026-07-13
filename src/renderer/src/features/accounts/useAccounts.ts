@@ -3,11 +3,12 @@ import type {
   Account,
   BrowserState,
   BulkUpdateAccountsInput,
-  ConfirmManagedIdentityInput,
+  ConfirmApiIdentityInput,
   CreateAccountInput,
   CreateGroupInput,
   Group,
-  ManagedIdentityCheckResult,
+  ApiIdentityCheckResult,
+  XiaohongshuSyncResult,
   MoveGroupInput,
   PlatformDefinition,
   UpdateAccountInput,
@@ -25,6 +26,7 @@ export function useAccounts() {
   const error = ref('')
   const browserStates = reactive(new Map<string, BrowserState>())
   let removeBrowserListener: (() => void) | null = null
+  let removeAccountsListener: (() => void) | null = null
 
   const selectedAccount = computed(
     () => accounts.value.find((account) => account.id === selectedId.value) ?? null
@@ -63,12 +65,15 @@ export function useAccounts() {
     removeBrowserListener = window.socialVault.browser.onState((state) => {
       if (state.accountId) browserStates.set(state.accountId, state)
     })
+    removeAccountsListener = window.socialVault.accounts.onChanged(() => void reload())
     await reload()
   }
 
   function dispose(): void {
     removeBrowserListener?.()
     removeBrowserListener = null
+    removeAccountsListener?.()
+    removeAccountsListener = null
   }
 
   async function reload(): Promise<void> {
@@ -177,7 +182,7 @@ export function useAccounts() {
     })
   }
 
-  async function verifyIdentity(id: string): Promise<ManagedIdentityCheckResult> {
+  async function verifyIdentity(id: string): Promise<ApiIdentityCheckResult> {
     return run(async () => {
       const result = await window.socialVault.accounts.verifyIdentity(id)
       await reload()
@@ -185,9 +190,17 @@ export function useAccounts() {
     })
   }
 
-  async function confirmIdentity(input: ConfirmManagedIdentityInput): Promise<ManagedIdentityCheckResult> {
+  async function confirmIdentity(input: ConfirmApiIdentityInput): Promise<ApiIdentityCheckResult> {
     return run(async () => {
       const result = await window.socialVault.accounts.confirmIdentity(input)
+      await reload()
+      return result
+    })
+  }
+
+  async function syncAccount(id: string): Promise<XiaohongshuSyncResult> {
+    return run(async () => {
+      const result = await window.socialVault.accounts.sync(id)
       await reload()
       return result
     })
@@ -230,7 +243,8 @@ export function useAccounts() {
     removeGroup,
     openBrowser,
     verifyIdentity,
-    confirmIdentity
+    confirmIdentity,
+    syncAccount
   }
 }
 

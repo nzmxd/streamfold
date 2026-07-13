@@ -1,6 +1,6 @@
 {
   "name": "social-vault",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "本地优先的个人社媒账号管理与统计客户端",
   "main": "out/main/index.js",

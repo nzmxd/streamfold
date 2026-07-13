@@ -102,7 +102,7 @@ async function saveMetadata(): Promise<void> {
     detail.value = result
     const index = items.value.findIndex((item) => item.id === result.id)
     if (index >= 0) items.value.splice(index, 1, result)
-    success.value = '备注与标签已保存到本机。'
+    success.value = '备注与标签已保存。'
   } catch (cause) {
     if (sequence === saveSequence && selectedId.value === targetId) error.value = messageOf(cause)
   } finally {
@@ -138,7 +138,7 @@ onMounted(async () => {
 <template>
   <div class="feature-page content-page">
     <header class="page-header feature-header">
-      <div><span class="page-eyebrow">LOCAL CONTENT LIBRARY</span><h1>内容中心</h1><p>查看本人账号的导入内容、指标快照和本地备注</p></div>
+      <div><span class="page-eyebrow">CONTENT LIBRARY</span><h1>内容中心</h1><p>查看账号内容、指标快照和备注</p></div>
       <span class="header-count">{{ items.length }} 条结果</span>
     </header>
 
@@ -159,8 +159,8 @@ onMounted(async () => {
         <div v-if="loading" class="feature-loading">正在读取内容索引…</div>
         <div v-else-if="items.length === 0" class="feature-empty">
           <span>▤</span><strong>没有匹配的内容</strong>
-          <p v-if="accounts.length === 0">请先在账号中心添加本人账号，再通过插件中心导入本人数据。</p>
-          <p v-else>可以调整筛选条件，或前往插件中心导入平台官方导出或按模板整理的文件。</p>
+          <p v-if="accounts.length === 0">请先在账号中心添加本人账号，通过内置浏览器登录官方页面后同步数据。</p>
+          <p v-else>可以调整筛选条件，或前往账号中心同步平台本人数据。</p>
         </div>
         <button
           v-for="item in items"
@@ -195,7 +195,7 @@ onMounted(async () => {
           </section>
 
           <section class="snapshot-section">
-            <div class="feature-card-head"><div><h3>快照历史</h3><p>每次导入只追加发生变化的指标快照</p></div><span>{{ detail.snapshots.length }} 次</span></div>
+            <div class="feature-card-head"><div><h3>快照历史</h3><p>每次同步只记录发生变化的指标</p></div><span>{{ detail.snapshots.length }} 次</span></div>
             <div v-if="detail.snapshots.length === 0" class="compact-empty"><span>暂无指标快照</span></div>
             <div v-for="snapshot in detail.snapshots.slice().reverse()" :key="snapshot.capturedAt" class="snapshot-row">
               <span>{{ formatDate(snapshot.capturedAt, true) }}</span>
@@ -205,7 +205,7 @@ onMounted(async () => {
           </section>
 
           <form class="metadata-form" @submit.prevent="saveMetadata">
-            <div class="feature-card-head"><div><h3>本地整理</h3><p>这些字段不会写回社媒平台</p></div></div>
+            <div class="feature-card-head"><div><h3>内容整理</h3><p>为内容添加标签和复盘备注</p></div></div>
             <label>标签<input v-model="edit.tags" placeholder="使用逗号分隔" /></label>
             <label>备注<textarea v-model="edit.note" rows="3" maxlength="1000" placeholder="记录选题、复盘或负责人"></textarea></label>
             <div class="form-actions"><button class="button primary" :disabled="saving" type="submit">{{ saving ? '保存中…' : '保存备注' }}</button><span v-if="success" class="success-message">{{ success }}</span></div>

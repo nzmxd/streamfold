@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import type { ContentSummary } from '../../../../shared/contracts'
 import { contentTypeLabel, delta, deltaLabel, formatDate, formatNumber, messageOf } from '../shared/format'
 
-const props = defineProps<{ accountId: string }>()
+const props = defineProps<{ accountId: string; refreshKey?: string | null }>()
 const items = ref<ContentSummary[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -23,18 +23,22 @@ async function load(accountId: string): Promise<void> {
   }
 }
 
-watch(() => props.accountId, (id) => void load(id), { immediate: true })
+watch(
+  () => [props.accountId, props.refreshKey] as const,
+  ([id]) => void load(id),
+  { immediate: true }
+)
 </script>
 
 <template>
   <section class="account-content-widget">
     <div class="feature-card-head">
-      <div><h3>本地内容数据</h3><p>来自用户确认归属的本地导入文件</p></div>
+      <div><h3>内容数据</h3><p>最近同步的内容与指标</p></div>
       <button class="button" :disabled="loading" @click="load(accountId)">刷新</button>
     </div>
     <div v-if="error" class="alert error"><span>{{ error }}</span><button @click="error = ''">关闭</button></div>
     <div v-if="loading" class="feature-loading compact">正在读取…</div>
-    <div v-else-if="items.length === 0" class="feature-empty compact"><span>▤</span><strong>还没有内容数据</strong><p>前往插件中心，选择该账号并导入平台官方导出或按模板整理的文件。</p></div>
+    <div v-else-if="items.length === 0" class="feature-empty compact"><span>▤</span><strong>还没有内容数据</strong><p>请在账号概览同步平台本人数据。</p></div>
     <div v-else class="account-content-list">
       <article v-for="item in items" :key="item.id">
         <span class="content-kind">{{ contentTypeLabel(item.type) }}</span>

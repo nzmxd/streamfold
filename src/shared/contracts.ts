@@ -128,13 +128,15 @@ export interface SocialVaultApi {
   }
   accounts: {
     list(): Promise<Account[]>
+    onChanged(callback: () => void): () => void
     create(input: CreateAccountInput): Promise<Account>
     update(input: UpdateAccountInput): Promise<Account>
     bulkUpdate(input: BulkUpdateAccountsInput): Promise<Account[]>
     disconnect(id: string): Promise<void>
     purge(id: string): Promise<void>
-    verifyIdentity(id: string): Promise<import('./managed-adapter-contracts').ManagedIdentityCheckResult>
-    confirmIdentity(input: import('./managed-adapter-contracts').ConfirmManagedIdentityInput): Promise<import('./managed-adapter-contracts').ManagedIdentityCheckResult>
+    verifyIdentity(id: string): Promise<import('./xiaohongshu-api-contracts').ApiIdentityCheckResult>
+    confirmIdentity(input: import('./xiaohongshu-api-contracts').ConfirmApiIdentityInput): Promise<import('./xiaohongshu-api-contracts').ApiIdentityCheckResult>
+    sync(id: string): Promise<import('./xiaohongshu-api-contracts').XiaohongshuSyncResult>
   }
   groups: {
     list(): Promise<Group[]>
@@ -161,15 +163,6 @@ export interface SocialVaultApi {
     list(): Promise<import('./plugin-contracts').PluginInstallation[]>
     setEnabled(id: string, enabled: boolean): Promise<import('./plugin-contracts').PluginInstallation>
   }
-  imports: {
-    preview(accountId: string): Promise<import('./import-contracts').FileImportPreview | null>
-    commit(input: import('./import-contracts').CommitFileImportInput): Promise<import('./import-contracts').FileImportResult>
-  }
-  jobs: {
-    list(): Promise<import('./job-contracts').JobRecord[]>
-    cancel(id: string): Promise<import('./job-contracts').JobRecord>
-    onChanged(callback: (job: import('./job-contracts').JobRecord) => void): () => void
-  }
   settings: {
     overview(): Promise<import('./settings-contracts').StorageOverview>
     update(input: import('./settings-contracts').UpdateSettingsInput): Promise<import('./settings-contracts').StorageOverview>
@@ -186,15 +179,12 @@ export interface BrowserWorkspaceApi {
   reload(): Promise<void>
   home(): Promise<void>
   close(): Promise<void>
-  verifyIdentity(): Promise<import('./managed-adapter-contracts').ManagedIdentityCheckResult>
-  confirmIdentity(input: import('./managed-adapter-contracts').ConfirmManagedIdentityInput): Promise<import('./managed-adapter-contracts').ManagedIdentityCheckResult>
   onState(callback: (state: BrowserState) => void): () => void
 }
 
 export * from './content-contracts'
-export * from './import-contracts'
 export * from './job-contracts'
 export * from './plugin-contracts'
 export * from './settings-contracts'
 export * from './backup-contracts'
-export * from './managed-adapter-contracts'
+export * from './xiaohongshu-api-contracts'

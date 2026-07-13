@@ -47,7 +47,7 @@ onMounted(() => void load())
 <template>
   <div class="feature-page analytics-page">
     <header class="page-header feature-header">
-      <div><span class="page-eyebrow">LOCAL ANALYTICS</span><h1>数据分析</h1><p>基于本地快照观察趋势，不向平台发起额外请求</p></div>
+      <div><span class="page-eyebrow">ANALYTICS</span><h1>数据分析</h1><p>查看账号和内容指标的变化趋势</p></div>
       <div class="analytics-controls">
         <select v-model="platformId" aria-label="筛选平台"><option value="">全部平台</option><option value="xiaohongshu">小红书</option><option value="weibo">微博</option><option value="douyin">抖音</option><option value="zhihu">知乎</option></select>
         <div class="segmented" role="group" aria-label="统计周期">
@@ -57,7 +57,7 @@ onMounted(() => void load())
     </header>
 
     <div v-if="error" class="alert error"><span>{{ error }}</span><button @click="error = ''">关闭</button></div>
-    <div v-if="loading && !overview" class="feature-loading">正在计算本地指标…</div>
+    <div v-if="loading && !overview" class="feature-loading">正在计算指标…</div>
 
     <template v-else-if="overview">
       <section class="analytics-metrics">
@@ -74,7 +74,7 @@ onMounted(() => void load())
           <div><h2>{{ overview.days }} 天趋势</h2><p>浏览与互动分别按自身峰值归一化显示</p></div>
           <div class="chart-legend"><span class="views">浏览</span><span class="interactions">互动</span></div>
         </div>
-        <div v-if="overview.timeline.length === 0" class="feature-empty compact"><span>⌁</span><strong>没有可绘制的快照</strong><p>导入至少两次指标快照后，趋势会更有参考价值。</p></div>
+        <div v-if="overview.timeline.length === 0" class="feature-empty compact"><span>⌁</span><strong>还没有趋势数据</strong><p>完成至少两次同步后，趋势会更有参考价值。</p></div>
         <div v-else class="trend-chart">
           <svg viewBox="0 0 800 180" role="img" :aria-label="`${overview.days} 天浏览与互动趋势图`" preserveAspectRatio="none">
             <line v-for="index in 4" :key="index" x1="12" x2="788" :y1="index * 36" :y2="index * 36" class="grid-line" />
@@ -106,7 +106,7 @@ onMounted(() => void load())
           </div>
         </section>
       </div>
-      <p class="generated-at">生成时间：{{ formatDate(overview.generatedAt, true) }} · 数据完全来自本机数据库</p>
+      <p class="generated-at">更新时间：{{ formatDate(overview.generatedAt, true) }}</p>
     </template>
   </div>
 </template>

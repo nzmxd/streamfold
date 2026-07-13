@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 3
+export const CURRENT_SCHEMA_VERSION = 5
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -21,6 +21,14 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 3) {
     inTransaction(db, () => migrateV2ToV3(db))
+    version = 3
+  }
+  if (version < 4) {
+    inTransaction(db, () => migrateV3ToV4(db))
+    version = 4
+  }
+  if (version < 5) {
+    inTransaction(db, () => migrateV4ToV5(db))
   }
 }
 
@@ -242,6 +250,65 @@ function migrateV2ToV3(db: DatabaseSync): void {
         ELSE NULL
       END;
     PRAGMA user_version = 3;
+  `)
+}
+
+function migrateV3ToV4(db: DatabaseSync): void {
+  db.exec(`
+    UPDATE accounts SET sync_enabled = 0
+    WHERE sync_enabled = 1 AND (
+      connection_status <> 'ready' OR
+      ownership_status <> 'plugin_verified' OR
+      sync_mode = 'disabled'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS accounts_sync_authorization_insert
+    BEFORE INSERT ON accounts
+    WHEN NEW.sync_enabled = 1 AND (
+      NEW.connection_status <> 'ready' OR
+      NEW.ownership_status <> 'plugin_verified' OR
+      NEW.sync_mode = 'disabled'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid sync authorization');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS accounts_sync_authorization_update
+    BEFORE UPDATE OF sync_enabled, connection_status, ownership_status, sync_mode ON accounts
+    WHEN NEW.sync_enabled = 1 AND (
+      NEW.connection_status <> 'ready' OR
+      NEW.ownership_status <> 'plugin_verified' OR
+      NEW.sync_mode = 'disabled'
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid sync authorization');
+    END;
+
+    PRAGMA user_version = 4;
+  `)
+}
+
+function migrateV4ToV5(db: DatabaseSync): void {
+  addColumn(db, 'account_snapshots', 'likes_favorites_total INTEGER')
+  db.exec(`
+    UPDATE accounts SET
+      ownership_status = CASE WHEN remote_id IS NULL THEN 'unconfirmed' ELSE 'user_confirmed' END,
+      ownership_confirmed_at = COALESCE(ownership_confirmed_at, identity_verified_at),
+      identity_verified_at = NULL,
+      connection_status = CASE WHEN connection_status = 'disconnected' THEN 'disconnected' ELSE 'pending' END,
+      sync_enabled = 0,
+      sync_status = 'idle',
+      cooldown_until = NULL,
+      last_sync_error = '',
+      status = 'paused'
+    WHERE platform_id = 'xiaohongshu' AND ownership_status = 'plugin_verified';
+
+    DELETE FROM sync_cursors
+    WHERE plugin_id IN ('xiaohongshu-managed-browser', 'generic-file-import');
+    DELETE FROM plugin_installations
+    WHERE plugin_id IN ('xiaohongshu-managed-browser', 'generic-file-import');
+
+    PRAGMA user_version = 5;
   `)
 }
 

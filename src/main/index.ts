@@ -17,9 +17,8 @@ import { ExportService } from './export-service'
 import { registerIpc, unregisterIpc } from './ipc'
 import { PluginService } from './plugin-service'
 import { SettingsService } from './settings-service'
-import { ImportService } from './services/import-service'
 import { JobService } from './services/job-service'
-import { ManagedAdapterService } from './managed-adapter-service'
+import { XiaohongshuApiService } from './xiaohongshu-api-service'
 import { isTrustedShellUrl } from './shell-security'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
@@ -146,17 +145,11 @@ function createWindow(): void {
   )
   const pluginService = new PluginService(database)
   pluginService.initialize()
-  const managedAdapterService = new ManagedAdapterService({
+  const jobService = new JobService(database)
+  const xiaohongshuApiService = new XiaohongshuApiService({
     repository: database,
     browser: browserManager,
-    plugins: pluginService
-  })
-  const jobService = new JobService(database)
-  const importService = new ImportService({
-    dialog: {
-      showOpenDialog: (options) => dialog.showOpenDialog(mainWindow!, options)
-    },
-    repository: database,
+    plugins: pluginService,
     jobs: jobService
   })
   const settingsService = new SettingsService({
@@ -180,8 +173,7 @@ function createWindow(): void {
     beforeRestore: () => {
       restorePartitions = database!.listAccounts().map((account) => account.sessionPartition)
       browserManager?.closeAll()
-      importService.invalidatePreviews()
-      managedAdapterService.invalidatePreviews()
+      xiaohongshuApiService.invalidatePreviews()
     },
     afterRestore: () => pluginService.initialize(),
     afterCommit: async () => {
@@ -194,13 +186,11 @@ function createWindow(): void {
     }
   })
   registerIpc(mainWindow, database, browserManager, {
-    imports: importService,
-    jobs: jobService,
     plugins: pluginService,
     settings: settingsService,
     exporter: exportService,
     backup: backupService,
-    adapters: managedAdapterService
+    xiaohongshuApi: xiaohongshuApiService
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -217,7 +207,6 @@ function createWindow(): void {
         const accounts = hasApi ? await window.socialVault.accounts.list() : []
         const plugins = hasApi ? await window.socialVault.plugins.list() : []
         const contents = hasApi ? await window.socialVault.content.list() : []
-        const jobs = hasApi ? await window.socialVault.jobs.list() : []
         const dashboard = hasApi ? await window.socialVault.analytics.dashboard() : null
         const settings = hasApi ? await window.socialVault.settings.overview() : null
         return {
@@ -228,11 +217,12 @@ function createWindow(): void {
           accountCount: accounts.length,
           pluginCount: plugins.length,
           contentCount: contents.length,
-          jobCount: jobs.length,
+          jobCount: 0,
           dashboardReady: Boolean(dashboard),
           settingsReady: Boolean(settings?.appVersion),
-          v03ApiReady: typeof window.socialVault.accounts.verifyIdentity === 'function' &&
+          v04ApiReady: typeof window.socialVault.accounts.verifyIdentity === 'function' &&
             typeof window.socialVault.accounts.confirmIdentity === 'function' &&
+            typeof window.socialVault.accounts.sync === 'function' &&
             typeof window.socialVault.accounts.bulkUpdate === 'function' &&
             typeof window.socialVault.groups.update === 'function' &&
             typeof window.socialVault.settings.createBackup === 'function' &&
@@ -295,16 +285,15 @@ function createWindow(): void {
         hasApp?: boolean
         dashboardReady?: boolean
         settingsReady?: boolean
-        v03ApiReady?: boolean
+        v04ApiReady?: boolean
       } | null
       const workspace = workspaceResult as {
         hasApi?: boolean
         accountId?: string
-        hasIdentityApi?: boolean
       } | null
       if (
-        !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady || !shell.v03ApiReady ||
-        !workspace?.hasApi || !workspace.accountId || !workspace.hasIdentityApi || !partitionIsolation
+        !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady || !shell.v04ApiReady ||
+        !workspace?.hasApi || !workspace.accountId || !partitionIsolation
       ) {
         console.error(`SOCIAL_VAULT_SMOKE_FAILED ${JSON.stringify(smokePayload)}`)
         app.exit(1)

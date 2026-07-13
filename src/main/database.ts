@@ -47,6 +47,7 @@ import type {
   ImportCommitMetadata,
   ImportCommitStats,
   NormalizedImportContent,
+  NormalizedImportProfile,
   NormalizedImportPayload
 } from './plugins/types'
 import { CURRENT_SCHEMA_VERSION, migrateDatabase, readUserVersion } from './storage/migrations'
@@ -81,6 +82,20 @@ export interface PluginRunRecordInput {
   result: Record<string, unknown> | null
   errorCode: string
   errorMessage: string
+}
+
+export interface ManagedSyncCommitMetadata {
+  accountId: string
+  pluginId: string
+  jobId: string
+  authorizedMode: Exclude<SyncMode, 'disabled'>
+  payloadMode: Exclude<SyncMode, 'disabled'>
+  finishedAt: string
+}
+
+export interface ManagedSyncCommitResult {
+  stats: ImportCommitStats
+  job: JobRecord
 }
 
 export type PluginStatePatch = Partial<Pick<PluginInstallation,
@@ -290,7 +305,10 @@ export class SocialDatabase {
     const id = randomUUID()
     const now = new Date().toISOString()
     const partition = `persist:social:${id}`
-    const syncEnabled = input.syncMode !== 'disabled'
+    // A newly-created account has neither a verified identity nor a ready login
+    // connection. Synchronization is an explicit, per-account authorization that
+    // can only be granted after both conditions have been established.
+    const syncEnabled = false
     const status = deriveAccountStatus({
       connectionStatus: 'pending',
       syncEnabled,
@@ -320,8 +338,7 @@ export class SocialDatabase {
       isDefault: input.isDefault ?? current.isDefault,
       groupIds: [...new Set(input.groupIds ?? current.groupIds)]
     }
-    if (next.syncMode === 'disabled') next.syncEnabled = false
-    if (current.connectionStatus === 'disconnected') next.syncEnabled = false
+    if (next.syncEnabled && !canEnableManagedSync(current, next.syncMode)) next.syncEnabled = false
     const status = deriveAccountStatus({
       connectionStatus: current.connectionStatus,
       syncEnabled: next.syncEnabled,
@@ -392,8 +409,7 @@ export class SocialDatabase {
           UPDATE accounts SET sync_enabled = ?, status = ?, updated_at = ? WHERE id = ?
         `)
         for (const account of accounts) {
-          const syncEnabled = input.syncEnabled &&
-            account.connectionStatus === 'ready' && account.syncMode !== 'disabled'
+          const syncEnabled = input.syncEnabled && canEnableManagedSync(account, account.syncMode)
           const status = deriveAccountStatus({
             connectionStatus: account.connectionStatus,
             syncEnabled,
@@ -474,7 +490,19 @@ export class SocialDatabase {
     message: string,
     observedAt: string
   ): Account {
-    requireAccount(this.getAccount(accountId))
+    const account = requireAccount(this.getAccount(accountId))
+    if (probeStatus === 'page_not_ready') {
+      const status = deriveAccountStatus({
+        connectionStatus: account.connectionStatus,
+        syncEnabled: account.syncEnabled,
+        syncStatus: account.syncStatus,
+        syncMode: account.syncMode
+      })
+      this.db.prepare(`
+        UPDATE accounts SET status = ?, last_sync_error = ?, updated_at = ? WHERE id = ?
+      `).run(status, message, observedAt, accountId)
+      return requireAccount(this.getAccount(accountId))
+    }
     const connectionStatus: ConnectionStatus = probeStatus === 'login_required' ? 'expired' : 'pending'
     const syncStatus: SyncStatus = probeStatus === 'challenge'
       ? 'cooldown'
@@ -489,6 +517,17 @@ export class SocialDatabase {
       UPDATE accounts SET connection_status = ?, status = ?, sync_enabled = 0, sync_status = ?,
         cooldown_until = ?, last_sync_error = ?, updated_at = ? WHERE id = ?
     `).run(connectionStatus, status, syncStatus, cooldownUntil, message, observedAt, accountId)
+    return requireAccount(this.getAccount(accountId))
+  }
+
+  markManagedIdentityMismatch(accountId: string, message: string, observedAt: string): Account {
+    if (!isIsoDate(observedAt)) throw new Error('身份异常时间无效')
+    requireAccount(this.getAccount(accountId))
+    this.db.prepare(`
+      UPDATE accounts SET connection_status = 'mismatch', status = 'mismatch', sync_enabled = 0,
+        sync_status = 'idle', cooldown_until = NULL, last_sync_error = ?, updated_at = ?
+      WHERE id = ?
+    `).run(safeSyncErrorMessage(message), observedAt, accountId)
     return requireAccount(this.getAccount(accountId))
   }
 
@@ -557,7 +596,7 @@ export class SocialDatabase {
 
   listAccountSnapshots(accountId?: string): AccountSnapshot[] {
     const rows = this.db.prepare(`
-      SELECT account_id, followers, following, content_count, views_total,
+      SELECT account_id, followers, following, content_count, views_total, likes_favorites_total,
         views, likes, comments, shares, favorites, captured_at
       FROM account_snapshots
       ${accountId ? 'WHERE account_id = ?' : ''}
@@ -568,6 +607,7 @@ export class SocialDatabase {
       following: number | null
       content_count: number | null
       views_total: number | null
+      likes_favorites_total: number | null
       views: number | null
       likes: number | null
       comments: number | null
@@ -581,6 +621,7 @@ export class SocialDatabase {
       following: row.following,
       contentCount: row.content_count,
       viewsTotal: row.views_total,
+      likesAndFavoritesTotal: row.likes_favorites_total,
       views: row.views,
       likes: row.likes,
       comments: row.comments,
@@ -674,6 +715,98 @@ export class SocialDatabase {
     })
   }
 
+  markManagedSyncStarted(accountId: string, startedAt: string): Account {
+    if (!isIsoDate(startedAt)) throw new Error('受管同步开始时间无效')
+    const account = requireManagedSyncAccount(this.getAccount(accountId))
+    const status = deriveAccountStatus({
+      connectionStatus: account.connectionStatus,
+      syncEnabled: account.syncEnabled,
+      syncStatus: 'running',
+      syncMode: account.syncMode
+    })
+    this.db.prepare(`
+      UPDATE accounts SET sync_status = 'running', cooldown_until = NULL,
+        last_sync_error = '', status = ?, updated_at = ? WHERE id = ?
+    `).run(status, startedAt, account.id)
+    return requireAccount(this.getAccount(account.id))
+  }
+
+  markManagedSyncFailed(accountId: string, message: string, failedAt: string): Account {
+    if (!isIsoDate(failedAt)) throw new Error('受管同步失败时间无效')
+    const account = requireAccount(this.getAccount(accountId))
+    const status = deriveAccountStatus({
+      connectionStatus: account.connectionStatus,
+      syncEnabled: account.syncEnabled,
+      syncStatus: 'failed',
+      syncMode: account.syncMode
+    })
+    this.db.prepare(`
+      UPDATE accounts SET sync_status = 'failed', cooldown_until = NULL,
+        last_sync_error = ?, status = ?, updated_at = ? WHERE id = ?
+    `).run(safeSyncErrorMessage(message), status, failedAt, account.id)
+    return requireAccount(this.getAccount(account.id))
+  }
+
+  commitManagedSync(
+    payload: NormalizedImportPayload,
+    metadata: ManagedSyncCommitMetadata
+  ): ManagedSyncCommitResult {
+    validateManagedSync(payload, metadata)
+    return this.transaction(() => {
+      const account = requireManagedSyncAccount(this.getAccount(metadata.accountId))
+      const profile = payload.profile
+      if (!profile) throw new Error('受管同步结果缺少本人账号资料')
+      if (profile.remoteId !== account.remoteId) throw new Error('受管同步身份与已绑定账号不一致')
+      if (account.syncMode !== metadata.authorizedMode) throw new Error('同步期间授权范围已变化，请重新同步')
+      const job = requireJob(this.getJob(metadata.jobId))
+      if (
+        job.kind !== 'managed_sync' || job.accountId !== account.id ||
+        job.pluginId !== metadata.pluginId || job.status !== 'committing'
+      ) throw new Error('受管同步任务状态已变更')
+      const plugin = requirePlugin(this.getPluginState(metadata.pluginId))
+      if (!plugin.enabled || plugin.availability !== 'available') {
+        throw new Error('同步期间插件已停用，未写入任何数据')
+      }
+
+      const now = new Date().toISOString()
+      const status = deriveAccountStatus({
+        connectionStatus: account.connectionStatus,
+        syncEnabled: account.syncEnabled,
+        syncStatus: 'idle',
+        syncMode: account.syncMode
+      })
+      this.db.prepare(`
+        UPDATE accounts SET remote_name = ?, identity_verified_at = ?, sync_status = 'idle', cooldown_until = NULL,
+          last_sync_error = '', status = ?, last_synced_at = ?,
+          updated_at = ? WHERE id = ?
+      `).run(
+        profile.remoteName,
+        metadata.finishedAt,
+        status,
+        payload.capturedAt,
+        now,
+        account.id
+      )
+      this.insertAccountSnapshot(account.id, profile, payload.capturedAt)
+      const stats = this.writeNormalizedContents(account.id, payload.contents, payload.capturedAt, now)
+      const resultJson = JSON.stringify(stats)
+      const jobUpdate = this.db.prepare(`
+        UPDATE jobs SET status = 'succeeded', progress = 100, stage = '只读同步完成',
+          result_json = ?, error_code = '', error_message = '', finished_at = ?
+        WHERE id = ? AND status = 'committing' AND kind = 'managed_sync'
+          AND account_id = ? AND plugin_id = ?
+      `).run(resultJson, metadata.finishedAt, job.id, account.id, metadata.pluginId)
+      if (Number(jobUpdate.changes) !== 1) throw new Error('受管同步任务状态已变更')
+      const pluginUpdate = this.db.prepare(`
+        UPDATE plugin_installations SET last_run_at = ?, success_count = success_count + 1,
+          last_error = '', updated_at = ?
+        WHERE plugin_id = ? AND enabled = 1 AND availability = 'available'
+      `).run(metadata.finishedAt, metadata.finishedAt, metadata.pluginId)
+      if (Number(pluginUpdate.changes) !== 1) throw new Error('同步期间插件已停用，未写入任何数据')
+      return { stats, job: requireJob(this.getJob(job.id)) }
+    })
+  }
+
   commitImport(payload: NormalizedImportPayload, metadata: ImportCommitMetadata): ImportCommitStats {
     const account = requireAccount(this.getAccount(metadata.accountId))
     const importJob = metadata.jobId ? requireJob(this.getJob(metadata.jobId)) : null
@@ -693,13 +826,8 @@ export class SocialDatabase {
       throw new Error('导入前必须确认这是本人账号')
     }
 
-    const contents = dedupeImportedContents(payload.contents)
     return this.transaction(() => {
       const now = new Date().toISOString()
-      let newContentCount = 0
-      let updatedContentCount = 0
-      let snapshotCount = 0
-      let skippedSnapshotCount = 0
 
       if (payload.profile) {
         const profile = payload.profile
@@ -729,16 +857,7 @@ export class SocialDatabase {
           now,
           account.id
         )
-        this.db.prepare(`
-          INSERT INTO account_snapshots (
-            id, account_id, followers, following, content_count, views_total,
-            views, likes, comments, shares, favorites, captured_at
-          ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)
-          ON CONFLICT(account_id, captured_at) DO NOTHING
-        `).run(
-          randomUUID(), account.id, profile.followers, profile.following,
-          profile.contentCount, profile.viewsTotal, payload.capturedAt
-        )
+        this.insertAccountSnapshot(account.id, profile, payload.capturedAt)
       } else {
         const ownershipStatus = metadata.confirmOwnership && account.ownershipStatus === 'unconfirmed'
           ? 'user_confirmed'
@@ -763,51 +882,7 @@ export class SocialDatabase {
         )
       }
 
-      const findContent = this.db.prepare('SELECT id FROM contents WHERE account_id = ? AND remote_id = ?')
-      const insertContent = this.db.prepare(`
-        INSERT INTO contents (
-          id, account_id, remote_id, type, title, body_excerpt, url, published_at,
-          first_captured_at, updated_at, note, tags_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '[]')
-      `)
-      const updateExistingContent = this.db.prepare(`
-        UPDATE contents SET type = ?, title = ?, body_excerpt = ?, url = ?, published_at = ?,
-          updated_at = ? WHERE id = ?
-      `)
-      const insertSnapshot = this.db.prepare(`
-        INSERT INTO content_snapshots (
-          id, content_id, views, likes, comments, shares, favorites, captured_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(content_id, captured_at) DO NOTHING
-      `)
-
-      for (const content of contents) {
-        const existing = findContent.get(account.id, content.remoteId) as unknown as { id: string } | undefined
-        const contentId = existing?.id ?? randomUUID()
-        if (existing) {
-          updatedContentCount += 1
-          updateExistingContent.run(
-            content.type, content.title, content.bodyExcerpt, content.url,
-            content.publishedAt, now, contentId
-          )
-        } else {
-          newContentCount += 1
-          insertContent.run(
-            contentId, account.id, content.remoteId, content.type, content.title,
-            content.bodyExcerpt, content.url, content.publishedAt, payload.capturedAt, now
-          )
-        }
-        for (const snapshot of content.snapshots) {
-          const result = insertSnapshot.run(
-            randomUUID(), contentId, snapshot.views, snapshot.likes, snapshot.comments,
-            snapshot.shares, snapshot.favorites, snapshot.capturedAt
-          )
-          if (Number(result.changes) === 1) snapshotCount += 1
-          else skippedSnapshotCount += 1
-        }
-      }
-
-      const stats = { newContentCount, updatedContentCount, snapshotCount, skippedSnapshotCount }
+      const stats = this.writeNormalizedContents(account.id, payload.contents, payload.capturedAt, now)
       const resultJson = JSON.stringify(stats)
       this.db.prepare(`
         INSERT INTO import_batches (
@@ -818,8 +893,8 @@ export class SocialDatabase {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', ?, ?, ?, '', '')
       `).run(
         randomUUID(), account.id, metadata.pluginId, safeFileName(metadata.fileName),
-        metadata.fileHash, payload.capturedAt, newContentCount, updatedContentCount,
-        snapshotCount, skippedSnapshotCount, JSON.stringify(payload.warnings), now,
+        metadata.fileHash, payload.capturedAt, stats.newContentCount, stats.updatedContentCount,
+        stats.snapshotCount, stats.skippedSnapshotCount, JSON.stringify(payload.warnings), now,
         metadata.jobId ?? null, importJob?.startedAt ?? now, now, resultJson
       )
       if (metadata.jobId) {
@@ -836,6 +911,83 @@ export class SocialDatabase {
       }
       return stats
     })
+  }
+
+  private insertAccountSnapshot(
+    accountId: string,
+    profile: NormalizedImportProfile,
+    capturedAt: string
+  ): void {
+    this.db.prepare(`
+      INSERT INTO account_snapshots (
+        id, account_id, followers, following, content_count, views_total, likes_favorites_total,
+        views, likes, comments, shares, favorites, captured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, captured_at) DO NOTHING
+    `).run(
+      randomUUID(), accountId, profile.followers, profile.following,
+      profile.contentCount, profile.viewsTotal, profile.likesAndFavoritesTotal ?? null,
+      profile.views ?? null, profile.likes ?? null, profile.comments ?? null,
+      profile.shares ?? null, profile.favorites ?? null, capturedAt
+    )
+  }
+
+  private writeNormalizedContents(
+    accountId: string,
+    sourceContents: NormalizedImportContent[],
+    firstCapturedAt: string,
+    updatedAt: string
+  ): ImportCommitStats {
+    let newContentCount = 0
+    let updatedContentCount = 0
+    let snapshotCount = 0
+    let skippedSnapshotCount = 0
+    const contents = dedupeImportedContents(sourceContents)
+    const findContent = this.db.prepare('SELECT id FROM contents WHERE account_id = ? AND remote_id = ?')
+    const insertContent = this.db.prepare(`
+      INSERT INTO contents (
+        id, account_id, remote_id, type, title, body_excerpt, url, published_at,
+        first_captured_at, updated_at, note, tags_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '[]')
+    `)
+    const updateExistingContent = this.db.prepare(`
+      UPDATE contents SET type = ?, title = ?, body_excerpt = ?, url = ?, published_at = ?,
+        updated_at = ? WHERE id = ?
+    `)
+    const insertSnapshot = this.db.prepare(`
+      INSERT INTO content_snapshots (
+        id, content_id, views, likes, comments, shares, favorites, captured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(content_id, captured_at) DO NOTHING
+    `)
+
+    for (const content of contents) {
+      const existing = findContent.get(accountId, content.remoteId) as unknown as { id: string } | undefined
+      const contentId = existing?.id ?? randomUUID()
+      if (existing) {
+        updatedContentCount += 1
+        updateExistingContent.run(
+          content.type, content.title, content.bodyExcerpt, content.url,
+          content.publishedAt, updatedAt, contentId
+        )
+      } else {
+        newContentCount += 1
+        insertContent.run(
+          contentId, accountId, content.remoteId, content.type, content.title,
+          content.bodyExcerpt, content.url, content.publishedAt, firstCapturedAt, updatedAt
+        )
+      }
+      for (const snapshot of content.snapshots) {
+        const result = insertSnapshot.run(
+          randomUUID(), contentId, snapshot.views, snapshot.likes, snapshot.comments,
+          snapshot.shares, snapshot.favorites, snapshot.capturedAt
+        )
+        if (Number(result.changes) === 1) snapshotCount += 1
+        else skippedSnapshotCount += 1
+      }
+    }
+
+    return { newContentCount, updatedContentCount, snapshotCount, skippedSnapshotCount }
   }
 
   createJob(input: CreateJobInput): JobRecord {
@@ -1352,6 +1504,15 @@ function deriveAccountStatus(state: {
   return state.connectionStatus === 'ready' ? 'ready' : 'pending'
 }
 
+function canEnableManagedSync(
+  account: Pick<Account, 'connectionStatus' | 'ownershipStatus'>,
+  syncMode: SyncMode
+): boolean {
+  return account.connectionStatus === 'ready' &&
+    account.ownershipStatus === 'plugin_verified' &&
+    syncMode !== 'disabled'
+}
+
 function mapSnapshot(row: SnapshotRow): ContentSnapshot {
   return {
     views: nullableNumber(row.views),
@@ -1400,6 +1561,36 @@ function validateImport(payload: NormalizedImportPayload, metadata: ImportCommit
   if (!metadata.pluginId) throw new Error('缺少导入插件')
   if (!metadata.fileHash.trim()) throw new Error('缺少文件哈希')
   if (!metadata.fileName.trim()) throw new Error('缺少文件名')
+  validateNormalizedPayload(payload)
+}
+
+function validateManagedSync(
+  payload: NormalizedImportPayload,
+  metadata: ManagedSyncCommitMetadata
+): void {
+  validateNormalizedPayload(payload)
+  if (!payload.profile) throw new Error('受管同步结果缺少本人账号资料')
+  if (!metadata.accountId.trim()) throw new Error('受管同步缺少本地账号')
+  if (!metadata.pluginId.trim()) throw new Error('受管同步缺少插件')
+  if (!metadata.jobId.trim()) throw new Error('受管同步缺少任务')
+  if (!isIsoDate(metadata.finishedAt)) throw new Error('受管同步完成时间无效')
+  const limits: Record<Exclude<SyncMode, 'disabled'>, number> = {
+    profile_only: 0,
+    recent_20: 20,
+    recent_100: 100
+  }
+  if (!(metadata.authorizedMode in limits) || !(metadata.payloadMode in limits)) {
+    throw new Error('受管同步范围无效')
+  }
+  if (limits[metadata.payloadMode] > limits[metadata.authorizedMode]) {
+    throw new Error('受管同步结果超过当前授权范围')
+  }
+  if (payload.contents.length > limits[metadata.payloadMode]) {
+    throw new Error('受管同步内容数量超过授权范围')
+  }
+}
+
+function validateNormalizedPayload(payload: NormalizedImportPayload): void {
   if (!isIsoDate(payload.capturedAt)) throw new Error('导入采集时间无效')
   if (payload.profile && !payload.profile.remoteId.trim()) throw new Error('导入身份缺少 remoteId')
   for (const content of payload.contents) {
@@ -1451,6 +1642,18 @@ function safeObject(value: string | null): Record<string, unknown> | null {
 function requireAccount(account: Account | null): Account {
   if (!account) throw new Error('账号不存在')
   return account
+}
+
+function requireManagedSyncAccount(account: Account | null): Account {
+  const required = requireAccount(account)
+  if (!required.remoteId || required.ownershipStatus !== 'plugin_verified') {
+    throw new Error('受管同步要求已核验的本人账号身份')
+  }
+  if (required.connectionStatus !== 'ready') throw new Error('受管同步要求有效的登录连接')
+  if (!required.syncEnabled || required.syncMode === 'disabled') {
+    throw new Error('受管同步未被当前账号设置允许')
+  }
+  return required
 }
 
 function requireJob(job: JobRecord | null): JobRecord {
@@ -1543,6 +1746,15 @@ function sum(values: Array<number | null | undefined>): number {
 
 function isIsoDate(value: string): boolean {
   return value.length > 0 && Number.isFinite(Date.parse(value))
+}
+
+function safeSyncErrorMessage(value: unknown): string {
+  if (typeof value !== 'string') return '受管同步失败'
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return normalized.slice(0, 500) || '受管同步失败'
 }
 
 export { CURRENT_SCHEMA_VERSION }

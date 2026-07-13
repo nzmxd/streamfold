@@ -7,6 +7,12 @@ export interface NormalizedImportProfile {
   following: number | null
   contentCount: number | null
   viewsTotal: number | null
+  likesAndFavoritesTotal?: number | null
+  views?: number | null
+  likes?: number | null
+  comments?: number | null
+  shares?: number | null
+  favorites?: number | null
 }
 
 export interface NormalizedImportContent {

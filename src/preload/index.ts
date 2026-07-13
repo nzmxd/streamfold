@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { BrowserState, JobRecord, SocialVaultApi } from '../shared/contracts'
+import type { BrowserState, SocialVaultApi } from '../shared/contracts'
 
 const api: SocialVaultApi = {
   platforms: {
@@ -7,13 +7,19 @@ const api: SocialVaultApi = {
   },
   accounts: {
     list: () => ipcRenderer.invoke('accounts:list'),
+    onChanged: (callback) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('accounts:changed', listener)
+      return () => ipcRenderer.removeListener('accounts:changed', listener)
+    },
     create: (input) => ipcRenderer.invoke('accounts:create', input),
     update: (input) => ipcRenderer.invoke('accounts:update', input),
     bulkUpdate: (input) => ipcRenderer.invoke('accounts:bulk-update', input),
     disconnect: (id) => ipcRenderer.invoke('accounts:disconnect', id),
     purge: (id) => ipcRenderer.invoke('accounts:purge', id),
     verifyIdentity: (id) => ipcRenderer.invoke('accounts:verify-identity', id),
-    confirmIdentity: (input) => ipcRenderer.invoke('accounts:confirm-identity', input)
+    confirmIdentity: (input) => ipcRenderer.invoke('accounts:confirm-identity', input),
+    sync: (id) => ipcRenderer.invoke('accounts:sync', id)
   },
   groups: {
     list: () => ipcRenderer.invoke('groups:list'),
@@ -43,19 +49,6 @@ const api: SocialVaultApi = {
   plugins: {
     list: () => ipcRenderer.invoke('plugins:list'),
     setEnabled: (id, enabled) => ipcRenderer.invoke('plugins:set-enabled', id, enabled)
-  },
-  imports: {
-    preview: (accountId) => ipcRenderer.invoke('imports:preview', accountId),
-    commit: (input) => ipcRenderer.invoke('imports:commit', input)
-  },
-  jobs: {
-    list: () => ipcRenderer.invoke('jobs:list'),
-    cancel: (id) => ipcRenderer.invoke('jobs:cancel', id),
-    onChanged: (callback) => {
-      const listener = (_event: Electron.IpcRendererEvent, job: JobRecord): void => callback(job)
-      ipcRenderer.on('jobs:changed', listener)
-      return () => ipcRenderer.removeListener('jobs:changed', listener)
-    }
   },
   settings: {
     overview: () => ipcRenderer.invoke('settings:overview'),

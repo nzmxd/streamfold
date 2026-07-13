@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type {
   Account,
   BrowserState,
-  ConfirmManagedIdentityInput,
+  ConfirmApiIdentityInput,
   Group,
-  ManagedIdentityCheckResult,
+  ApiIdentityCheckResult,
+  XiaohongshuSyncResult,
   PlatformDefinition,
   SyncMode,
   UpdateAccountInput
@@ -27,8 +28,9 @@ const props = defineProps<{
   browserState?: BrowserState
   save: (input: UpdateAccountInput) => Promise<Account>
   openBrowser: (id: string) => Promise<BrowserState>
-  verifyIdentity: (id: string) => Promise<ManagedIdentityCheckResult>
-  confirmIdentity: (input: ConfirmManagedIdentityInput) => Promise<ManagedIdentityCheckResult>
+  verifyIdentity: (id: string) => Promise<ApiIdentityCheckResult>
+  confirmIdentity: (input: ConfirmApiIdentityInput) => Promise<ApiIdentityCheckResult>
+  syncAccount: (id: string) => Promise<XiaohongshuSyncResult>
   disconnect: (id: string) => Promise<void>
   purge: (id: string) => Promise<void>
 }>()
@@ -36,7 +38,7 @@ const props = defineProps<{
 const activeTab = ref<DetailTab>('overview')
 const busy = ref(false)
 const localMessage = ref('')
-const verification = ref<ManagedIdentityCheckResult | null>(null)
+const verification = ref<ApiIdentityCheckResult | null>(null)
 const form = reactive({
   alias: '',
   note: '',
@@ -45,6 +47,22 @@ const form = reactive({
   syncMode: 'profile_only' as SyncMode,
   isDefault: false
 })
+
+const syncAuthorizationReason = computed(() => {
+  const account = props.account
+  if (!account || account.syncEnabled) return ''
+  if (account.syncMode === 'disabled') return '请先选择同步范围并保存。'
+  if (account.connectionStatus === 'expired') return '登录会话已过期，请重新登录并核验当前身份。'
+  if (account.connectionStatus === 'mismatch') return '当前登录身份与本地绑定不一致，不能允许同步。'
+  if (account.connectionStatus === 'disconnected') return '登录会话已断开，请重新打开官方页面并核验身份。'
+  if (account.connectionStatus !== 'ready') return '连接尚未就绪，请先打开官方页面并完成登录。'
+  if (account.ownershipStatus !== 'plugin_verified') return '请先在浏览器页签核验当前账号。'
+  return ''
+})
+
+const syncToggleDisabled = computed(() =>
+  busy.value || Boolean(!props.account?.syncEnabled && syncAuthorizationReason.value)
+)
 
 watch(
   () => props.account,
@@ -79,7 +97,7 @@ async function saveSettings(): Promise<void> {
       syncMode: form.syncMode,
       isDefault: form.isDefault
     })
-    localMessage.value = '本地设置已保存，不会上传到社媒平台。'
+    localMessage.value = '设置已保存。'
   } catch {
     // The account store renders the sanitized error at page level.
   } finally {
@@ -88,7 +106,7 @@ async function saveSettings(): Promise<void> {
 }
 
 async function toggleSync(): Promise<void> {
-  if (!props.account || busy.value || props.account.connectionStatus === 'disconnected') return
+  if (!props.account || syncToggleDisabled.value) return
   busy.value = true
   try {
     await props.save({
@@ -134,7 +152,7 @@ async function confirmLoginIdentity(): Promise<void> {
   const candidate = verification.value
   const confirmationToken = candidate.confirmationToken!
   const confirmed = window.confirm(
-    `确认绑定当前可见的小红书身份？\n\n昵称：${candidate.remoteName}\n远端 ID：${candidate.remoteId}\n\n确认后会再次读取当前页面；只有身份仍完全一致才会写入本地绑定。`
+    `确认绑定当前小红书账号？\n\n昵称：${candidate.remoteName}\n账号 ID：${candidate.remoteId}\n\n确认后将再次核验账号信息。`
   )
   if (!confirmed) return
   busy.value = true
@@ -153,10 +171,24 @@ async function confirmLoginIdentity(): Promise<void> {
   }
 }
 
+async function syncOwnedData(): Promise<void> {
+  if (!props.account || busy.value) return
+  busy.value = true
+  localMessage.value = ''
+  try {
+    const result = await props.syncAccount(props.account.id)
+    localMessage.value = result.message
+  } catch {
+    // The account store renders the sanitized error at page level.
+  } finally {
+    busy.value = false
+  }
+}
+
 async function disconnectAccount(): Promise<void> {
   if (!props.account || busy.value) return
   const confirmed = window.confirm(
-    `断开“${props.account.alias}”的登录会话？\n\n这会关闭浏览器窗口并清除该账号的 Cookie、缓存和站点存储；账号备注、分组、内容与历史指标都会保留。不会修改平台账号。`
+    `退出“${props.account.alias}”在账号浏览器中的登录？\n\n账号资料、备注、分组、内容与历史指标都会保留。`
   )
   if (!confirmed) return
   busy.value = true
@@ -174,7 +206,7 @@ async function purgeAccount(): Promise<void> {
   const accountId = props.account.id
   const alias = props.account.alias
   const confirmed = window.confirm(
-    `永久删除本地账号“${alias}”？\n\n该账号的登录会话、备注、内容、指标快照和导入记录都会从本机删除，且无法撤销。平台上的账号和内容不受影响。`
+    `永久删除本地账号“${alias}”？\n\n该账号的登录会话、备注、内容、指标快照和同步记录都会从本机删除，且无法撤销。平台上的账号和内容不受影响。`
   )
   if (!confirmed) return
   busy.value = true
@@ -193,7 +225,7 @@ async function purgeAccount(): Promise<void> {
     <div v-if="!account" class="empty-detail">
       <span>◎</span>
       <h2>选择或添加账号</h2>
-      <p>账号管理和浏览器已经分离，浏览器会在独立大窗口中打开。</p>
+      <p>从左侧选择账号，或添加一个新账号开始使用。</p>
     </div>
 
     <template v-else>
@@ -209,7 +241,7 @@ async function purgeAccount(): Promise<void> {
           </div>
         </div>
         <button class="button browser-primary" :disabled="busy" @click="openBrowserWindow">
-          <span>↗</span>{{ browserState?.windowOpen ? '切换到浏览器窗口' : account.connectionStatus === 'disconnected' ? '重新连接官方页面' : '打开独立浏览器' }}
+          <span>↗</span>{{ browserState?.windowOpen ? '切换到浏览器窗口' : account.connectionStatus === 'disconnected' ? '重新打开登录页面' : '打开账号浏览器' }}
         </button>
       </header>
 
@@ -223,27 +255,42 @@ async function purgeAccount(): Promise<void> {
       <div v-if="activeTab === 'overview'" class="detail-scroll">
         <div class="metric-grid account-status-grid">
           <article>
-            <span>连接状态</span><strong>{{ connectionStatusLabel(account.connectionStatus) }}</strong><small>只表示本机登录会话是否可用</small>
+            <span>连接状态</span><strong>{{ connectionStatusLabel(account.connectionStatus) }}</strong><small>{{ browserState?.windowOpen ? '浏览器窗口已打开' : '需要时可重新打开浏览器' }}</small>
           </article>
           <article>
             <span>身份归属</span><strong>{{ ownershipStatusLabel(account.ownershipStatus) }}</strong><small>{{ account.remoteName || '尚未绑定平台身份' }}</small>
           </article>
           <article>
-            <span>平台同步策略</span><strong>{{ account.syncEnabled ? syncStatusLabel(account.syncStatus) : '不允许同步' }}</strong><small>{{ syncModeLabel(account.syncMode) }} · 当前仅保存策略，无自动调度</small>
+            <span>数据同步</span><strong>{{ account.syncEnabled ? syncStatusLabel(account.syncStatus) : '未启用' }}</strong><small>{{ syncModeLabel(account.syncMode) }}</small>
           </article>
           <article>
-            <span>浏览器窗口</span><strong>{{ browserState?.windowOpen ? '已打开' : '已关闭' }}</strong><small>关闭窗口不会清除登录态</small>
+            <span>浏览器窗口</span><strong>{{ browserState?.windowOpen ? '已打开' : '已关闭' }}</strong><small>{{ browserState?.windowOpen ? '可切换到窗口继续操作' : '登录状态会继续保留' }}</small>
           </article>
         </div>
 
         <section class="workflow-card">
-          <div class="section-heading"><div><h3>安全接入流程</h3><p>连接、身份归属和数据导入分别记录，避免状态混淆。</p></div><span class="read-only-badge">只读设计</span></div>
+          <div class="section-heading"><div><h3>使用步骤</h3><p>完成登录与身份核验后即可同步数据。</p></div></div>
           <ol class="steps">
-            <li class="done"><b>1</b><div><strong>账号空间已创建</strong><span>Session Partition 与其他账号完全隔离</span></div></li>
-            <li :class="{ done: browserState?.official }"><b>2</b><div><strong>打开平台官方页面</strong><span>这里只校验当前域名属于平台，不代表已经登录</span></div></li>
-            <li :class="{ done: account.ownershipStatus !== 'unconfirmed' }"><b>3</b><div><strong>确认数据归属</strong><span>{{ account.ownershipStatus === 'plugin_verified' ? '平台插件已核验当前可见登录身份' : '文件导入由用户确认归属；平台身份需专用插件核验' }}</span></div></li>
-            <li :class="{ done: Boolean(account.lastSyncedAt) }"><b>4</b><div><strong>导入本人数据</strong><span>文件插件只读用户确认归属的数据并写入本机</span></div></li>
+            <li class="done"><b>1</b><div><strong>账号已添加</strong><span>可继续填写分组、标签和备注</span></div></li>
+            <li :class="{ done: browserState?.official }"><b>2</b><div><strong>完成平台登录</strong><span>{{ browserState?.official ? '登录页面已打开' : '请打开账号浏览器并登录' }}</span></div></li>
+            <li :class="{ done: account.ownershipStatus === 'plugin_verified' }"><b>3</b><div><strong>核验当前账号</strong><span>{{ account.ownershipStatus === 'plugin_verified' ? '当前账号已核验' : '登录后点击“核验当前账号”' }}</span></div></li>
+            <li :class="{ done: Boolean(account.lastSyncedAt) }"><b>4</b><div><strong>同步账号数据</strong><span>{{ account.lastSyncedAt ? '已完成首次同步' : '选择同步范围后开始同步' }}</span></div></li>
           </ol>
+        </section>
+        <section class="workflow-card sync-action-card">
+          <div class="section-heading">
+            <div><h3>同步本人数据</h3><p>同步账号资料、作品列表和统计指标。</p></div>
+            <button
+              class="button primary"
+              :disabled="busy || account.platformId !== 'xiaohongshu' || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled || !browserState?.windowOpen"
+              @click="syncOwnedData"
+            >{{ busy ? '同步中…' : '立即同步' }}</button>
+          </div>
+          <p v-if="account.platformId !== 'xiaohongshu'" class="muted">该平台的数据同步功能仍在开发中。</p>
+          <p v-else-if="account.ownershipStatus !== 'plugin_verified'" class="muted">请先登录账号，再到“浏览器”页签核验当前账号。</p>
+          <p v-else-if="!account.syncEnabled" class="muted">请在“设置与备注”中启用数据同步。</p>
+          <p v-else-if="!browserState?.windowOpen" class="muted">请先打开账号浏览器。</p>
+          <p v-if="localMessage" class="success-message">{{ localMessage }}</p>
         </section>
       </div>
 
@@ -253,16 +300,12 @@ async function purgeAccount(): Promise<void> {
             <div class="mini-window"><span></span><span></span><span></span><i></i></div>
           </div>
           <div class="browser-launch-copy">
-            <span class="eyebrow">独立浏览器工作窗口</span>
-            <h3>完整页面空间，不再挤在账号详情里</h3>
-            <p>浏览器会打开为独立窗口，拥有固定工具栏、完整官方地址、前进后退和账号专属登录会话。关闭窗口不会清除登录态。</p>
-            <ul>
-              <li>账号之间 Cookie、缓存和 LocalStorage 隔离</li>
-              <li>未知域名、弹窗、下载和权限默认阻止</li>
-              <li>登录阶段不运行采集插件，不读取密码和验证码</li>
-            </ul>
+            <span class="eyebrow">账号浏览器</span>
+            <h3>在独立窗口中完成登录</h3>
+            <p>打开浏览器后，按平台页面提示完成登录。关闭窗口后，下次可以继续使用当前登录状态。</p>
+            <ul><li>可使用前进、后退和刷新</li><li>登录完成后返回这里核验账号</li></ul>
             <button class="button primary large-action" :disabled="busy" @click="openBrowserWindow">
-              {{ browserState?.windowOpen ? '切换到已打开的窗口' : account.connectionStatus === 'disconnected' ? `重新连接 ${platform?.name} 官方入口` : `打开 ${platform?.name} 官方入口` }} ↗
+              {{ browserState?.windowOpen ? '切换到已打开的窗口' : account.connectionStatus === 'disconnected' ? `重新打开 ${platform?.name}` : `打开 ${platform?.name} 登录页面` }} ↗
             </button>
             <button
               v-if="account.platformId === 'xiaohongshu'"
@@ -270,24 +313,29 @@ async function purgeAccount(): Promise<void> {
               :disabled="busy || !browserState?.windowOpen"
               :title="!browserState?.windowOpen ? '请先打开独立浏览器并登录小红书创作中心' : undefined"
               @click="verifyLoginIdentity"
-            >{{ busy ? '正在核验…' : '只读核验当前登录身份' }}</button>
-            <p v-else class="muted">该平台的固定身份核验适配器仍在规划中。</p>
+            >{{ busy ? '正在核验…' : '核验当前账号' }}</button>
+            <button
+              v-if="account.platformId === 'xiaohongshu'"
+              class="button primary large-action"
+              :disabled="busy || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled || !browserState?.windowOpen"
+              @click="syncOwnedData"
+            >{{ busy ? '同步中…' : `同步账号数据（${syncModeLabel(account.syncMode)}）` }}</button>
+            <p v-else class="muted">该平台的数据同步功能仍在开发中。</p>
             <p v-if="verification" :class="{ 'success-message': verification.status === 'verified', 'danger-text': verification.status === 'identity_mismatch', muted: !['verified', 'identity_mismatch'].includes(verification.status) }">{{ verification.message }}<template v-if="verification.remoteName"> 当前身份：{{ verification.remoteName }}</template></p>
             <div v-if="verification?.status === 'confirmation_required'" class="form-actions">
-              <button class="button primary" :disabled="busy" @click="confirmLoginIdentity">确认是本人账号并再次核验</button>
+              <button class="button primary" :disabled="busy" @click="confirmLoginIdentity">确认绑定此账号</button>
               <button class="button" :disabled="busy" @click="verification = null">暂不绑定</button>
             </div>
           </div>
         </section>
         <section v-if="browserState" class="browser-session-status">
           <div><span>窗口</span><strong>{{ browserState.windowOpen ? '已打开' : '已关闭' }}</strong></div>
-          <div><span>域名</span><strong>{{ browserState.official ? '官方域名' : '等待校验' }}</strong></div>
           <div class="session-address"><span>最近地址</span><strong>{{ browserState.url || platform?.loginUrl }}</strong></div>
         </section>
       </div>
 
       <div v-else-if="activeTab === 'content'" class="detail-scroll">
-        <AccountContentWidget :account-id="account.id" />
+        <AccountContentWidget :account-id="account.id" :refresh-key="account.lastSyncedAt" />
       </div>
 
       <form v-else class="detail-scroll settings-form" @submit.prevent="saveSettings">
@@ -295,24 +343,22 @@ async function purgeAccount(): Promise<void> {
           <label>本地别名<input v-model="form.alias" maxlength="40" required /></label>
           <label>标签<input v-model="form.tags" placeholder="使用逗号分隔，例如：工作, 重点" /></label>
         </div>
-        <label>账号备注<textarea v-model="form.note" rows="4" maxlength="1000" placeholder="负责人、内容方向、登录说明等，仅保存在本机"></textarea></label>
+        <label>账号备注<textarea v-model="form.note" rows="4" maxlength="1000" placeholder="负责人、内容方向、登录说明等"></textarea></label>
         <fieldset>
           <legend>所属分组</legend>
           <label v-for="group in groups" :key="group.id" class="checkbox"><input v-model="form.groupIds" type="checkbox" :value="group.id" />{{ group.name }}</label>
           <span v-if="groups.length === 0" class="muted">尚未创建自定义分组</span>
         </fieldset>
         <div class="settings-grid">
-          <label>未来平台插件的默认同步范围<select v-model="form.syncMode"><option value="profile_only">仅账号资料（推荐）</option><option value="recent_20">最近 20 条</option><option value="recent_100">最近 100 条</option><option value="disabled">不允许平台同步</option></select></label>
+          <label>数据同步范围<select v-model="form.syncMode"><option value="profile_only">仅账号资料与指标（推荐）</option><option value="recent_20">最近 20 条作品</option><option value="recent_100">最近 100 条作品</option><option value="disabled">不启用同步</option></select></label>
           <label class="checkbox default-check"><input v-model="form.isDefault" type="checkbox" />设为该平台默认账号</label>
         </div>
-        <div class="form-actions"><button class="button primary" :disabled="busy" type="submit">保存本地设置</button><button class="button" :disabled="busy || account.connectionStatus === 'disconnected'" :title="account.connectionStatus === 'disconnected' ? '请先重新打开官方页面并建立连接' : undefined" type="button" @click="toggleSync">{{ account.syncEnabled ? '不允许未来平台同步' : '允许未来平台同步' }}</button></div>
-        <p v-if="account.connectionStatus === 'disconnected'" class="muted">登录会话已断开，重新建立连接前不能允许未来平台同步。</p>
+        <div class="form-actions"><button class="button primary" :disabled="busy" type="submit">保存设置</button><button class="button" :disabled="syncToggleDisabled" :title="syncAuthorizationReason || undefined" type="button" @click="toggleSync">{{ account.syncEnabled ? '暂停数据同步' : '启用数据同步' }}</button></div>
+        <p v-if="syncAuthorizationReason" class="muted">{{ syncAuthorizationReason }}</p>
         <p v-if="localMessage" class="success-message">{{ localMessage }}</p>
-        <p class="privacy-copy">别名、备注、标签和分组不会发送给平台或采集插件。</p>
-
         <section class="danger-zone session-zone">
-          <div><strong>断开登录会话</strong><p>清除该账号的 Cookie、缓存和站点存储；账号资料和历史数据保留。</p></div>
-          <button class="button danger" :disabled="busy" type="button" @click="disconnectAccount">断开并清除会话</button>
+          <div><strong>退出账号浏览器</strong><p>退出该账号的网页登录；账号资料和历史数据会保留。</p></div>
+          <button class="button danger" :disabled="busy" type="button" @click="disconnectAccount">退出登录</button>
         </section>
         <section class="danger-zone">
           <div><strong>永久删除本地账号</strong><p>删除会话、账号资料、备注、内容、快照和任务记录；不会删除平台账号。</p></div>

@@ -3,8 +3,7 @@ import {
   platformIds,
   type AnalyticsQuery,
   type BulkUpdateAccountsInput,
-  type CommitFileImportInput,
-  type ConfirmManagedIdentityInput,
+  type ConfirmApiIdentityInput,
   type ContentQuery,
   type CreateAccountInput,
   type CreateEncryptedBackupInput,
@@ -143,15 +142,6 @@ export function parseAnalyticsQuery(value: unknown): AnalyticsQuery {
   return result
 }
 
-export function parseCommitFileImport(value: unknown): CommitFileImportInput {
-  const record = asRecord(value)
-  return {
-    token: asText(record.token, '导入令牌', 1, 80),
-    accountId: asId(record.accountId),
-    confirmOwnership: asBoolean(record.confirmOwnership, '本人账号确认')
-  }
-}
-
 export function parseUpdateSettings(value: unknown): UpdateSettingsInput {
   const record = asRecord(value)
   const result: UpdateSettingsInput = {}
@@ -174,7 +164,7 @@ export function parseCreateEncryptedBackup(value: unknown): CreateEncryptedBacku
   return { password: asPassword(record.password) }
 }
 
-export function parseConfirmManagedIdentity(value: unknown): ConfirmManagedIdentityInput {
+export function parseConfirmApiIdentity(value: unknown): ConfirmApiIdentityInput {
   const record = asRecord(value)
   return {
     accountId: asId(record.accountId),

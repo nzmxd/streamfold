@@ -16,20 +16,19 @@ describe('PluginService', () => {
 
   it('enables only available audited plugins', () => {
     const plugins = service.list()
-    expect(plugins).toHaveLength(5)
-    expect(plugins.find((plugin) => plugin.manifest.id === 'generic-file-import'))
-      .toMatchObject({ enabled: true, availability: 'available' })
+    expect(plugins).toHaveLength(4)
+    expect(plugins.find((plugin) => plugin.manifest.id === 'generic-file-import')).toBeUndefined()
     expect(plugins.filter((plugin) => plugin.availability === 'planned').every((plugin) => !plugin.enabled))
       .toBe(true)
-    expect(service.setEnabled('xiaohongshu-managed-browser', true)).toMatchObject({
+    expect(service.setEnabled('xiaohongshu-session-api', true)).toMatchObject({
       enabled: true, availability: 'available'
     })
-    expect(() => service.setEnabled('weibo-managed-browser', true)).toThrow('计划中的插件不能启用')
+    expect(() => service.setEnabled('weibo-session-api', true)).toThrow('计划中的插件不能启用')
   })
 
-  it('persists the user toggle for the available plugin', () => {
-    expect(service.setEnabled('generic-file-import', false).enabled).toBe(false)
+  it('persists the user toggle for the available API plugin', () => {
+    expect(service.setEnabled('xiaohongshu-session-api', true).enabled).toBe(true)
     service.initialize()
-    expect(service.list().find((plugin) => plugin.manifest.id === 'generic-file-import')?.enabled).toBe(false)
+    expect(service.list().find((plugin) => plugin.manifest.id === 'xiaohongshu-session-api')?.enabled).toBe(true)
   })
 })

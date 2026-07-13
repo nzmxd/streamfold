@@ -61,6 +61,7 @@ export interface AccountSnapshot extends MetricValues {
   following: number | null
   contentCount: number | null
   viewsTotal: number | null
+  likesAndFavoritesTotal: number | null
   capturedAt: string
 }
 

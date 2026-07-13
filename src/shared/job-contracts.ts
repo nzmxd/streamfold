@@ -8,7 +8,7 @@ export const jobStatuses = [
   'interrupted'
 ] as const
 export type JobStatus = (typeof jobStatuses)[number]
-export type JobKind = 'file_import'
+export type JobKind = 'file_import' | 'managed_sync'
 
 export interface JobRecord {
   id: string

@@ -3,10 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { ImportRepository } from './services/import-service'
-import type { JobRepository } from './services/job-service'
 import type { NormalizedImportPayload } from './plugins/types'
 import { SocialDatabase } from './database'
+import { PluginService } from './plugin-service'
 
 describe('SocialDatabase', () => {
   let database: SocialDatabase
@@ -134,6 +133,37 @@ describe('SocialDatabase', () => {
     expect(database.getAccount(disconnected.id)?.connectionStatus).toBe('disconnected')
   })
 
+  it('allows sync authorization only for a ready plugin-verified account', () => {
+    const pending = createAccount(database, '待登录账号')
+    expect(pending.syncEnabled).toBe(false)
+    expect(database.updateAccount({ id: pending.id, syncEnabled: true }).syncEnabled).toBe(false)
+
+    const ready = database.applyManagedIdentity(pending.id, {
+      remoteId: 'verified-owner', remoteName: '已核验账号'
+    }, '2026-07-13T08:00:00.000Z')
+    expect(ready).toMatchObject({
+      connectionStatus: 'ready', ownershipStatus: 'plugin_verified', syncEnabled: false
+    })
+    expect(database.updateAccount({ id: ready.id, syncEnabled: true }).syncEnabled).toBe(true)
+
+    const expired = database.applyManagedProbeStatus(
+      ready.id, 'login_required', '登录已过期', '2026-07-13T08:01:00.000Z'
+    )
+    expect(expired).toMatchObject({ connectionStatus: 'expired', syncEnabled: false })
+    expect(database.updateAccount({ id: ready.id, syncEnabled: true }).syncEnabled).toBe(false)
+
+    const mismatchCandidate = createAccount(database, '身份不一致账号')
+    database.applyManagedIdentity(mismatchCandidate.id, {
+      remoteId: 'bound-owner', remoteName: '原身份'
+    }, '2026-07-13T08:02:00.000Z')
+    database.updateAccount({ id: mismatchCandidate.id, syncEnabled: true })
+    const mismatch = database.applyManagedIdentity(mismatchCandidate.id, {
+      remoteId: 'other-owner', remoteName: '其他身份'
+    }, '2026-07-13T08:03:00.000Z')
+    expect(mismatch).toMatchObject({ connectionStatus: 'mismatch', syncEnabled: false })
+    expect(database.updateAccount({ id: mismatch.id, syncEnabled: true }).syncEnabled).toBe(false)
+  })
+
   it('removes only the selected local account record', () => {
     const first = database.createAccount({
       platformId: 'weibo',
@@ -178,6 +208,101 @@ describe('SocialDatabase', () => {
     const content = database.listContents({ accountId: account.id })[0]
     expect(content?.remoteId).toBe('content-a')
     expect(content?.latestSnapshot?.views).toBe(120)
+  })
+
+  it('commits managed sync data idempotently without creating a file import batch', () => {
+    const account = createManagedAccount(database, 'managed-owner', '本人账号')
+    const payload = importPayload('managed-owner', 'managed-note-1')
+    const metadata = managedSyncMetadata(database, account.id, '2026-07-13T08:00:01.000Z')
+
+    expect(database.markManagedSyncStarted(account.id, '2026-07-13T07:59:59.000Z')).toMatchObject({
+      syncStatus: 'running', lastSyncError: ''
+    })
+    expect(database.commitManagedSync(payload, metadata)).toMatchObject({
+      stats: {
+        newContentCount: 1,
+        updatedContentCount: 0,
+        snapshotCount: 1,
+        skippedSnapshotCount: 0
+      },
+      job: { id: metadata.jobId, status: 'succeeded', kind: 'managed_sync' }
+    })
+    expect(database.getAccount(account.id)).toMatchObject({
+      remoteId: 'managed-owner',
+      remoteName: 'managed-owner',
+      ownershipStatus: 'plugin_verified',
+      syncStatus: 'idle',
+      lastSyncError: '',
+      lastSyncedAt: payload.capturedAt,
+      identityVerifiedAt: metadata.finishedAt
+    })
+    expect(database.getStorageCounts()).toMatchObject({
+      contentCount: 1,
+      contentSnapshotCount: 1,
+      accountSnapshotCount: 1,
+      importCount: 0,
+      jobCount: 1
+    })
+
+    database.markManagedSyncStarted(account.id, '2026-07-13T08:01:00.000Z')
+    const secondMetadata = managedSyncMetadata(database, account.id, '2026-07-13T08:01:01.000Z')
+    expect(database.commitManagedSync(payload, secondMetadata)).toMatchObject({
+      stats: {
+        newContentCount: 0,
+        updatedContentCount: 1,
+        snapshotCount: 0,
+        skippedSnapshotCount: 1
+      },
+      job: { id: secondMetadata.jobId, status: 'succeeded' }
+    })
+    expect(database.getStorageCounts()).toMatchObject({
+      contentCount: 1,
+      contentSnapshotCount: 1,
+      accountSnapshotCount: 1,
+      importCount: 0,
+      jobCount: 2
+    })
+    expect(database.getPluginState('xiaohongshu-session-api')).toMatchObject({ successCount: 2 })
+  })
+
+  it('rejects a managed identity mismatch atomically and records a sanitized failure state', () => {
+    const account = createManagedAccount(database, 'bound-owner', '已绑定账号')
+    const payload = importPayload('different-owner', 'must-not-be-written')
+    database.markManagedSyncStarted(account.id, '2026-07-13T08:00:00.000Z')
+    const metadata = managedSyncMetadata(database, account.id, '2026-07-13T08:00:01.000Z')
+    const before = database.getStorageCounts()
+
+    expect(() => database.commitManagedSync(payload, metadata)).toThrow('身份与已绑定账号不一致')
+
+    expect(database.getStorageCounts()).toEqual(before)
+    expect(database.listContents({ accountId: account.id })).toEqual([])
+    expect(database.listAccountSnapshots(account.id)).toEqual([])
+    expect(database.getAccount(account.id)).toMatchObject({
+      remoteId: 'bound-owner',
+      remoteName: '已绑定账号',
+      syncStatus: 'running',
+      lastSyncedAt: null
+    })
+
+    const failed = database.markManagedSyncFailed(
+      account.id,
+      `  页面\u0000读取失败\n${'x'.repeat(600)}  `,
+      '2026-07-13T08:00:01.000Z'
+    )
+    expect(failed.syncStatus).toBe('failed')
+    expect(failed.lastSyncError).not.toMatch(/[\u0000-\u001f\u007f]/)
+    expect(failed.lastSyncError.length).toBeLessThanOrEqual(500)
+    expect(failed.lastSyncedAt).toBeNull()
+  })
+
+  it('does not start managed sync before plugin ownership verification', () => {
+    const account = database.createAccount({
+      platformId: 'xiaohongshu', alias: '尚未核验', syncMode: 'profile_only'
+    })
+    expect(() => database.markManagedSyncStarted(
+      account.id,
+      '2026-07-13T08:00:00.000Z'
+    )).toThrow('已核验的本人账号身份')
   })
 
   it('rolls back every write when an imported identity conflicts', () => {
@@ -249,16 +374,16 @@ describe('SocialDatabase', () => {
     const account = createAccount(database, '账号 A')
     const queued = database.createJob({
       id: 'job-queued',
-      kind: 'file_import',
+      kind: 'managed_sync',
       accountId: account.id,
-      pluginId: 'builtin.file',
+      pluginId: 'xiaohongshu-session-api',
       status: 'queued'
     })
     const completed = database.createJob({
       id: 'job-done',
-      kind: 'file_import',
+      kind: 'managed_sync',
       accountId: account.id,
-      pluginId: 'builtin.file',
+      pluginId: 'xiaohongshu-session-api',
       status: 'succeeded',
       progress: 100
     })
@@ -275,9 +400,9 @@ describe('SocialDatabase', () => {
     const account = createAccount(database, '账号 A')
     const job = database.createJob({
       id: 'job-cas',
-      kind: 'file_import',
+      kind: 'managed_sync',
       accountId: account.id,
-      pluginId: 'builtin.file',
+      pluginId: 'xiaohongshu-session-api',
       status: 'queued'
     })
 
@@ -294,79 +419,6 @@ describe('SocialDatabase', () => {
     expect(database.getSetting('missing')).toBeNull()
   })
 
-  it('implements the import and job repository persistence boundaries', () => {
-    const importRepository: ImportRepository = database
-    const jobRepository: JobRepository = database
-    const account = createAccount(database, '账号 A')
-    const manifest = {
-      schemaVersion: 1 as const,
-      id: 'builtin.file',
-      name: '本地文件导入',
-      version: '1.0.0',
-      description: '测试插件',
-      license: 'MIT',
-      source: 'builtin' as const,
-      commitHash: 'builtin',
-      mode: 'file_import' as const,
-      readOnly: true as const,
-      ownedAccountOnly: true as const,
-      capabilities: ['file.import' as const],
-      allowedHosts: [],
-      minimumIntervalSeconds: 0,
-      recommendedSyncIntervalHours: 24,
-      riskLevel: 'low' as const
-    }
-    database.upsertPluginState(manifest, { enabled: true })
-    database.commitImport(importPayload('remote-a', 'content-a'), importMetadata(account.id))
-    const job = database.createJob({
-      id: 'job-import',
-      kind: 'file_import',
-      accountId: account.id,
-      pluginId: manifest.id,
-      status: 'succeeded',
-      progress: 100,
-      stage: '完成',
-      result: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
-      errorCode: '',
-      errorMessage: '',
-      createdAt: '2026-07-13T08:00:00.000Z',
-      startedAt: '2026-07-13T08:00:00.000Z',
-      finishedAt: '2026-07-13T08:00:01.000Z'
-    })
-
-    expect(jobRepository.getJob(job.id)).toEqual(job)
-    expect(importRepository.accountExists(account.id)).toBe(true)
-    expect(importRepository.isPluginEnabled(manifest.id)).toBe(true)
-    importRepository.recordPluginRun({
-      jobId: job.id,
-      pluginId: manifest.id,
-      accountId: account.id,
-      status: 'succeeded',
-      startedAt: '2026-07-13T08:00:00.000Z',
-      finishedAt: '2026-07-13T08:00:01.000Z',
-      fileName: 'C:\\secret\\social-data.json',
-      fileHash: `hash-${account.id}`,
-      result: job.result,
-      errorCode: '',
-      errorMessage: ''
-    })
-    // Retrying the run audit is idempotent and must not increment counters twice.
-    importRepository.recordPluginRun({
-      jobId: job.id,
-      pluginId: manifest.id,
-      accountId: account.id,
-      status: 'succeeded',
-      startedAt: '2026-07-13T08:00:00.000Z',
-      finishedAt: '2026-07-13T08:00:01.000Z',
-      fileName: 'C:\\secret\\social-data.json',
-      fileHash: `hash-${account.id}`,
-      result: job.result,
-      errorCode: '',
-      errorMessage: ''
-    })
-    expect(database.getPluginState(manifest.id)).toMatchObject({ successCount: 1, failureCount: 0 })
-    expect(database.getStorageCounts().importCount).toBe(1)
-  })
 })
 
 describe('SocialDatabase migrations', () => {
@@ -415,7 +467,7 @@ describe('SocialDatabase migrations', () => {
 
     database = new SocialDatabase(path)
 
-    expect(database.getSchemaVersion()).toBe(3)
+    expect(database.getSchemaVersion()).toBe(5)
     expect(database.getAccount('legacy-account')).toMatchObject({
       status: 'paused',
       connectionStatus: 'pending',
@@ -449,12 +501,92 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(3)
+    expect(database.getSchemaVersion()).toBe(5)
     expect(database.getAccount(account.id)).toMatchObject({
       ownershipStatus: 'user_confirmed',
       ownershipConfirmedAt: '2026-07-01T00:00:00.000Z',
       identityVerifiedAt: null
     })
+  })
+
+  it('revokes invalid persisted sync authorization when migrating v3 to v4', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v3.sqlite')
+    database = new SocialDatabase(path)
+    const account = createAccount(database, '旧授权账号')
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    previous.exec(`
+      DROP TRIGGER accounts_sync_authorization_insert;
+      DROP TRIGGER accounts_sync_authorization_update;
+    `)
+    previous.prepare(`
+      UPDATE accounts SET connection_status = 'ready', ownership_status = 'user_confirmed',
+        sync_enabled = 1 WHERE id = ?
+    `).run(account.id)
+    previous.exec('PRAGMA user_version = 3')
+    previous.close()
+
+    database = new SocialDatabase(path)
+    expect(database.getSchemaVersion()).toBe(5)
+    expect(database.getAccount(account.id)).toMatchObject({
+      connectionStatus: 'ready', ownershipStatus: 'user_confirmed', syncEnabled: false
+    })
+
+    database.close()
+    database = null
+    const constrained = new DatabaseSync(path)
+    expect(() => constrained.prepare(`
+      UPDATE accounts SET sync_enabled = 1 WHERE id = ?
+    `).run(account.id)).toThrow('invalid sync authorization')
+    constrained.close()
+  })
+
+  it('retires old DOM and file-import plugin state without clearing the account session', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v4.sqlite')
+    database = new SocialDatabase(path)
+    const account = database.createAccount({
+      platformId: 'xiaohongshu', alias: '旧版账号', syncMode: 'recent_20'
+    })
+    database.applyManagedIdentity(account.id, {
+      remoteId: '5605904194', remoteName: '本人账号'
+    }, '2026-07-13T08:00:00.000Z')
+    database.updateAccount({ id: account.id, syncEnabled: true })
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    const at = '2026-07-13T08:00:00.000Z'
+    const insertPlugin = previous.prepare(`
+      INSERT OR REPLACE INTO plugin_installations (
+        plugin_id, manifest_json, enabled, availability, installed_at,
+        last_run_at, success_count, failure_count, last_error, updated_at
+      ) VALUES (?, '{}', 1, 'available', ?, ?, 1, 0, '', ?)
+    `)
+    insertPlugin.run('xiaohongshu-managed-browser', at, at, at)
+    insertPlugin.run('generic-file-import', at, at, at)
+    previous.prepare(`
+      INSERT INTO sync_cursors (account_id, plugin_id, cursor_json, updated_at)
+      VALUES (?, 'xiaohongshu-managed-browser', '{}', ?)
+    `).run(account.id, at)
+    previous.exec('PRAGMA user_version = 4')
+    previous.close()
+
+    database = new SocialDatabase(path)
+    expect(database.getAccount(account.id)).toMatchObject({
+      remoteId: '5605904194',
+      remoteName: '本人账号',
+      sessionPartition: account.sessionPartition,
+      ownershipStatus: 'user_confirmed',
+      connectionStatus: 'pending',
+      syncEnabled: false,
+      identityVerifiedAt: null
+    })
+    expect(database.getPluginState('xiaohongshu-managed-browser')).toBeNull()
+    expect(database.getPluginState('generic-file-import')).toBeNull()
   })
 })
 
@@ -510,6 +642,36 @@ function createAccount(database: SocialDatabase, alias: string) {
     alias,
     syncMode: 'profile_only'
   })
+}
+
+function createManagedAccount(database: SocialDatabase, remoteId: string, remoteName: string) {
+  const account = database.createAccount({
+    platformId: 'xiaohongshu', alias: remoteName, syncMode: 'recent_20'
+  })
+  database.applyManagedIdentity(account.id, { remoteId, remoteName }, '2026-07-13T07:00:00.000Z')
+  return database.updateAccount({ id: account.id, syncEnabled: true })
+}
+
+function managedSyncMetadata(database: SocialDatabase, accountId: string, finishedAt: string) {
+  const plugins = new PluginService(database)
+  plugins.initialize()
+  plugins.setEnabled('xiaohongshu-session-api', true)
+  const job = database.createJob({
+    kind: 'managed_sync',
+    accountId,
+    pluginId: 'xiaohongshu-session-api',
+    status: 'committing',
+    progress: 80,
+    stage: '写入本人资料与内容快照'
+  })
+  return {
+    accountId,
+    pluginId: 'xiaohongshu-session-api',
+    jobId: job.id,
+    authorizedMode: 'recent_20' as const,
+    payloadMode: 'recent_20' as const,
+    finishedAt
+  }
 }
 
 function importMetadata(accountId: string) {

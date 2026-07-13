@@ -6,16 +6,13 @@ import type { ExportService } from './export-service'
 import type { PluginService } from './plugin-service'
 import { listPlatforms } from './platforms'
 import type { SettingsService } from './settings-service'
-import type { ImportService } from './services/import-service'
-import type { ManagedAdapterService } from './managed-adapter-service'
-import type { JobService } from './services/job-service'
+import type { XiaohongshuApiService } from './xiaohongshu-api-service'
 import { isTrustedShellUrl } from './shell-security'
 import {
   parseAnalyticsQuery,
   parseBoolean,
   parseBulkUpdateAccounts,
-  parseCommitFileImport,
-  parseConfirmManagedIdentity,
+  parseConfirmApiIdentity,
   parseCreateEncryptedBackup,
   parseContentQuery,
   parseCreateAccount,
@@ -31,16 +28,12 @@ import {
 } from './validation'
 
 export interface IpcServices {
-  imports: ImportService
-  jobs: JobService
   plugins: PluginService
   settings: SettingsService
   exporter: ExportService
   backup: BackupService
-  adapters: ManagedAdapterService
+  xiaohongshuApi: XiaohongshuApiService
 }
-
-let removeJobListener: (() => void) | null = null
 
 export function registerIpc(
   window: BrowserWindow,
@@ -52,6 +45,9 @@ export function registerIpc(
   let maintenance = false
   let activeOperations = 0
   const idleWaiters = new Set<() => void>()
+  const notifyAccountsChanged = (): void => {
+    if (!window.isDestroyed()) window.webContents.send('accounts:changed')
+  }
   const runTracked = async <T>(handler: () => T | Promise<T>): Promise<T> => {
     if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
     activeOperations += 1
@@ -108,12 +104,27 @@ export function registerIpc(
       disconnectingAccounts.delete(id)
     }
   }))
-  ipcMain.handle('accounts:verify-identity', trusted((_event, value) => (
-    services.adapters.verifyIdentity(parseId(value))
-  )))
-  ipcMain.handle('accounts:confirm-identity', trusted((_event, value) => (
-    services.adapters.confirmIdentity(parseConfirmManagedIdentity(value))
-  )))
+  ipcMain.handle('accounts:verify-identity', trusted(async (_event, value) => {
+    try {
+      return await services.xiaohongshuApi.verifyIdentity(parseId(value))
+    } finally {
+      notifyAccountsChanged()
+    }
+  }))
+  ipcMain.handle('accounts:confirm-identity', trusted(async (_event, value) => {
+    try {
+      return await services.xiaohongshuApi.confirmIdentity(parseConfirmApiIdentity(value))
+    } finally {
+      notifyAccountsChanged()
+    }
+  }))
+  ipcMain.handle('accounts:sync', trusted(async (_event, value) => {
+    try {
+      return await services.xiaohongshuApi.sync(parseId(value))
+    } finally {
+      notifyAccountsChanged()
+    }
+  }))
   ipcMain.handle('groups:list', trusted(() => database.listGroups()))
   ipcMain.handle('groups:create', trusted((_event, value) => database.createGroup(parseCreateGroup(value))))
   ipcMain.handle('groups:update', trusted((_event, value) => database.updateGroup(parseUpdateGroup(value))))
@@ -137,10 +148,6 @@ export function registerIpc(
   ipcMain.handle('plugins:set-enabled', trusted((_event, id, enabled) => (
     services.plugins.setEnabled(parseId(id), parseBoolean(enabled, '插件开关'))
   )))
-  ipcMain.handle('imports:preview', trusted((_event, accountId) => services.imports.preview(parseId(accountId))))
-  ipcMain.handle('imports:commit', trusted((_event, value) => services.imports.commit(parseCommitFileImport(value))))
-  ipcMain.handle('jobs:list', trusted(() => services.jobs.list()))
-  ipcMain.handle('jobs:cancel', trusted((_event, id) => services.jobs.cancel(parseId(id))))
   ipcMain.handle('settings:overview', trusted(() => services.settings.overview()))
   ipcMain.handle('settings:update', trusted((_event, value) => services.settings.update(parseUpdateSettings(value))))
   ipcMain.handle('settings:export', trusted(async (_event, value) => {
@@ -163,33 +170,15 @@ export function registerIpc(
     }
   })
 
-  removeJobListener?.()
-  removeJobListener = services.jobs.onChanged((job) => {
-    if (!window.isDestroyed()) window.webContents.send('jobs:changed', job)
-  })
-
   ipcMain.handle('browser-workspace:get-state', (event) => browser.getStateForSender(event))
   ipcMain.handle('browser-workspace:back', (event) => browser.backForSender(event))
   ipcMain.handle('browser-workspace:forward', (event) => browser.forwardForSender(event))
   ipcMain.handle('browser-workspace:reload', (event) => browser.reloadForSender(event))
   ipcMain.handle('browser-workspace:home', (event) => browser.homeForSender(event))
   ipcMain.handle('browser-workspace:close', (event) => browser.closeForSender(event))
-  ipcMain.handle('browser-workspace:verify-identity', (event) => runTracked(() => {
-    const state = browser.getStateForSender(event)
-    if (!state.accountId) throw new Error('浏览器窗口未绑定账号')
-    return services.adapters.verifyIdentity(state.accountId)
-  }))
-  ipcMain.handle('browser-workspace:confirm-identity', (event, value) => runTracked(() => {
-    const state = browser.getStateForSender(event)
-    const input = parseConfirmManagedIdentity(value)
-    if (!state.accountId || input.accountId !== state.accountId) throw new Error('身份确认与浏览器账号不匹配')
-    return services.adapters.confirmIdentity(input)
-  }))
 }
 
 export function unregisterIpc(): void {
-  removeJobListener?.()
-  removeJobListener = null
   for (const channel of [
     'platforms:list',
     'accounts:list',
@@ -200,6 +189,7 @@ export function unregisterIpc(): void {
     'accounts:purge',
     'accounts:verify-identity',
     'accounts:confirm-identity',
+    'accounts:sync',
     'groups:list',
     'groups:create',
     'groups:update',
@@ -214,10 +204,6 @@ export function unregisterIpc(): void {
     'analytics:dashboard',
     'plugins:list',
     'plugins:set-enabled',
-    'imports:preview',
-    'imports:commit',
-    'jobs:list',
-    'jobs:cancel',
     'settings:overview',
     'settings:update',
     'settings:export',
@@ -228,9 +214,7 @@ export function unregisterIpc(): void {
     'browser-workspace:forward',
     'browser-workspace:reload',
     'browser-workspace:home',
-    'browser-workspace:close',
-    'browser-workspace:verify-identity',
-    'browser-workspace:confirm-identity'
+    'browser-workspace:close'
   ]) ipcMain.removeHandler(channel)
 }
 

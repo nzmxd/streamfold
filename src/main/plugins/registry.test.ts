@@ -1,59 +1,38 @@
 import { describe, expect, it } from 'vitest'
-import {
-  GENERIC_FILE_IMPORT_PLUGIN_ID,
-  PluginRegistry
-} from './registry'
+import { PluginRegistry } from './registry'
 
 describe('PluginRegistry', () => {
-  it('exposes audited available plugins and keeps unfinished adapters non-executable', () => {
+  it('contains only session API adapters and exposes no file import plugin', () => {
     const registry = new PluginRegistry()
-    const generic = registry.get(GENERIC_FILE_IMPORT_PLUGIN_ID)
-    expect(generic).toMatchObject({
-      availability: 'available',
-      defaultEnabled: true,
-      manifest: {
-        schemaVersion: 1,
-        source: 'builtin',
-        readOnly: true,
-        ownedAccountOnly: true,
-        mode: 'file_import',
-        riskLevel: 'low',
-        allowedHosts: []
-      }
-    })
-    expect(generic?.manifest.capabilities).toEqual([
-      'file.import',
-      'account.profile',
-      'content.list',
-      'content.metrics'
-    ])
+    expect(registry.get('generic-file-import')).toBeNull()
+    expect(registry.get('xiaohongshu-managed-browser')).toBeNull()
 
-    const xiaohongshu = registry.get('xiaohongshu-managed-browser')
+    const xiaohongshu = registry.get('xiaohongshu-session-api')
     expect(xiaohongshu).toMatchObject({
       availability: 'available',
       defaultEnabled: false,
       manifest: {
         version: '0.1.0',
-        mode: 'managed_browser',
-        capabilities: ['account.identity'],
+        mode: 'session_api',
+        riskLevel: 'high',
+        capabilities: [
+          'account.identity',
+          'account.profile',
+          'account.metrics',
+          'content.list',
+          'content.metrics'
+        ],
         allowedHosts: ['creator.xiaohongshu.com']
       }
     })
-    expect(xiaohongshu?.manifest.commitHash).toMatch(/^sha256:[a-f0-9]{64}:[a-f0-9]{64}$/)
+    expect(xiaohongshu?.manifest.commitHash).toContain('opencli-b0f84c99')
 
     const planned = registry.list().filter((item) => item.availability === 'planned')
     expect(planned.map((item) => item.manifest.id)).toEqual([
-      'weibo-managed-browser',
-      'douyin-managed-browser',
-      'zhihu-managed-browser'
+      'weibo-session-api',
+      'douyin-session-api',
+      'zhihu-session-api'
     ])
-    for (const adapter of planned) {
-      expect(adapter.manifest.mode).toBe('managed_browser')
-      expect(adapter.defaultEnabled).toBe(false)
-      expect(registry.isExecutable(adapter.manifest.id)).toBe(false)
-      expect(() => registry.requireExecutable(adapter.manifest.id)).toThrowError(
-        expect.objectContaining({ code: 'PLUGIN_NOT_AVAILABLE' })
-      )
-    }
+    expect(planned.every((item) => item.manifest.mode === 'session_api' && !item.defaultEnabled)).toBe(true)
   })
 })

@@ -72,5 +72,8 @@ export function jobStatusLabel(status: JobStatus): string {
 }
 
 export function messageOf(value: unknown): string {
-  return value instanceof Error ? value.message : String(value)
+  const message = value instanceof Error ? value.message : String(value)
+  return message
+    .replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')
+    .replace(/^Error:\s*/, '')
 }

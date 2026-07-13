@@ -1,37 +1,30 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { Account, DashboardOverview, JobRecord } from '../../../../shared/contracts'
-import { formatDate, formatNumber, jobStatusLabel, messageOf } from '../shared/format'
+import { computed, onMounted, ref } from 'vue'
+import type { Account, DashboardOverview } from '../../../../shared/contracts'
+import { formatDate, formatNumber, messageOf } from '../shared/format'
 
-const emit = defineEmits<{ navigate: [section: 'accounts' | 'plugins'] }>()
+const emit = defineEmits<{ navigate: [section: 'accounts'] }>()
 
 const overview = ref<DashboardOverview | null>(null)
 const accounts = ref<Account[]>([])
-const jobs = ref<JobRecord[]>([])
 const loading = ref(true)
 const error = ref('')
-let removeJobListener: (() => void) | null = null
 
-const recentJobs = computed(() => [...jobs.value]
-  .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+const recentlySyncedAccounts = computed(() => accounts.value
+  .filter((account) => account.lastSyncedAt)
+  .sort((left, right) => (right.lastSyncedAt ?? '').localeCompare(left.lastSyncedAt ?? ''))
   .slice(0, 5))
-
-function accountName(id: string): string {
-  return accounts.value.find((account) => account.id === id)?.alias ?? '已移除账号'
-}
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const [dashboard, accountResult, jobResult] = await Promise.all([
+    const [dashboard, accountResult] = await Promise.all([
       window.socialVault.analytics.dashboard(),
-      window.socialVault.accounts.list(),
-      window.socialVault.jobs.list()
+      window.socialVault.accounts.list()
     ])
     overview.value = dashboard
     accounts.value = accountResult
-    jobs.value = jobResult
   } catch (cause) {
     error.value = messageOf(cause)
   } finally {
@@ -39,17 +32,7 @@ async function load(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void load()
-  removeJobListener = window.socialVault.jobs.onChanged((job) => {
-    const index = jobs.value.findIndex((item) => item.id === job.id)
-    if (index < 0) jobs.value = [job, ...jobs.value]
-    else jobs.value.splice(index, 1, job)
-    if (['succeeded', 'failed', 'cancelled'].includes(job.status)) void load()
-  })
-})
-
-onBeforeUnmount(() => removeJobListener?.())
+onMounted(() => void load())
 </script>
 
 <template>
@@ -58,7 +41,7 @@ onBeforeUnmount(() => removeJobListener?.())
       <div>
         <span class="page-eyebrow">LOCAL OVERVIEW</span>
         <h1>工作台</h1>
-        <p>汇总本机中的本人账号、内容快照和导入状态</p>
+        <p>查看账号、内容和指标的汇总情况</p>
       </div>
       <button class="button" :disabled="loading" @click="load">刷新</button>
     </header>
@@ -68,28 +51,27 @@ onBeforeUnmount(() => removeJobListener?.())
 
     <template v-else-if="overview">
       <section class="dashboard-metrics" aria-label="数据概览">
-        <article><span>本地账号</span><strong>{{ formatNumber(overview.accountCount) }}</strong><small>{{ overview.readyAccountCount }} 个综合状态就绪</small></article>
-        <article><span>已归档内容</span><strong>{{ formatNumber(overview.contentCount) }}</strong><small>只统计已导入到本机的数据</small></article>
+        <article><span>账号</span><strong>{{ formatNumber(overview.accountCount) }}</strong><small>{{ overview.readyAccountCount }} 个账号可以同步</small></article>
+        <article><span>已同步内容</span><strong>{{ formatNumber(overview.contentCount) }}</strong><small>已收录的作品数量</small></article>
         <article><span>浏览量</span><strong>{{ formatNumber(overview.views) }}</strong><small>各平台可见口径的合计</small></article>
         <article><span>互动量</span><strong>{{ formatNumber(overview.interactions) }}</strong><small>赞、评、转、藏的可见合计</small></article>
       </section>
 
       <section v-if="overview.contentCount === 0" class="onboarding-card">
-        <div class="onboarding-icon">⇩</div>
+        <div class="onboarding-icon">↻</div>
         <div>
-          <span class="page-eyebrow">FIRST IMPORT</span>
-          <h2>导入一份本人数据文件，开始建立本地统计</h2>
-          <p>优先使用平台官方导出，也可以采用 Social Vault 模板。文件在本机校验与写入，不需要付费官方 API。</p>
+          <span class="page-eyebrow">FIRST SYNC</span>
+          <h2>{{ accounts.length === 0 ? '添加第一个账号' : '开始同步账号数据' }}</h2>
+          <p>{{ accounts.length === 0 ? '添加账号后，在独立浏览器中完成登录。' : '选择账号，完成身份核验后即可同步资料、作品和指标。' }}</p>
         </div>
         <div class="onboarding-actions">
-          <button class="button" @click="emit('navigate', 'accounts')">管理账号</button>
-          <button class="button primary" @click="emit('navigate', 'plugins')">开始导入</button>
+          <button class="button primary" @click="emit('navigate', 'accounts')">{{ accounts.length === 0 ? '添加账号' : '前往账号中心' }}</button>
         </div>
       </section>
 
       <div class="dashboard-columns">
         <section class="feature-card reminder-card">
-          <div class="feature-card-head"><div><h2>需要留意</h2><p>连接、数据和本地任务提醒</p></div><span>{{ overview.reminders.length }}</span></div>
+          <div class="feature-card-head"><div><h2>需要留意</h2><p>连接、身份和数据同步提醒</p></div><span>{{ overview.reminders.length }}</span></div>
           <div v-if="overview.reminders.length === 0" class="compact-empty"><strong>暂无提醒</strong><span>当前本地状态正常。</span></div>
           <button
             v-for="reminder in overview.reminders"
@@ -103,12 +85,12 @@ onBeforeUnmount(() => removeJobListener?.())
         </section>
 
         <section class="feature-card recent-card">
-          <div class="feature-card-head"><div><h2>最近状态</h2><p>本地导入与处理记录</p></div><small>上次导入 {{ formatDate(overview.lastImportedAt, true) }}</small></div>
-          <div v-if="recentJobs.length === 0" class="compact-empty"><strong>还没有处理记录</strong><span>导入数据后会在这里显示进度。</span></div>
-          <div v-for="job in recentJobs" :key="job.id" class="recent-row">
-            <span class="job-state" :class="job.status">{{ jobStatusLabel(job.status) }}</span>
-            <span><strong>{{ accountName(job.accountId) }}</strong><small>{{ job.stage || '文件导入' }} · {{ formatDate(job.createdAt, true) }}</small></span>
-            <b>{{ Math.round(job.progress) }}%</b>
+          <div class="feature-card-head"><div><h2>最近同步</h2><p>查看各账号最近一次同步时间</p></div><span>{{ recentlySyncedAccounts.length }}</span></div>
+          <div v-if="recentlySyncedAccounts.length === 0" class="compact-empty"><strong>还没有同步记录</strong><span>完成账号登录和身份确认后，可在账号中心发起同步。</span></div>
+          <div v-for="account in recentlySyncedAccounts" :key="account.id" class="recent-row">
+            <span class="content-kind">已同步</span>
+            <span><strong>{{ account.alias }}</strong><small>{{ account.remoteName || '本人身份已确认' }}</small></span>
+            <b>{{ formatDate(account.lastSyncedAt, true) }}</b>
           </div>
         </section>
       </div>

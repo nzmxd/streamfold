@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   parseAnalyticsQuery,
   parseBulkUpdateAccounts,
-  parseCommitFileImport,
-  parseConfirmManagedIdentity,
+  parseConfirmApiIdentity,
   parseContentQuery,
   parseCreateAccount,
   parseCreateEncryptedBackup,
@@ -43,11 +42,7 @@ describe('IPC validation', () => {
     expect(() => parseContentQuery({ limit: 1000 })).toThrow('返回数量无效')
   })
 
-  it('validates import ownership and local-only updates', () => {
-    expect(parseCommitFileImport({ token: 'preview', accountId: 'account', confirmOwnership: true }))
-      .toEqual({ token: 'preview', accountId: 'account', confirmOwnership: true })
-    expect(() => parseCommitFileImport({ token: 'preview', accountId: 'account', confirmOwnership: 'yes' }))
-      .toThrow('本人账号确认无效')
+  it('validates local-only content updates', () => {
     expect(parseUpdateContent({ id: 'content', note: '  本地备注 ', tags: ['重点', '重点'] }))
       .toEqual({ id: 'content', note: '本地备注', tags: ['重点'] })
   })
@@ -95,10 +90,10 @@ describe('IPC validation', () => {
   })
 
   it('binds identity confirmation to an account and one explicit boolean', () => {
-    expect(parseConfirmManagedIdentity({
+    expect(parseConfirmApiIdentity({
       accountId: 'account', token: 'preview-token', confirmIdentity: true
     })).toEqual({ accountId: 'account', token: 'preview-token', confirmIdentity: true })
-    expect(() => parseConfirmManagedIdentity({
+    expect(() => parseConfirmApiIdentity({
       accountId: 'account', token: 'preview-token', confirmIdentity: 'yes'
     })).toThrow('本人身份确认无效')
   })

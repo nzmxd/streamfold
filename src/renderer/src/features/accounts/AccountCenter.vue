@@ -48,7 +48,7 @@ async function createAccount(): Promise<void> {
     await store.createAccount({ ...addForm })
     addDialog.value = false
     addForm.alias = ''
-    showToast('账号空间已创建，可以在独立浏览器窗口登录。')
+    showToast('账号已创建，可以打开浏览器登录。')
   } catch {
     // Store exposes the sanitized error in the page alert.
   } finally {
@@ -189,7 +189,7 @@ function closeEditGroupDialog(): void {
       <div>
         <span class="page-eyebrow">ACCOUNT WORKSPACE</span>
         <h1>账号中心</h1>
-        <p>管理本人账号、独立登录会话和本地备注</p>
+        <p>管理账号、分组、备注和数据同步</p>
       </div>
       <button class="button primary add-account" @click="addDialog = true">＋ 添加账号</button>
     </header>
@@ -233,6 +233,7 @@ function closeEditGroupDialog(): void {
         :open-browser="store.openBrowser"
         :verify-identity="store.verifyIdentity"
         :confirm-identity="store.confirmIdentity"
+        :sync-account="store.syncAccount"
         :disconnect="store.disconnectAccount"
         :purge="store.purgeAccount"
       />
@@ -241,20 +242,19 @@ function closeEditGroupDialog(): void {
     <div v-if="addDialog" class="modal-backdrop" @click.self="closeAddDialog">
       <form class="modal" @submit.prevent="createAccount">
         <div class="modal-head">
-          <div><span class="page-eyebrow">NEW ACCOUNT SPACE</span><h2>添加本人账号</h2><p>创建独立会话后，在大窗口中手动登录官方页面。</p></div>
+          <div><span class="page-eyebrow">NEW ACCOUNT</span><h2>添加账号</h2><p>创建后打开账号浏览器完成登录。</p></div>
           <button type="button" :disabled="addBusy" @click="closeAddDialog">×</button>
         </div>
         <label>平台<select v-model="addForm.platformId"><option v-for="platform in store.platforms.value" :key="platform.id" :value="platform.id">{{ platform.name }}</option></select></label>
         <label>本地别名<input v-model="addForm.alias" maxlength="40" required placeholder="例如：个人品牌号" /></label>
-        <label>未来平台插件的默认同步范围<select v-model="addForm.syncMode"><option value="profile_only">仅账号资料（推荐）</option><option value="recent_20">最近 20 条</option><option value="recent_100">最近 100 条</option><option value="disabled">不允许平台同步</option></select></label>
-        <div class="modal-warning"><strong>登录安全说明</strong><span>只打开预置官方 HTTPS 地址；不读取密码，不导入外部浏览器 Cookie。</span></div>
-        <div class="modal-actions"><button class="button" :disabled="addBusy" type="button" @click="closeAddDialog">取消</button><button class="button primary" :disabled="addBusy" type="submit">{{ addBusy ? '创建中…' : '创建账号空间' }}</button></div>
+        <label>默认同步范围<select v-model="addForm.syncMode"><option value="profile_only">仅账号资料与指标（推荐）</option><option value="recent_20">最近 20 条作品</option><option value="recent_100">最近 100 条作品</option><option value="disabled">不启用同步</option></select></label>
+        <div class="modal-actions"><button class="button" :disabled="addBusy" type="button" @click="closeAddDialog">取消</button><button class="button primary" :disabled="addBusy" type="submit">{{ addBusy ? '创建中…' : '创建账号' }}</button></div>
       </form>
     </div>
 
     <div v-if="groupDialog" class="modal-backdrop" @click.self="closeGroupDialog">
       <form class="modal compact" @submit.prevent="createGroup">
-        <div class="modal-head"><div><span class="page-eyebrow">LOCAL GROUP</span><h2>新建分组</h2><p>分组信息只保存在本机。</p></div><button type="button" :disabled="groupBusy" @click="closeGroupDialog">×</button></div>
+        <div class="modal-head"><div><span class="page-eyebrow">NEW GROUP</span><h2>新建分组</h2><p>用分组整理不同用途的账号。</p></div><button type="button" :disabled="groupBusy" @click="closeGroupDialog">×</button></div>
         <label>分组名称<input v-model="groupForm.name" maxlength="30" required /></label>
         <label>标识颜色<input v-model="groupForm.color" type="color" /></label>
         <div class="modal-actions"><button class="button" :disabled="groupBusy" type="button" @click="closeGroupDialog">取消</button><button class="button primary" :disabled="groupBusy" type="submit">{{ groupBusy ? '创建中…' : '创建' }}</button></div>
@@ -263,7 +263,7 @@ function closeEditGroupDialog(): void {
 
     <div v-if="editGroupDialog" class="modal-backdrop" @click.self="closeEditGroupDialog">
       <form class="modal compact" @submit.prevent="updateGroup">
-        <div class="modal-head"><div><span class="page-eyebrow">EDIT LOCAL GROUP</span><h2>编辑分组</h2><p>名称、颜色和排序仅影响本地管理视图。</p></div><button type="button" :disabled="groupBusy" @click="closeEditGroupDialog">×</button></div>
+        <div class="modal-head"><div><span class="page-eyebrow">EDIT GROUP</span><h2>编辑分组</h2><p>修改分组名称和标识颜色。</p></div><button type="button" :disabled="groupBusy" @click="closeEditGroupDialog">×</button></div>
         <label>分组名称<input v-model="editGroupForm.name" maxlength="30" required /></label>
         <label>标识颜色<input v-model="editGroupForm.color" type="color" /></label>
         <div class="modal-actions"><button class="button" :disabled="groupBusy" type="button" @click="closeEditGroupDialog">取消</button><button class="button primary" :disabled="groupBusy" type="submit">{{ groupBusy ? '保存中…' : '保存分组' }}</button></div>
