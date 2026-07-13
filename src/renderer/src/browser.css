@@ -21,6 +21,16 @@
   --danger-border: #f1cbd1;
   --divider: #e8ebf0;
   --shadow: 0 2px 12px rgb(30 41 59 / 8%);
+  --font-caption: 12px;
+  --font-secondary: 13px;
+  --font-body: 14px;
+  --font-ui: 15px;
+  --font-section: 16px;
+  --line-caption: 18px;
+  --line-secondary: 20px;
+  --line-body: 21px;
+  --line-ui: 22px;
+  --line-section: 24px;
   color: var(--text-primary);
   background: var(--browser-bg);
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -100,7 +110,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   height: 61px;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  padding: 8px 14px;
   -webkit-app-region: drag;
   user-select: none;
 }
@@ -108,8 +118,8 @@ html[data-platform="darwin"] .toolbar-row { padding-left: 84px; }
 
 .account-context { display: flex; min-width: 0; align-items: center; gap: 10px; }
 .account-copy { display: grid; min-width: 0; gap: 1px; }
-.account-context strong { overflow: hidden; font-size: 13px; font-weight: 650; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
-.account-context small { overflow: hidden; color: var(--text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.account-context strong { overflow: hidden; font-size: var(--font-ui); font-weight: 650; line-height: var(--line-ui); letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
+.account-context small { overflow: hidden; color: var(--text-tertiary); font-size: var(--font-secondary); line-height: var(--line-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .brand-glyph { display: inline-grid; flex: 0 0 auto; place-items: center; color: #fff; background: linear-gradient(145deg, #7374ed, #4d4ed0); border-radius: 10px; box-shadow: 0 5px 14px rgb(88 89 222 / 24%); }
 .brand-glyph svg { width: 82%; height: 82%; }
 .brand-glyph path { stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.45; }
@@ -120,8 +130,8 @@ html[data-platform="darwin"] .toolbar-row { padding-left: 84px; }
 .navigation-actions, .address, .browser-theme { -webkit-app-region: no-drag; }
 .icon-button {
   display: grid;
-  width: 33px;
-  height: 33px;
+  width: 36px;
+  height: 36px;
   place-items: center;
   padding: 0;
   border: 1px solid transparent;
@@ -139,7 +149,7 @@ html[data-platform="darwin"] .toolbar-row { padding-left: 84px; }
 .address {
   display: flex;
   min-width: 0;
-  height: 39px;
+  height: 40px;
   align-items: center;
   gap: 9px;
   padding: 0 10px;
@@ -154,17 +164,17 @@ html[data-platform="darwin"] .toolbar-row { padding-left: 84px; }
 .site-indicator { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-items: center; color: var(--text-tertiary); }
 .official .site-indicator { color: var(--success); }
 .site-indicator svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
-.address-value { display: flex; min-width: 0; flex: 1; overflow: hidden; align-items: baseline; font-size: 12px; white-space: nowrap; }
+.address-value { display: flex; min-width: 0; flex: 1; overflow: hidden; align-items: baseline; font-size: var(--font-body); line-height: var(--line-body); white-space: nowrap; }
 .hostname { overflow: hidden; flex: 0 1 auto; color: var(--text-primary); font-weight: 650; text-overflow: ellipsis; }
 .address-rest { overflow: hidden; min-width: 0; color: var(--text-tertiary); font-weight: 450; text-overflow: ellipsis; }
-.domain-status { flex: 0 0 auto; padding: 4px 7px; color: var(--text-secondary); background: var(--control-bg); border: 1px solid var(--control-border); border-radius: 999px; font-size: 9px; font-weight: 650; letter-spacing: .02em; white-space: nowrap; }
+.domain-status { flex: 0 0 auto; padding: 3px 7px; color: var(--text-secondary); background: var(--control-bg); border: 1px solid var(--control-border); border-radius: 999px; font-size: var(--font-caption); font-weight: 650; line-height: var(--line-caption); letter-spacing: .02em; white-space: nowrap; }
 .official .domain-status { color: var(--success); background: color-mix(in srgb, var(--success-soft) 35%, var(--control-bg)); border-color: var(--success-border); }
 .spinner { width: 13px; height: 13px; flex: 0 0 auto; border: 1.5px solid var(--control-border-hover); border-top-color: var(--accent); border-radius: 50%; animation: browser-spin .7s linear infinite; }
 
 .browser-theme {
   display: grid;
-  width: 35px;
-  height: 35px;
+  width: 36px;
+  height: 36px;
   place-items: center;
   padding: 0;
   color: var(--text-secondary);
@@ -189,7 +199,8 @@ html[data-platform="darwin"] .toolbar-row { padding-left: 84px; }
   color: var(--text-secondary);
   background: var(--chrome-subtle);
   border-top: 1px solid var(--divider);
-  font-size: 10px;
+  font-size: var(--font-caption);
+  line-height: var(--line-caption);
 }
 .status-row.loading::after { position: absolute; right: 0; bottom: 0; left: 0; height: 2px; content: ""; background: linear-gradient(90deg, transparent, var(--accent), transparent); animation: browser-progress 1.25s ease-in-out infinite; }
 .status-row.error { color: var(--danger); background: var(--danger-soft); }
