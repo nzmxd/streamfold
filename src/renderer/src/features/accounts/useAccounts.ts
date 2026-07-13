@@ -14,6 +14,7 @@ import type {
   UpdateAccountInput,
   UpdateGroupInput
 } from '../../../../shared/contracts'
+import { messageOf } from '../shared/format'
 
 export function useAccounts() {
   const platforms = ref<PlatformDefinition[]>([])
@@ -246,8 +247,4 @@ export function useAccounts() {
     confirmIdentity,
     syncAccount
   }
-}
-
-function messageOf(value: unknown): string {
-  return value instanceof Error ? value.message : String(value)
 }

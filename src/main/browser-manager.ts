@@ -14,6 +14,7 @@ import { isTrustedBrowserUrl } from './shell-security'
 import {
   XIAOHONGSHU_API_ENDPOINTS,
   XIAOHONGSHU_API_ROUTES,
+  XiaohongshuApiError,
   isNoteAnalyzeListUrl,
   isPostedNotesUrl,
   type XiaohongshuApiTransport,
@@ -24,6 +25,10 @@ import {
 const TOOLBAR_HEIGHT = 92
 const XIAOHONGSHU_CREATOR_ORIGIN = 'https://creator.xiaohongshu.com'
 const DIRECT_JSON_TIMEOUT_MS = 12_000
+const API_NAVIGATION_STABLE_MS = 250
+const API_NAVIGATION_TIMEOUT_MS = 8_000
+const API_NAVIGATION_POLL_MS = 50
+const API_NETWORK_RETRY_DELAY_MS = 250
 const SIGNED_CAPTURE_TIMEOUT_MS = 20_000
 const SIGNED_CAPTURE_QUIET_MS = 600
 const DIRECT_JSON_LIMIT_BYTES = 256 * 1024
@@ -142,15 +147,10 @@ export class BrowserManager {
     }
     if (managed.apiPageReady) return managed.apiPageReady
 
-    const contents = managed.view.webContents
-    if (isXiaohongshuCreatorPage(contents.getURL()) && !contents.isLoading()) return
-
-    const pending = (async () => {
-      await this.safeLoad(managed, XIAOHONGSHU_CREATOR_ORIGIN)
-      if (!isXiaohongshuCreatorPage(contents.getURL())) {
-        throw new Error('小红书创作中心未能完成加载')
-      }
-    })()
+    const pending = prepareXiaohongshuApiContents(
+      managed.view.webContents,
+      (url) => this.safeLoad(managed, url)
+    )
     managed.apiPageReady = pending
     try {
       await pending
@@ -163,7 +163,12 @@ export class BrowserManager {
     return Object.freeze({
       directJson: async (endpoint: string): Promise<XiaohongshuJsonResponse> => {
         const managed = this.requireXiaohongshuApiWorkspace(accountId)
-        return fetchXiaohongshuPageJson(managed.view.webContents, endpoint)
+        return fetchXiaohongshuPageJson(
+          managed.view.webContents,
+          endpoint,
+          DIRECT_JSON_TIMEOUT_MS,
+          () => this.prepareXiaohongshuApiPage(managed)
+        )
       },
       captureSignedJson: async (
         route: string,
@@ -632,10 +637,75 @@ function isXiaohongshuCreatorPage(value: string): boolean {
   }
 }
 
+interface NavigationStabilityOptions {
+  quietMs?: number
+  timeoutMs?: number
+  pollMs?: number
+}
+
+async function prepareXiaohongshuApiContents(
+  contents: Pick<WebContents, 'getURL' | 'isLoading' | 'isDestroyed'>,
+  loadOfficial: (url: string) => Promise<void>,
+  options: NavigationStabilityOptions = {}
+): Promise<void> {
+  if (isXiaohongshuCreatorPage(contents.getURL())) {
+    await waitForNavigationStable(contents, options)
+    if (isStableXiaohongshuCreatorPage(contents)) return
+  }
+
+  await loadOfficial(XIAOHONGSHU_API_ROUTES.home)
+  await waitForNavigationStable(contents, options)
+  if (!isXiaohongshuCreatorPage(contents.getURL())) {
+    throw new Error('小红书创作中心未能完成加载')
+  }
+}
+
+function isStableXiaohongshuCreatorPage(
+  contents: Pick<WebContents, 'getURL' | 'isLoading' | 'isDestroyed'>
+): boolean {
+  return !contents.isDestroyed() && !contents.isLoading() &&
+    isXiaohongshuCreatorPage(contents.getURL())
+}
+
+async function waitForNavigationStable(
+  contents: Pick<WebContents, 'getURL' | 'isLoading' | 'isDestroyed'>,
+  options: NavigationStabilityOptions = {}
+): Promise<void> {
+  const quietMs = options.quietMs ?? API_NAVIGATION_STABLE_MS
+  const timeoutMs = options.timeoutMs ?? API_NAVIGATION_TIMEOUT_MS
+  const pollMs = options.pollMs ?? API_NAVIGATION_POLL_MS
+  const startedAt = Date.now()
+  let stableSince = 0
+  let lastUrl = ''
+
+  while (true) {
+    if (contents.isDestroyed()) throw new Error('浏览器页面已关闭')
+    const now = Date.now()
+    const url = contents.getURL()
+    const loading = contents.isLoading()
+    if (loading) {
+      stableSince = 0
+      lastUrl = url
+    } else if (url !== lastUrl || stableSince === 0) {
+      lastUrl = url
+      stableSince = now
+    } else if (now - stableSince >= quietMs) {
+      return
+    }
+    if (now - startedAt >= timeoutMs) throw new Error('等待小红书创作中心导航稳定超时')
+    await delay(Math.min(pollMs, Math.max(1, timeoutMs - (now - startedAt))))
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
 async function fetchXiaohongshuPageJson(
   contents: Pick<WebContents, 'executeJavaScript' | 'getURL' | 'isDestroyed'>,
   endpoint: string,
-  timeoutMs = DIRECT_JSON_TIMEOUT_MS
+  timeoutMs = DIRECT_JSON_TIMEOUT_MS,
+  beforeNetworkRetry: (() => Promise<void>) | null = null
 ): Promise<XiaohongshuJsonResponse> {
   assertDirectEndpoint(endpoint)
   if (contents.isDestroyed()) throw new Error('浏览器页面已关闭')
@@ -654,11 +724,28 @@ async function fetchXiaohongshuPageJson(
       const response = await fetch(target.href, {
         method: 'GET',
         credentials: 'include',
-        redirect: 'error',
+        redirect: 'manual',
         headers: { Accept: 'application/json' },
         signal: controller.signal
       });
+      if (response.type === 'opaqueredirect' ||
+          (response.status >= 300 && response.status < 400)) {
+        return { error: 'AUTH_REDIRECT' };
+      }
+      if (response.status === 0) return { error: 'NETWORK' };
       const contentType = response.headers.get('content-type') || '';
+      const normalizedContentType = contentType.split(';', 1)[0].trim().toLowerCase();
+      const isJson = normalizedContentType === 'application/json' ||
+        normalizedContentType === 'text/json' || normalizedContentType.endsWith('+json');
+      if (!isJson) {
+        return {
+          status: response.status,
+          url: response.url || target.href,
+          redirected: response.redirected === true,
+          contentType,
+          text: ''
+        };
+      }
       const declaredLength = Number(response.headers.get('content-length') || '0');
       if (Number.isFinite(declaredLength) && declaredLength > ${DIRECT_JSON_LIMIT_BYTES}) {
         controller.abort();
@@ -684,30 +771,42 @@ async function fetchXiaohongshuPageJson(
       return {
         status: response.status,
         url: response.url || target.href,
+        redirected: response.redirected === true,
         contentType,
         text: new TextDecoder('utf-8', { fatal: true }).decode(bytes)
       };
-    } catch (error) {
-      return {
-        error: controller.signal.aborted ? 'TIMEOUT' : 'NETWORK',
-        detail: String(error && error.message || error).slice(0, 160)
-      };
+    } catch {
+      return { error: controller.signal.aborted ? 'TIMEOUT' : 'NETWORK' };
     } finally {
       clearTimeout(timeout);
     }
   })()`
-  const raw = objectRecord(await withTimeout(
-    contents.executeJavaScript(source),
-    timeoutMs + 2_000,
-    '小红书只读 API 请求超时'
-  ))
+  let raw: Record<string, unknown> = {}
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    raw = objectRecord(await withTimeout(
+      contents.executeJavaScript(source),
+      timeoutMs + 2_000,
+      '小红书只读 API 请求超时'
+    ))
+    if (raw.error !== 'NETWORK' || attempt === 1) break
+    if (beforeNetworkRetry) await beforeNetworkRetry()
+    else await delay(API_NETWORK_RETRY_DELAY_MS)
+  }
   if (raw.error === 'TIMEOUT') throw new Error('小红书只读 API 请求超时')
   if (raw.error === 'TOO_LARGE') throw new Error('小红书 API 响应超过 256 KiB')
-  if (raw.error) throw new Error(`小红书 API 请求失败：${String(raw.detail || raw.error).slice(0, 160)}`)
+  if (raw.error === 'AUTH_REDIRECT') {
+    throw new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录状态已失效，请重新登录')
+  }
+  if (raw.error === 'NETWORK') throw new Error('小红书 API 暂时无法连接，请稍后重试')
+  if (raw.error) throw new Error('小红书 API 请求失败')
   if (!Number.isInteger(raw.status) || typeof raw.url !== 'string' || typeof raw.text !== 'string') {
     throw new Error('小红书 API 响应结构非法')
   }
   assertExactApiUrl(raw.url, endpoint)
+  if (raw.redirected === true) throw new Error('小红书 API 响应发生了未允许的重定向')
+  if (raw.status === 401 || raw.status === 403) {
+    throw new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录状态已失效，请重新登录')
+  }
   assertJsonContentType(typeof raw.contentType === 'string' ? raw.contentType : '')
   if (Buffer.byteLength(raw.text, 'utf8') > DIRECT_JSON_LIMIT_BYTES) {
     throw new Error('小红书 API 响应超过 256 KiB')
@@ -716,10 +815,7 @@ async function fetchXiaohongshuPageJson(
 }
 
 function assertXiaohongshuPageUrl(value: string): void {
-  try {
-    const url = new URL(value)
-    if (url.protocol === 'https:' && url.hostname === 'creator.xiaohongshu.com') return
-  } catch {}
+  if (isXiaohongshuCreatorPage(value)) return
   throw new Error('请先在账号浏览器中打开小红书创作中心')
 }
 
@@ -946,8 +1042,14 @@ function assertExactApiUrl(value: string, endpoint: string): void {
   } catch {
     throw new Error('小红书 API 响应地址非法')
   }
-  if (url.origin !== XIAOHONGSHU_CREATOR_ORIGIN || url.username || url.password || url.port ||
-    url.pathname !== endpoint || url.search || url.hash) {
+  if (url.origin !== XIAOHONGSHU_CREATOR_ORIGIN || url.username || url.password || url.port) {
+    throw new Error('小红书 API 响应来源不在白名单')
+  }
+  if (url.pathname === '/' || url.pathname === '/login' || url.pathname.startsWith('/login/') ||
+    url.pathname === '/new/login' || url.pathname.startsWith('/new/login/')) {
+    throw new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录状态已失效，请重新登录')
+  }
+  if (url.pathname !== endpoint || url.search || url.hash) {
     throw new Error('小红书 API 响应来源不在白名单')
   }
 }
@@ -1066,6 +1168,7 @@ function pageNumber(value: string): number {
 
 export const __xiaohongshuApiTransportTest = Object.freeze({
   fetchPageJson: fetchXiaohongshuPageJson,
+  prepareApiPage: prepareXiaohongshuApiContents,
   captureSignedJson: captureXiaohongshuSignedJson
 })
 

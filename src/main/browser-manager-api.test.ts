@@ -119,6 +119,49 @@ describe('BrowserManager Xiaohongshu API transport', () => {
     expect(__browserWorkspaceLeaseTest.end(workspace)).toBe(false)
   })
 
+  it('loads the fixed creator home for a cold API workspace and waits until navigation is stable', async () => {
+    let currentUrl = ''
+    let loading = false
+    const contents = {
+      getURL: () => currentUrl,
+      isLoading: () => loading,
+      isDestroyed: () => false
+    }
+    const loadOfficial = vi.fn(async (url: string) => {
+      loading = true
+      currentUrl = url
+      loading = false
+    })
+
+    await __xiaohongshuApiTransportTest.prepareApiPage(contents, loadOfficial, {
+      quietMs: 1,
+      pollMs: 1,
+      timeoutMs: 100
+    })
+
+    expect(loadOfficial).toHaveBeenCalledOnce()
+    expect(loadOfficial).toHaveBeenCalledWith(XIAOHONGSHU_API_ROUTES.home)
+  })
+
+  it('waits for an existing creator navigation without replacing the visible page', async () => {
+    let loading = true
+    const contents = {
+      getURL: () => XIAOHONGSHU_API_ROUTES.noteManager,
+      isLoading: () => loading,
+      isDestroyed: () => false
+    }
+    const loadOfficial = vi.fn(async () => undefined)
+    setTimeout(() => { loading = false }, 2)
+
+    await __xiaohongshuApiTransportTest.prepareApiPage(contents, loadOfficial, {
+      quietMs: 2,
+      pollMs: 1,
+      timeoutMs: 100
+    })
+
+    expect(loadOfficial).not.toHaveBeenCalled()
+  })
+
   it('uses a fixed page-origin JSON request without page element access', async () => {
     const executeJavaScript = vi.fn(async (_source: string) => ({
       status: 200,
@@ -139,7 +182,11 @@ describe('BrowserManager Xiaohongshu API transport', () => {
     expect(result).toMatchObject({ status: 200, url: `${origin}${XIAOHONGSHU_API_ENDPOINTS.personalInfo}` })
     const source = executeJavaScript.mock.calls[0]?.[0] as string
     expect(source).toContain("credentials: 'include'")
+    expect(source).toContain("redirect: 'manual'")
+    expect(source).not.toContain("redirect: 'error'")
     expect(source).toContain("headers: { Accept: 'application/json' }")
+    expect(source).toContain('if (!isJson)')
+    expect(source).not.toContain('error.message')
     expect(source).not.toMatch(/document|querySelector|innerText|textContent|outerHTML|innerHTML/)
   })
 
@@ -207,6 +254,184 @@ describe('BrowserManager Xiaohongshu API transport', () => {
       XIAOHONGSHU_API_ENDPOINTS.accountStats,
       100
     )).rejects.toThrow('256 KiB')
+  })
+
+  it('surfaces a browser Failed to fetch without falling back to page content', async () => {
+    const executeJavaScript = vi.fn(async (_source: string) => ({
+      error: 'NETWORK',
+      detail: 'Failed to fetch'
+    }))
+    const beforeRetry = vi.fn(async () => undefined)
+    const action = __xiaohongshuApiTransportTest.fetchPageJson(
+      {
+        executeJavaScript,
+        getURL: () => `${origin}/new/home`,
+        isDestroyed: () => false
+      },
+      XIAOHONGSHU_API_ENDPOINTS.personalInfo,
+      100,
+      beforeRetry
+    )
+
+    const error = await rejectionOf(() => action)
+    expect(error.message).toBe('小红书 API 暂时无法连接，请稍后重试')
+    expect(error.message).not.toContain('Failed to fetch')
+    expect(executeJavaScript).toHaveBeenCalledTimes(2)
+    expect(beforeRetry).toHaveBeenCalledOnce()
+    const source = executeJavaScript.mock.calls[0]?.[0] as string
+    expect(source).toContain("redirect: 'manual'")
+    expect(source).toContain("return { error: 'AUTH_REDIRECT' }")
+    expect(source).toContain("response.status === 0) return { error: 'NETWORK' }")
+    expect(source).not.toMatch(/document|querySelector|innerText|textContent|outerHTML|innerHTML/)
+  })
+
+  it('retries one transient Failed to fetch and then returns the exact API response', async () => {
+    const executeJavaScript = vi.fn()
+      .mockResolvedValueOnce({ error: 'NETWORK', detail: 'Failed to fetch' })
+      .mockResolvedValueOnce({
+        status: 200,
+        url: `${origin}${XIAOHONGSHU_API_ENDPOINTS.personalInfo}`,
+        redirected: false,
+        contentType: 'application/json',
+        text: JSON.stringify({ code: 0, data: { user_id: '5605904194' } })
+      })
+
+    const beforeRetry = vi.fn(async () => undefined)
+    await expect(__xiaohongshuApiTransportTest.fetchPageJson(
+      {
+        executeJavaScript,
+        getURL: () => `${origin}/new/home`,
+        isDestroyed: () => false
+      },
+      XIAOHONGSHU_API_ENDPOINTS.personalInfo,
+      100,
+      beforeRetry
+    )).resolves.toMatchObject({ status: 200 })
+    expect(executeJavaScript).toHaveBeenCalledTimes(2)
+    expect(beforeRetry).toHaveBeenCalledOnce()
+    expect(executeJavaScript.mock.invocationCallOrder[0])
+      .toBeLessThan(beforeRetry.mock.invocationCallOrder[0]!)
+    expect(beforeRetry.mock.invocationCallOrder[0])
+      .toBeLessThan(executeJavaScript.mock.invocationCallOrder[1]!)
+  })
+
+  it('maps a manual authentication redirect to AUTH_REQUIRED without exposing details', async () => {
+    const responseSecret = 'redirect-ticket-secret'
+    const executeJavaScript = vi.fn(async () => ({
+      error: 'AUTH_REDIRECT',
+      detail: `https://creator.xiaohongshu.com/login?ticket=${responseSecret}`,
+      text: `<html>${responseSecret}</html>`
+    }))
+    const error = await rejectionOf(() => __xiaohongshuApiTransportTest.fetchPageJson(
+      {
+        executeJavaScript,
+        getURL: () => `${origin}/new/home`,
+        isDestroyed: () => false
+      },
+      XIAOHONGSHU_API_ENDPOINTS.personalInfo,
+      100
+    ))
+
+    expect(error).toMatchObject({ code: 'AUTH_REQUIRED' })
+    expect(error.message).toContain('登录状态已失效')
+    expect(error.message).not.toContain(responseSecret)
+    expect(error.message).not.toContain('<html>')
+  })
+
+  it('maps a known final login URL and HTTP authentication status to AUTH_REQUIRED', async () => {
+    const executeJavaScript = vi.fn()
+      .mockResolvedValueOnce({
+        status: 200,
+        url: `${origin}/login?redirect=%2Fnew%2Fhome`,
+        redirected: true,
+        contentType: 'text/html',
+        text: '<html>login</html>'
+      })
+      .mockResolvedValueOnce({
+        status: 401,
+        url: `${origin}${XIAOHONGSHU_API_ENDPOINTS.personalInfo}`,
+        redirected: false,
+        contentType: 'text/html',
+        text: '<html>login</html>'
+      })
+    const contents = {
+      executeJavaScript,
+      getURL: () => `${origin}/new/home`,
+      isDestroyed: () => false
+    }
+
+    await expect(__xiaohongshuApiTransportTest.fetchPageJson(
+      contents,
+      XIAOHONGSHU_API_ENDPOINTS.personalInfo,
+      100
+    )).rejects.toMatchObject({ code: 'AUTH_REQUIRED' })
+    await expect(__xiaohongshuApiTransportTest.fetchPageJson(
+      contents,
+      XIAOHONGSHU_API_ENDPOINTS.personalInfo,
+      100
+    )).rejects.toMatchObject({ code: 'AUTH_REQUIRED' })
+  })
+
+  it('rejects an API redirect without exposing its URL, credentials or HTML body', async () => {
+    const responseSecret = 'session-cookie-secret'
+    const executeJavaScript = vi.fn(async () => ({
+      status: 302,
+      url: `https://user:${responseSecret}@creator.xiaohongshu.com/login?ticket=${responseSecret}`,
+      contentType: 'text/html',
+      text: `<html><body>${responseSecret}</body></html>`
+    }))
+    const message = await rejectionMessage(() => __xiaohongshuApiTransportTest.fetchPageJson(
+      {
+        executeJavaScript,
+        getURL: () => `${origin}/new/home`,
+        isDestroyed: () => false
+      },
+      XIAOHONGSHU_API_ENDPOINTS.personalInfo,
+      100
+    ))
+
+    expect(message).toContain('响应来源不在白名单')
+    expect(message).not.toContain(responseSecret)
+    expect(message).not.toContain('<html>')
+  })
+
+  it('rejects login HTML and malformed JSON without exposing response bodies', async () => {
+    const responseSecret = 'private-login-payload'
+    const executeJavaScript = vi.fn()
+      .mockResolvedValueOnce({
+        status: 200,
+        url: `${origin}${XIAOHONGSHU_API_ENDPOINTS.personalInfo}`,
+        contentType: 'text/html; charset=utf-8',
+        text: `<html><body>${responseSecret}</body></html>`
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        url: `${origin}${XIAOHONGSHU_API_ENDPOINTS.personalInfo}`,
+        contentType: 'application/json',
+        text: `{ "token": "${responseSecret}" `
+      })
+    const contents = {
+      executeJavaScript,
+      getURL: () => `${origin}/new/home`,
+      isDestroyed: () => false
+    }
+
+    const htmlMessage = await rejectionMessage(() => __xiaohongshuApiTransportTest.fetchPageJson(
+      contents,
+      XIAOHONGSHU_API_ENDPOINTS.personalInfo,
+      100
+    ))
+    expect(htmlMessage).toContain('JSON Content-Type')
+    expect(htmlMessage).not.toContain(responseSecret)
+    expect(htmlMessage).not.toContain('<html>')
+
+    const jsonMessage = await rejectionMessage(() => __xiaohongshuApiTransportTest.fetchPageJson(
+      contents,
+      XIAOHONGSHU_API_ENDPOINTS.personalInfo,
+      100
+    ))
+    expect(jsonMessage).toContain('无效 JSON')
+    expect(jsonMessage).not.toContain(responseSecret)
   })
 
   it('captures only the exact signed analyze JSON through CDP and always detaches', async () => {
@@ -340,3 +565,16 @@ describe('BrowserManager Xiaohongshu API transport', () => {
     expect(debuggerApi.listenerCount('detach')).toBe(0)
   })
 })
+
+async function rejectionMessage(action: () => Promise<unknown>): Promise<string> {
+  return (await rejectionOf(action)).message
+}
+
+async function rejectionOf(action: () => Promise<unknown>): Promise<Error & { code?: string }> {
+  try {
+    await action()
+    throw new Error('expected action to reject')
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error))
+  }
+}
