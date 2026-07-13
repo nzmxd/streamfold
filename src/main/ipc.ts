@@ -1,4 +1,5 @@
-import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
+import { ipcMain, nativeTheme, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
+import type { AppearanceState, ThemePreference } from '../shared/contracts'
 import type { BrowserManager } from './browser-manager'
 import type { BackupService } from './backup-service'
 import type { SocialDatabase } from './database'
@@ -34,6 +35,8 @@ export interface IpcServices {
   backup: BackupService
   xiaohongshuApi: XiaohongshuApiService
 }
+
+let removeNativeThemeListener: (() => void) | null = null
 
 export function registerIpc(
   window: BrowserWindow,
@@ -74,6 +77,33 @@ export function registerIpc(
       return runTracked(() => handler(event, ...args))
     }
   }
+
+  const broadcastAppearance = (): AppearanceState => {
+    const state = currentAppearance()
+    if (!window.isDestroyed()) {
+      if (process.platform !== 'darwin') {
+        window.setTitleBarOverlay({
+          color: state.resolved === 'dark' ? '#141821' : '#ffffff',
+          symbolColor: state.resolved === 'dark' ? '#f5f7fb' : '#171a24'
+        })
+      }
+      window.webContents.send('appearance:changed', state)
+    }
+    browser.applyAppearance(state)
+    return state
+  }
+
+  const onNativeThemeUpdated = (): void => { broadcastAppearance() }
+  nativeTheme.on('updated', onNativeThemeUpdated)
+  removeNativeThemeListener = () => nativeTheme.removeListener('updated', onNativeThemeUpdated)
+
+  ipcMain.handle('appearance:get', trusted(() => currentAppearance()))
+  ipcMain.handle('appearance:set', trusted((_event, value) => {
+    const preference = parseThemePreference(value)
+    database.setSetting('appearance.theme', preference)
+    nativeTheme.themeSource = preference
+    return broadcastAppearance()
+  }))
 
   ipcMain.handle('platforms:list', trusted(() => listPlatforms()))
   ipcMain.handle('accounts:list', trusted(() => database.listAccounts()))
@@ -171,6 +201,18 @@ export function registerIpc(
   })
 
   ipcMain.handle('browser-workspace:get-state', (event) => browser.getStateForSender(event))
+  ipcMain.handle('browser-workspace:get-appearance', (event) => {
+    browser.assertTrustedSender(event)
+    return currentAppearance()
+  })
+  ipcMain.handle('browser-workspace:set-appearance', (event, value) => {
+    browser.assertTrustedSender(event)
+    if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
+    const preference = parseThemePreference(value)
+    database.setSetting('appearance.theme', preference)
+    nativeTheme.themeSource = preference
+    return broadcastAppearance()
+  })
   ipcMain.handle('browser-workspace:back', (event) => browser.backForSender(event))
   ipcMain.handle('browser-workspace:forward', (event) => browser.forwardForSender(event))
   ipcMain.handle('browser-workspace:reload', (event) => browser.reloadForSender(event))
@@ -179,7 +221,11 @@ export function registerIpc(
 }
 
 export function unregisterIpc(): void {
+  removeNativeThemeListener?.()
+  removeNativeThemeListener = null
   for (const channel of [
+    'appearance:get',
+    'appearance:set',
     'platforms:list',
     'accounts:list',
     'accounts:create',
@@ -210,12 +256,26 @@ export function unregisterIpc(): void {
     'settings:backup-create',
     'settings:backup-restore',
     'browser-workspace:get-state',
+    'browser-workspace:get-appearance',
+    'browser-workspace:set-appearance',
     'browser-workspace:back',
     'browser-workspace:forward',
     'browser-workspace:reload',
     'browser-workspace:home',
     'browser-workspace:close'
   ]) ipcMain.removeHandler(channel)
+}
+
+function currentAppearance(): AppearanceState {
+  return {
+    preference: nativeTheme.themeSource,
+    resolved: nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
+  }
+}
+
+function parseThemePreference(value: unknown): ThemePreference {
+  if (value === 'light' || value === 'dark' || value === 'system') return value
+  throw new Error('主题设置无效')
 }
 
 function assertTrustedSender(window: BrowserWindow, event: IpcMainInvokeEvent): void {

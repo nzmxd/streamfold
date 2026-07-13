@@ -122,7 +122,24 @@ export interface BrowserState {
   message: string
 }
 
+export type ThemePreference = 'light' | 'dark' | 'system'
+export type ResolvedTheme = Exclude<ThemePreference, 'system'>
+export type RuntimePlatform = 'win32' | 'darwin' | 'linux'
+
+export interface AppearanceState {
+  preference: ThemePreference
+  resolved: ResolvedTheme
+}
+
+export interface AppearanceApi {
+  get(): Promise<AppearanceState>
+  set(preference: ThemePreference): Promise<AppearanceState>
+  onChanged(callback: (state: AppearanceState) => void): () => void
+}
+
 export interface SocialVaultApi {
+  runtime: { platform: RuntimePlatform }
+  appearance: AppearanceApi
   platforms: {
     list(): Promise<PlatformDefinition[]>
   }
@@ -173,6 +190,8 @@ export interface SocialVaultApi {
 }
 
 export interface BrowserWorkspaceApi {
+  runtime: { platform: RuntimePlatform }
+  appearance: AppearanceApi
   getState(): Promise<BrowserState>
   back(): Promise<void>
   forward(): Promise<void>

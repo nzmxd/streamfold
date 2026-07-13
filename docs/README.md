@@ -11,19 +11,23 @@
    - 查看工作台、账号、内容、数据、插件和设置六个模块。
    - 查看账号分组、备注、独立浏览器窗口、身份核验和同步流程。
 
-3. [可交互界面原型](../prototypes/social-account-manager.html)
+3. [品牌与界面系统](brand-and-ui-system.md)
+   - 查看归页品牌、浅深色 Token、原生标题栏和统一弹窗。
+   - 查看账号浏览器窗口的工具栏与交互规范。
+
+4. [可交互界面原型](../prototypes/social-account-manager.html)
    - 切换账号分组并搜索账号。
    - 查看账号总览、浏览器入口、内容数据和设置页签。
    - 原型使用静态示例数据，不连接真实平台。
 
-4. [MVP 实现状态](implementation-status.md)
+5. [MVP 实现状态](implementation-status.md)
    - 查看当前已完成的账号、内容、统计、插件和浏览器能力。
    - 查看尚未接入的平台、自动同步和发布打包范围。
 
-5. [加密备份与恢复](backup-and-restore.md)
+6. [加密备份与恢复](backup-and-restore.md)
    - 查看 `.svbackup` 的范围、加密参数、回滚和登录会话边界。
 
-6. [小红书 Session API 适配器](xiaohongshu-identity-adapter.md)
+7. [小红书 Session API 适配器](xiaohongshu-identity-adapter.md)
    - 查看固定 JSON 接口、作品列表与指标响应捕获、身份核验和停止条件。
 
 ## 实现边界
@@ -39,6 +43,7 @@
 |---|---|---|
 | 调研与总体设计 | v0.4 | API 接入策略与架构依据 |
 | 界面与功能设计 | v0.4 | 当前页面结构与使用流程 |
+| 品牌与界面系统 | v0.5 | 归页品牌、主题、标题栏、弹窗与账号浏览器 |
 | 可交互界面原型 | v0.1 | 关键页面布局与交互验证 |
 | MVP 实现状态 | v0.4 | 实现范围、限制和验证结果 |
 | 加密备份与恢复 | v0.3 | 完整数据库备份格式与恢复保护 |

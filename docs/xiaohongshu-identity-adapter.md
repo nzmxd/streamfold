@@ -1,6 +1,6 @@
 # 小红书 Session API 适配器
 
-> 适用版本：Social Vault 0.4.0
+> 适用版本：归页 Streamfold 0.4.0
 >
 > 插件 ID：`xiaohongshu-session-api`
 
@@ -142,4 +142,4 @@
 - [ReaJason/xhs](https://github.com/ReaJason/xhs)：作品管理接口路径和字段交叉验证。
 - [jzOcb/xhs-note-health-checker](https://github.com/jzOcb/xhs-note-health-checker)：v2 作品列表响应形状交叉验证。
 
-Social Vault 当前清单固定参考标识为 `opencli-b0f84c99`。这些项目仅作为调研与接口行为参考；运行时使用 Social Vault 自己的白名单传输、解析、身份核验和数据库事务实现。
+归页当前清单固定参考标识为 `opencli-b0f84c99`。这些项目仅作为调研与接口行为参考；运行时使用归页自己的白名单传输、解析、身份核验和数据库事务实现。

@@ -1,4 +1,4 @@
-# Social Vault 调研与总体设计
+# 归页 Streamfold 调研与总体设计
 
 > 版本：0.4.0
 >
@@ -26,7 +26,7 @@
 
 | 项目 | 可借鉴内容 | 与本项目的关系 |
 |---|---|---|
-| [jackwener/OpenCLI](https://github.com/jackwener/OpenCLI) | 已登录浏览器中的平台命令、同源 `fetch`、XHR/Fetch 响应捕获、适配器组织方式 | 首要设计参考。Social Vault 只移植经确认的固定 JSON 接口和字段规则，不运行任意 OpenCLI 插件 |
+| [jackwener/OpenCLI](https://github.com/jackwener/OpenCLI) | 已登录浏览器中的平台命令、同源 `fetch`、XHR/Fetch 响应捕获、适配器组织方式 | 首要设计参考。归页只移植经确认的固定 JSON 接口和字段规则，不运行任意 OpenCLI 插件 |
 | [ReaJason/xhs](https://github.com/ReaJason/xhs) | 小红书创作者接口路径、请求参数和返回字段 | 用于交叉核对作品管理接口，不作为运行时依赖 |
 | [jzOcb/xhs-note-health-checker](https://github.com/jzOcb/xhs-note-health-checker) | 小红书 v2 作品管理接口与 `data.notes` 响应形状 | 用于确认当前作品列表接口版本和字段候选，不作为运行时依赖 |
 | [Johnserf-Seed/f2](https://github.com/Johnserf-Seed/f2) | 抖音、微博等平台的非官方接口封装 | 需要独立 Python 运行时和 Cookie 输入，当前不进入核心架构 |
@@ -35,13 +35,13 @@
 
 OpenCLI 证明了一个关键方向：在已经登录的平台页面环境中，可以调用创作后台 JSON API，或者观察页面本身发起的签名 XHR/Fetch 请求，从而获得结构化数据。它比复制外部浏览器 Cookie 后再用独立 HTTP 客户端更接近平台页面的实际请求语义。
 
-但 Social Vault 不直接嵌入 OpenCLI 的通用插件运行时，原因是：
+但归页不直接嵌入 OpenCLI 的通用插件运行时，原因是：
 
 - 通用 Node.js 插件权限大于本产品需要的权限。
 - OpenCLI 的部分适配器包含页面 DOM 回退，而本产品要求 API-only。
 - 本产品需要每账号 Session 隔离、身份绑定、事务提交和桌面 UI 状态，这些边界与命令行工具不同。
 
-因此当前做法是以 OpenCLI 的接口行为为参考，在 Social Vault 内实现窄化的 `session_api` 适配器：固定主机、固定路径、固定能力、固定字段校验，不暴露任意请求或页面脚本入口。
+因此当前做法是以 OpenCLI 的接口行为为参考，在归页内实现窄化的 `session_api` 适配器：固定主机、固定路径、固定能力、固定字段校验，不暴露任意请求或页面脚本入口。
 
 ### 2.3 小红书可行性
 

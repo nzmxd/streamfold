@@ -138,7 +138,7 @@ onMounted(async () => {
 <template>
   <div class="feature-page content-page">
     <header class="page-header feature-header">
-      <div><span class="page-eyebrow">CONTENT LIBRARY</span><h1>内容中心</h1><p>查看账号内容、指标快照和备注</p></div>
+      <div><span class="page-eyebrow">内容资料库</span><h1>内容中心</h1><p>查看账号内容、指标快照和备注</p></div>
       <span class="header-count">{{ items.length }} 条结果</span>
     </header>
 

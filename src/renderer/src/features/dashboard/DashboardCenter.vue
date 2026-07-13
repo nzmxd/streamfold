@@ -39,7 +39,7 @@ onMounted(() => void load())
   <div class="feature-page dashboard-page">
     <header class="page-header feature-header">
       <div>
-        <span class="page-eyebrow">LOCAL OVERVIEW</span>
+        <span class="page-eyebrow">本地概览</span>
         <h1>工作台</h1>
         <p>查看账号、内容和指标的汇总情况</p>
       </div>
@@ -60,7 +60,7 @@ onMounted(() => void load())
       <section v-if="overview.contentCount === 0" class="onboarding-card">
         <div class="onboarding-icon">↻</div>
         <div>
-          <span class="page-eyebrow">FIRST SYNC</span>
+          <span class="page-eyebrow">开始使用</span>
           <h2>{{ accounts.length === 0 ? '添加第一个账号' : '开始同步账号数据' }}</h2>
           <p>{{ accounts.length === 0 ? '添加账号后，在独立浏览器中完成登录。' : '选择账号，完成身份核验后即可同步资料、作品和指标。' }}</p>
         </div>

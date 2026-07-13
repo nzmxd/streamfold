@@ -47,7 +47,7 @@ onMounted(() => void load())
 <template>
   <div class="feature-page analytics-page">
     <header class="page-header feature-header">
-      <div><span class="page-eyebrow">ANALYTICS</span><h1>数据分析</h1><p>查看账号和内容指标的变化趋势</p></div>
+      <div><span class="page-eyebrow">趋势与表现</span><h1>数据分析</h1><p>查看账号和内容指标的变化趋势</p></div>
       <div class="analytics-controls">
         <select v-model="platformId" aria-label="筛选平台"><option value="">全部平台</option><option value="xiaohongshu">小红书</option><option value="weibo">微博</option><option value="douyin">抖音</option><option value="zhihu">知乎</option></select>
         <div class="segmented" role="group" aria-label="统计周期">

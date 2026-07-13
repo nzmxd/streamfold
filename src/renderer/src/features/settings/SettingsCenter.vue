@@ -6,6 +6,7 @@ import type {
   ExportDataResult,
   StorageOverview
 } from '../../../../shared/contracts'
+import { confirmDialog } from '../../ui/dialog'
 import { formatBytes, formatDate, formatNumber, messageOf } from '../shared/format'
 
 const overview = ref<StorageOverview | null>(null)
@@ -84,9 +85,13 @@ async function exportData(): Promise<void> {
 
 async function clearAccountHistory(account: Account): Promise<void> {
   if (clearingAccountId.value) return
-  const confirmed = window.confirm(
-    `清空“${account.alias}”的全部本地历史数据？\n\n将删除内容、账号/内容指标快照和同步游标。登录会话、账号分组和备注会保留，但此操作无法撤销。如需保留账号、内容与指标快照，请先导出 JSON。`
-  )
+  const confirmed = await confirmDialog({
+    title: `清除“${account.alias}”的历史数据？`,
+    description: '将删除这个账号已同步到本机的内容与统计历史，操作无法撤销。',
+    details: ['账号、登录状态、分组和备注会保留', '需要留存时请先导出 JSON'],
+    confirmLabel: '清除历史数据',
+    tone: 'danger'
+  })
   if (!confirmed) return
   clearingAccountId.value = account.id
   error.value = ''
@@ -125,9 +130,13 @@ async function createEncryptedBackup(): Promise<void> {
 
 async function restoreEncryptedBackup(): Promise<void> {
   if (restoreBusy.value || restorePassword.value.length < 12) return
-  const confirmed = window.confirm(
-    '从加密备份恢复全部数据？\n\n当前账号、分组、内容、快照和设置将被备份中的版本替换。所有账号都会暂停同步并要求重新打开平台页面核验身份。恢复前请先为当前数据创建新备份。'
-  )
+  const confirmed = await confirmDialog({
+    title: '从加密备份恢复？',
+    description: '当前工作区将替换为备份中的数据，恢复过程完成前请勿关闭应用。',
+    details: ['替换账号、分组、内容、指标与设置', '恢复后需要重新核验相关账号'],
+    confirmLabel: '选择备份并恢复',
+    tone: 'danger'
+  })
   if (!confirmed) return
   restoreBusy.value = true
   error.value = ''
@@ -157,7 +166,7 @@ onMounted(() => void load())
 <template>
   <div class="feature-page settings-page">
     <header class="page-header feature-header">
-      <div><span class="page-eyebrow">APPLICATION SETTINGS</span><h1>应用设置</h1><p>管理数据、备份和保留策略</p></div>
+      <div><span class="page-eyebrow">工作区设置</span><h1>应用设置</h1><p>管理数据、备份和保留策略</p></div>
       <button class="button" :disabled="loading" @click="load">刷新信息</button>
     </header>
 

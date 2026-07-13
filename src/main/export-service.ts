@@ -35,8 +35,8 @@ export class ExportService {
     const date = new Date().toISOString().slice(0, 10)
     const extension = input.format
     const result = await dialog.showSaveDialog(this.owner, {
-      title: input.format === 'json' ? '导出 Social Vault 数据' : '导出内容 CSV',
-      defaultPath: `social-vault-${date}.${extension}`,
+      title: input.format === 'json' ? '导出归页数据' : '导出内容 CSV',
+      defaultPath: `streamfold-${date}.${extension}`,
       filters: input.format === 'json'
         ? [{ name: 'JSON 数据', extensions: ['json'] }]
         : [{ name: 'CSV 表格', extensions: ['csv'] }],

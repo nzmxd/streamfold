@@ -1,8 +1,8 @@
 {
-  "name": "social-vault",
+  "name": "streamfold",
   "version": "0.4.0",
   "private": true,
-  "description": "本地优先的个人社媒账号管理与统计客户端",
+  "description": "归页：本地优先的个人社媒账号、内容与数据工作台",
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {

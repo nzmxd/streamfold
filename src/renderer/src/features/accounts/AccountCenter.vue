@@ -4,6 +4,7 @@ import type { Group, PlatformId, SyncMode } from '../../../../shared/contracts'
 import AccountDetailPane from './AccountDetailPane.vue'
 import AccountListPane from './AccountListPane.vue'
 import { useAccounts } from './useAccounts'
+import { confirmDialog } from '../../ui/dialog'
 
 const store = useAccounts()
 const addDialog = ref(false)
@@ -72,7 +73,14 @@ async function createGroup(): Promise<void> {
 }
 
 async function removeGroup(id: string, name: string): Promise<void> {
-  if (!window.confirm(`删除分组“${name}”？\n\n只会解除账号与该分组的关联；账号、登录会话、备注、内容和历史统计都会保留。`)) return
+  const confirmed = await confirmDialog({
+    title: `删除分组“${name}”？`,
+    description: '账号会从这个分组中移出，其他资料不会变化。',
+    details: ['账号与登录状态会保留', '备注、内容和历史统计会保留'],
+    confirmLabel: '删除分组',
+    tone: 'warning'
+  })
+  if (!confirmed) return
   try {
     await store.removeGroup(id)
     showToast('分组已删除，账号与历史数据均已保留。')
@@ -187,7 +195,7 @@ function closeEditGroupDialog(): void {
   <div class="account-page">
     <header class="page-header">
       <div>
-        <span class="page-eyebrow">ACCOUNT WORKSPACE</span>
+        <span class="page-eyebrow">账号工作区</span>
         <h1>账号中心</h1>
         <p>管理账号、分组、备注和数据同步</p>
       </div>
@@ -240,10 +248,10 @@ function closeEditGroupDialog(): void {
     </section>
 
     <div v-if="addDialog" class="modal-backdrop" @click.self="closeAddDialog">
-      <form class="modal" @submit.prevent="createAccount">
+      <form class="modal" role="dialog" aria-modal="true" aria-labelledby="add-account-title" @keydown.esc="closeAddDialog" @submit.prevent="createAccount">
         <div class="modal-head">
-          <div><span class="page-eyebrow">NEW ACCOUNT</span><h2>添加账号</h2><p>创建后打开账号浏览器完成登录。</p></div>
-          <button type="button" :disabled="addBusy" @click="closeAddDialog">×</button>
+          <div><span class="page-eyebrow">新账号</span><h2 id="add-account-title">添加账号</h2><p>创建后打开账号浏览器完成登录。</p></div>
+          <button type="button" aria-label="关闭添加账号窗口" :disabled="addBusy" @click="closeAddDialog">×</button>
         </div>
         <label>平台<select v-model="addForm.platformId"><option v-for="platform in store.platforms.value" :key="platform.id" :value="platform.id">{{ platform.name }}</option></select></label>
         <label>本地别名<input v-model="addForm.alias" maxlength="40" required placeholder="例如：个人品牌号" /></label>
@@ -253,18 +261,18 @@ function closeEditGroupDialog(): void {
     </div>
 
     <div v-if="groupDialog" class="modal-backdrop" @click.self="closeGroupDialog">
-      <form class="modal compact" @submit.prevent="createGroup">
-        <div class="modal-head"><div><span class="page-eyebrow">NEW GROUP</span><h2>新建分组</h2><p>用分组整理不同用途的账号。</p></div><button type="button" :disabled="groupBusy" @click="closeGroupDialog">×</button></div>
-        <label>分组名称<input v-model="groupForm.name" maxlength="30" required /></label>
+      <form class="modal compact" role="dialog" aria-modal="true" aria-labelledby="create-group-title" @keydown.esc="closeGroupDialog" @submit.prevent="createGroup">
+        <div class="modal-head"><div><span class="page-eyebrow">新分组</span><h2 id="create-group-title">新建分组</h2><p>用分组整理不同用途的账号。</p></div><button type="button" aria-label="关闭新建分组窗口" :disabled="groupBusy" @click="closeGroupDialog">×</button></div>
+        <label>分组名称<input v-model="groupForm.name" autofocus maxlength="30" required /></label>
         <label>标识颜色<input v-model="groupForm.color" type="color" /></label>
         <div class="modal-actions"><button class="button" :disabled="groupBusy" type="button" @click="closeGroupDialog">取消</button><button class="button primary" :disabled="groupBusy" type="submit">{{ groupBusy ? '创建中…' : '创建' }}</button></div>
       </form>
     </div>
 
     <div v-if="editGroupDialog" class="modal-backdrop" @click.self="closeEditGroupDialog">
-      <form class="modal compact" @submit.prevent="updateGroup">
-        <div class="modal-head"><div><span class="page-eyebrow">EDIT GROUP</span><h2>编辑分组</h2><p>修改分组名称和标识颜色。</p></div><button type="button" :disabled="groupBusy" @click="closeEditGroupDialog">×</button></div>
-        <label>分组名称<input v-model="editGroupForm.name" maxlength="30" required /></label>
+      <form class="modal compact" role="dialog" aria-modal="true" aria-labelledby="edit-group-title" @keydown.esc="closeEditGroupDialog" @submit.prevent="updateGroup">
+        <div class="modal-head"><div><span class="page-eyebrow">分组设置</span><h2 id="edit-group-title">编辑分组</h2><p>修改分组名称和标识颜色。</p></div><button type="button" aria-label="关闭编辑分组窗口" :disabled="groupBusy" @click="closeEditGroupDialog">×</button></div>
+        <label>分组名称<input v-model="editGroupForm.name" autofocus maxlength="30" required /></label>
         <label>标识颜色<input v-model="editGroupForm.color" type="color" /></label>
         <div class="modal-actions"><button class="button" :disabled="groupBusy" type="button" @click="closeEditGroupDialog">取消</button><button class="button primary" :disabled="groupBusy" type="submit">{{ groupBusy ? '保存中…' : '保存分组' }}</button></div>
       </form>

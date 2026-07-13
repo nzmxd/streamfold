@@ -1,7 +1,21 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { BrowserState, SocialVaultApi } from '../shared/contracts'
+import type {
+  AppearanceState,
+  BrowserState,
+  SocialVaultApi
+} from '../shared/contracts'
 
 const api: SocialVaultApi = {
+  runtime: { platform: process.platform as SocialVaultApi['runtime']['platform'] },
+  appearance: {
+    get: () => ipcRenderer.invoke('appearance:get'),
+    set: (preference) => ipcRenderer.invoke('appearance:set', preference),
+    onChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: AppearanceState): void => callback(state)
+      ipcRenderer.on('appearance:changed', listener)
+      return () => ipcRenderer.removeListener('appearance:changed', listener)
+    }
+  },
   platforms: {
     list: () => ipcRenderer.invoke('platforms:list')
   },

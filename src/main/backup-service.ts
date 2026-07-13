@@ -49,9 +49,9 @@ export class BackupService {
 
   async create(input: CreateEncryptedBackupInput): Promise<EncryptedBackupResult> {
     const result = await this.options.dialog.showSaveDialog({
-      title: '创建 Social Vault 加密备份',
-      defaultPath: `social-vault-${this.now().slice(0, 10)}.svbackup`,
-      filters: [{ name: 'Social Vault 加密备份', extensions: ['svbackup'] }],
+      title: '创建归页加密备份',
+      defaultPath: `streamfold-${this.now().slice(0, 10)}.svbackup`,
+      filters: [{ name: '归页加密备份', extensions: ['svbackup'] }],
       properties: ['createDirectory', 'showOverwriteConfirmation']
     })
     if (result.canceled || !result.filePath) return cancelledResult()
@@ -92,8 +92,8 @@ export class BackupService {
   async restore(input: RestoreEncryptedBackupInput): Promise<EncryptedBackupResult> {
     if (!input.confirmReplace) throw new Error('恢复前必须确认替换当前本地数据库')
     const result = await this.options.dialog.showOpenDialog({
-      title: '选择 Social Vault 加密备份',
-      filters: [{ name: 'Social Vault 加密备份', extensions: ['svbackup'] }],
+      title: '选择归页加密备份',
+      filters: [{ name: '归页加密备份', extensions: ['svbackup'] }],
       properties: ['openFile', 'dontAddToRecent']
     })
     const path = result.filePaths[0]

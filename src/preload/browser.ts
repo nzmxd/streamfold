@@ -1,7 +1,21 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { BrowserState, BrowserWorkspaceApi } from '../shared/contracts'
+import type {
+  AppearanceState,
+  BrowserState,
+  BrowserWorkspaceApi
+} from '../shared/contracts'
 
 const api: BrowserWorkspaceApi = {
+  runtime: { platform: process.platform as BrowserWorkspaceApi['runtime']['platform'] },
+  appearance: {
+    get: () => ipcRenderer.invoke('browser-workspace:get-appearance'),
+    set: (preference) => ipcRenderer.invoke('browser-workspace:set-appearance', preference),
+    onChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: AppearanceState): void => callback(state)
+      ipcRenderer.on('appearance:changed', listener)
+      return () => ipcRenderer.removeListener('appearance:changed', listener)
+    }
+  },
   getState: () => ipcRenderer.invoke('browser-workspace:get-state'),
   back: () => ipcRenderer.invoke('browser-workspace:back'),
   forward: () => ipcRenderer.invoke('browser-workspace:forward'),

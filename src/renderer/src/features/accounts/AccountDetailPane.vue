@@ -12,6 +12,7 @@ import type {
   UpdateAccountInput
 } from '../../../../shared/contracts'
 import AccountContentWidget from '../content/AccountContentWidget.vue'
+import { confirmDialog } from '../../ui/dialog'
 import {
   connectionStatusLabel,
   ownershipStatusLabel,
@@ -151,9 +152,12 @@ async function confirmLoginIdentity(): Promise<void> {
   if (!props.account || busy.value || !verification.value?.confirmationToken) return
   const candidate = verification.value
   const confirmationToken = candidate.confirmationToken!
-  const confirmed = window.confirm(
-    `确认绑定当前小红书账号？\n\n昵称：${candidate.remoteName}\n账号 ID：${candidate.remoteId}\n\n确认后将再次核验账号信息。`
-  )
+  const confirmed = await confirmDialog({
+    title: '绑定当前小红书账号？',
+    description: '确认后将再次核对账号信息，并把当前身份关联到这个本地账号。',
+    details: [`昵称：${candidate.remoteName}`, `账号 ID：${candidate.remoteId}`],
+    confirmLabel: '确认绑定'
+  })
   if (!confirmed) return
   busy.value = true
   localMessage.value = ''
@@ -187,9 +191,13 @@ async function syncOwnedData(): Promise<void> {
 
 async function disconnectAccount(): Promise<void> {
   if (!props.account || busy.value) return
-  const confirmed = window.confirm(
-    `退出“${props.account.alias}”在账号浏览器中的登录？\n\n账号资料、备注、分组、内容与历史指标都会保留。`
-  )
+  const confirmed = await confirmDialog({
+    title: `退出“${props.account.alias}”的登录？`,
+    description: '将清除这个账号浏览器的登录状态，稍后可以重新登录。',
+    details: ['账号资料、备注与分组会保留', '内容与历史指标会保留'],
+    confirmLabel: '退出登录',
+    tone: 'warning'
+  })
   if (!confirmed) return
   busy.value = true
   try {
@@ -205,9 +213,13 @@ async function purgeAccount(): Promise<void> {
   if (!props.account || busy.value) return
   const accountId = props.account.id
   const alias = props.account.alias
-  const confirmed = window.confirm(
-    `永久删除本地账号“${alias}”？\n\n该账号的登录会话、备注、内容、指标快照和同步记录都会从本机删除，且无法撤销。平台上的账号和内容不受影响。`
-  )
+  const confirmed = await confirmDialog({
+    title: `永久删除“${alias}”？`,
+    description: '这个操作无法撤销，但不会更改平台上的账号和内容。',
+    details: ['删除本机登录状态与账号备注', '删除已同步内容、指标快照和同步记录'],
+    confirmLabel: '永久删除',
+    tone: 'danger'
+  })
   if (!confirmed) return
   busy.value = true
   try {

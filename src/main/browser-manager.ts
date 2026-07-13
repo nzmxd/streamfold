@@ -1,12 +1,13 @@
 import {
   BrowserWindow,
+  nativeTheme,
   session as electronSession,
   WebContentsView,
   type IpcMainInvokeEvent,
   type Session,
   type WebContents
 } from 'electron'
-import type { Account, BrowserState } from '../shared/contracts'
+import type { Account, AppearanceState, BrowserState } from '../shared/contracts'
 import { getPlatform, isOfficialUrl } from './platforms'
 import { isTrustedBrowserUrl } from './shell-security'
 import {
@@ -102,6 +103,7 @@ export class BrowserManager {
 
   async smokeWorkspace(accountId: string): Promise<{
     hasApi: boolean
+    appearanceReady: boolean
     accountId: string | null
     toolbarUrl: string
   }> {
@@ -109,16 +111,19 @@ export class BrowserManager {
     const managed = this.workspaces.get(accountId)
     if (!managed) throw new Error('浏览器工作窗口冒烟创建失败')
     try {
-      return await managed.window.webContents.executeJavaScript(`(async () => {
+      const result = await managed.window.webContents.executeJavaScript(`(async () => {
         const api = window.browserWorkspace
         const hasApi = typeof api === 'object' && typeof api.getState === 'function'
         const state = hasApi ? await api.getState() : { accountId: null }
+        const appearance = hasApi ? await api.appearance.get() : null
         return {
           hasApi,
+          appearanceReady: appearance?.resolved === 'light' || appearance?.resolved === 'dark',
           accountId: state.accountId,
           toolbarUrl: location.href
         }
       })()`)
+      return result
     } finally {
       this.disposeWorkspace(managed, true)
     }
@@ -126,6 +131,23 @@ export class BrowserManager {
 
   getStateForSender(event: IpcMainInvokeEvent): BrowserState {
     return { ...this.workspaceForSender(event).state }
+  }
+
+  assertTrustedSender(event: IpcMainInvokeEvent): void {
+    this.workspaceForSender(event)
+  }
+
+  applyAppearance(state: AppearanceState): void {
+    for (const managed of this.workspaces.values()) {
+      if (managed.window.isDestroyed()) continue
+      if (process.platform !== 'darwin') {
+        managed.window.setTitleBarOverlay({
+          color: state.resolved === 'dark' ? '#141821' : '#ffffff',
+          symbolColor: state.resolved === 'dark' ? '#f5f7fb' : '#171a24'
+        })
+      }
+      managed.window.webContents.send('appearance:changed', state)
+    }
   }
 
   backForSender(event: IpcMainInvokeEvent): void {
@@ -206,10 +228,23 @@ export class BrowserManager {
       height: 820,
       minWidth: 900,
       minHeight: 620,
-      title: `${platform.name} · ${sanitizeTitle(account.alias)} — Social Vault`,
-      backgroundColor: '#f4f6f8',
+      title: `${platform.name} · ${sanitizeTitle(account.alias)} — 归页`,
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d1016' : '#f6f7fb',
       show: false,
       autoHideMenuBar: true,
+      ...(process.platform === 'darwin'
+        ? {
+            titleBarStyle: 'hiddenInset' as const,
+            trafficLightPosition: { x: 16, y: 20 }
+          }
+        : {
+            titleBarStyle: 'hidden' as const,
+            titleBarOverlay: {
+              color: nativeTheme.shouldUseDarkColors ? '#141821' : '#ffffff',
+              symbolColor: nativeTheme.shouldUseDarkColors ? '#f5f7fb' : '#171a24',
+              height: 61
+            }
+          }),
       webPreferences: {
         preload: this.browserPreload,
         nodeIntegration: false,

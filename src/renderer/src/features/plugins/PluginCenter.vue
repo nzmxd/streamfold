@@ -54,7 +54,7 @@ onMounted(() => void load())
   <div class="feature-page plugin-page">
     <header class="page-header feature-header">
       <div>
-        <span class="page-eyebrow">PLATFORM CONNECTORS</span>
+        <span class="page-eyebrow">平台连接能力</span>
         <h1>插件中心</h1>
         <p>启用和管理各平台的数据同步</p>
       </div>

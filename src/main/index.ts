@@ -7,6 +7,7 @@ import {
   BrowserWindow,
   dialog,
   net,
+  nativeTheme,
   protocol,
   session
 } from 'electron'
@@ -24,9 +25,14 @@ import { isTrustedShellUrl } from './shell-security'
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const smokeMode = process.env.SOCIAL_VAULT_SMOKE === '1'
 const reviewMode = process.env.SOCIAL_VAULT_REVIEW === '1'
+app.setName('Streamfold')
 if (smokeMode) app.disableHardwareAcceleration()
 if (smokeMode || reviewMode) {
   app.setPath('userData', join(tmpdir(), `social-vault-${smokeMode ? 'smoke' : 'review'}-${process.pid}`))
+} else {
+  // Keep the original directory so rebranding never strands existing accounts,
+  // Chromium partitions, backups metadata, or historical statistics.
+  app.setPath('userData', join(app.getPath('appData'), 'social-vault'))
 }
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
@@ -94,14 +100,39 @@ app.on('before-quit', () => {
 function createWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) return
 
+  database = new SocialDatabase(join(app.getPath('userData'), 'social-vault.sqlite'))
+  database.recoverInterruptedJobs()
+  const smokeTheme = process.env.SOCIAL_VAULT_SMOKE_THEME
+  const savedTheme = database.getSetting<string>('appearance.theme', 'system')
+  const initialTheme = smokeMode && (smokeTheme === 'light' || smokeTheme === 'dark')
+    ? smokeTheme
+    : savedTheme
+  if (initialTheme === 'light' || initialTheme === 'dark' || initialTheme === 'system') {
+    nativeTheme.themeSource = initialTheme
+  }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
     minWidth: 920,
     minHeight: 640,
-    title: 'Social Vault',
-    backgroundColor: '#f7f8fa',
+    title: '归页 · Streamfold',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d1016' : '#f6f7fb',
     show: false,
+    autoHideMenuBar: process.platform !== 'darwin',
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 16, y: 17 }
+        }
+      : {
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: {
+            color: nativeTheme.shouldUseDarkColors ? '#141821' : '#ffffff',
+            symbolColor: nativeTheme.shouldUseDarkColors ? '#f5f7fb' : '#171a24',
+            height: 48
+          }
+        }),
     webPreferences: {
       preload: join(currentDir, '../preload/index.cjs'),
       nodeIntegration: false,
@@ -113,7 +144,7 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.removeMenu()
+  if (process.platform !== 'darwin') mainWindow.removeMenu()
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.webContents.on('will-navigate', (details) => {
     if (!isTrustedShellUrl(details.url)) details.preventDefault()
@@ -125,8 +156,6 @@ function createWindow(): void {
     if (!smokeMode) mainWindow?.show()
   })
 
-  database = new SocialDatabase(join(app.getPath('userData'), 'social-vault.sqlite'))
-  database.recoverInterruptedJobs()
   if (smokeMode && process.env.SOCIAL_VAULT_SMOKE_CAPTURE) {
     smokeVisualAccountId = database.createAccount({
       platformId: 'xiaohongshu',
@@ -209,6 +238,7 @@ function createWindow(): void {
         const contents = hasApi ? await window.socialVault.content.list() : []
         const dashboard = hasApi ? await window.socialVault.analytics.dashboard() : null
         const settings = hasApi ? await window.socialVault.settings.overview() : null
+        const appearance = hasApi ? await window.socialVault.appearance.get() : null
         return {
           title: document.title,
           hasApi,
@@ -220,13 +250,15 @@ function createWindow(): void {
           jobCount: 0,
           dashboardReady: Boolean(dashboard),
           settingsReady: Boolean(settings?.appVersion),
+          appearanceReady: appearance?.resolved === 'light' || appearance?.resolved === 'dark',
           v04ApiReady: typeof window.socialVault.accounts.verifyIdentity === 'function' &&
             typeof window.socialVault.accounts.confirmIdentity === 'function' &&
             typeof window.socialVault.accounts.sync === 'function' &&
             typeof window.socialVault.accounts.bulkUpdate === 'function' &&
             typeof window.socialVault.groups.update === 'function' &&
             typeof window.socialVault.settings.createBackup === 'function' &&
-            typeof window.socialVault.settings.restoreBackup === 'function',
+            typeof window.socialVault.settings.restoreBackup === 'function' &&
+            typeof window.socialVault.appearance.set === 'function',
           text: document.body.innerText.slice(0, 80)
         }
       })()`)
@@ -285,15 +317,18 @@ function createWindow(): void {
         hasApp?: boolean
         dashboardReady?: boolean
         settingsReady?: boolean
+        appearanceReady?: boolean
         v04ApiReady?: boolean
       } | null
       const workspace = workspaceResult as {
         hasApi?: boolean
+        appearanceReady?: boolean
         accountId?: string
       } | null
       if (
-        !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady || !shell.v04ApiReady ||
-        !workspace?.hasApi || !workspace.accountId || !partitionIsolation
+        !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady ||
+        !shell.appearanceReady || !shell.v04ApiReady ||
+        !workspace?.hasApi || !workspace.accountId || !workspace.appearanceReady || !partitionIsolation
       ) {
         console.error(`SOCIAL_VAULT_SMOKE_FAILED ${JSON.stringify(smokePayload)}`)
         app.exit(1)
