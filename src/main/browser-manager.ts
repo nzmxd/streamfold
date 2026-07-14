@@ -18,7 +18,9 @@ import {
   XIAOHONGSHU_API_ENDPOINTS,
   XIAOHONGSHU_API_ROUTES,
   XiaohongshuApiError,
+  isCreatorNoteUpdateRoute,
   isNoteAnalyzeListUrl,
+  isNoteDetailApiUrl,
   isPostedNotesUrl,
   type XiaohongshuApiTransport,
   type XiaohongshuCaptureKind,
@@ -272,6 +274,7 @@ export class BrowserManager {
     return Object.freeze({
       directJson: async (endpoint: string): Promise<XiaohongshuJsonResponse> => {
         const managed = this.requireXiaohongshuApiWorkspace(accountId)
+        await this.prepareXiaohongshuApiPage(managed)
         return fetchXiaohongshuPageJson(
           managed.view.webContents,
           endpoint,
@@ -821,7 +824,7 @@ async function prepareXiaohongshuApiContents(
   loadOfficial: (url: string) => Promise<void>,
   options: NavigationStabilityOptions = {}
 ): Promise<void> {
-  if (isXiaohongshuCreatorPage(contents.getURL())) {
+  if (isXiaohongshuCreatorPage(contents.getURL()) && !isCreatorNoteUpdateRoute(contents.getURL())) {
     await waitForNavigationStable(contents, options)
     if (isStableXiaohongshuCreatorPage(contents)) return
   }
@@ -1218,6 +1221,7 @@ function waitForSignedResponses(
   const browserDebugger = contents.debugger
   return new Promise((resolve, reject) => {
     const pending = new Map<string, CapturedResponseMetadata>()
+    const requestMethods = new Map<string, string>()
     const harvesting = new Set<string>()
     const results = new Map<string, XiaohongshuJsonResponse>()
     let settled = false
@@ -1287,10 +1291,15 @@ function waitForSignedResponses(
           : Buffer.from(value.body, 'utf8')
         if (bytes.byteLength > SIGNED_JSON_LIMIT_BYTES) throw new Error('小红书签名 JSON 响应超过 512 KiB')
         const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-        results.set(metadata.url, {
+        const resultKey = kind === 'note_detail' ? requestId : metadata.url
+        if (kind === 'note_detail' && !results.has(resultKey) && results.size >= 10) {
+          throw new Error('小红书作品详情接口返回了过多响应')
+        }
+        const json = parseJson(text)
+        results.set(resultKey, {
           status: metadata.status,
           url: metadata.url,
-          json: parseJson(text)
+          json
         })
       } finally {
         pending.delete(requestId)
@@ -1303,18 +1312,35 @@ function waitForSignedResponses(
       method: string,
       params: Record<string, unknown>
     ): void => {
+      if (method === 'Network.requestWillBeSent') {
+        const requestId = typeof params.requestId === 'string' ? params.requestId : ''
+        const request = objectRecord(params.request)
+        const url = typeof request.url === 'string' ? request.url : ''
+        const requestMethod = typeof request.method === 'string' ? request.method.toUpperCase() : ''
+        if (requestId && captureUrlMatches(url, kind)) requestMethods.set(requestId, requestMethod)
+        return
+      }
       if (method === 'Network.responseReceived') {
         const requestId = typeof params.requestId === 'string' ? params.requestId : ''
         const response = objectRecord(params.response)
         const url = typeof response.url === 'string' ? response.url : ''
         const resourceType = typeof params.type === 'string' ? params.type : ''
         if (!requestId || (resourceType !== 'Fetch' && resourceType !== 'XHR') ||
-          !captureUrlMatches(url, kind)) return
+          !captureUrlMatches(url, kind) ||
+          (kind === 'note_detail' && requestMethods.get(requestId) !== 'GET')) return
         if (quietTimer) clearTimeout(quietTimer)
         quietTimer = null
         const status = response.status
         if (!Number.isInteger(status) || (status as number) < 100 || (status as number) > 599) {
           fail(new Error('小红书签名接口 HTTP 状态非法'))
+          return
+        }
+        if (kind === 'note_detail' && (status === 401 || status === 403)) {
+          fail(new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录状态已失效，请重新登录'))
+          return
+        }
+        if (kind === 'note_detail' && (status === 429 || status === 461 || status === 471)) {
+          fail(new XiaohongshuApiError('RISK_CONTROL', '小红书暂时限制了作品详情请求'))
           return
         }
         pending.set(requestId, {
@@ -1328,6 +1354,7 @@ function waitForSignedResponses(
       if (method === 'Network.loadingFinished') {
         const requestId = typeof params.requestId === 'string' ? params.requestId : ''
         if (pending.has(requestId)) void harvest(requestId, params.encodedDataLength).catch(fail)
+        requestMethods.delete(requestId)
         return
       }
       if (method === 'Network.loadingFailed') {
@@ -1336,13 +1363,14 @@ function waitForSignedResponses(
           pending.delete(requestId)
           fail(new Error('小红书签名接口加载失败'))
         }
+        requestMethods.delete(requestId)
       }
     }
     const onDetach = (): void => fail(new Error('小红书 API 捕获通道意外断开'))
 
     browserDebugger.on('message', onMessage)
     browserDebugger.on('detach', onDetach)
-    void contents.loadURL(route).catch(fail)
+    void contents.loadURL(route).catch(() => fail(new Error('打开小红书官方数据页面失败')))
   })
 }
 
@@ -1355,21 +1383,22 @@ function assertDirectEndpoint(endpoint: string): void {
 }
 
 function assertCaptureRequest(route: string, kind: XiaohongshuCaptureKind, limit: number): void {
-  const validPair = route === XIAOHONGSHU_API_ROUTES.noteAnalytics
-    ? kind === 'note_analyze_list'
-    : route === XIAOHONGSHU_API_ROUTES.noteManager && kind === 'posted_notes'
+  const validPair = kind === 'note_analyze_list'
+    ? route === XIAOHONGSHU_API_ROUTES.noteAnalytics
+    : kind === 'posted_notes'
+      ? route === XIAOHONGSHU_API_ROUTES.noteManager
+      : kind === 'note_detail' && isCreatorNoteUpdateRoute(route)
   if (!validPair) throw new Error('拒绝非固定的小红书数据请求')
-  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('作品同步数量超出允许范围')
+  const validLimit = kind === 'note_detail'
+    ? limit === 1
+    : Number.isInteger(limit) && limit >= 1 && limit <= 100
+  if (!validLimit) throw new Error('作品同步数量超出允许范围')
 }
 
 function captureUrlMatches(url: string, kind: XiaohongshuCaptureKind): boolean {
-  try {
-    const parsed = new URL(url)
-    if (parsed.origin !== XIAOHONGSHU_CREATOR_ORIGIN || parsed.username || parsed.password || parsed.port) return false
-  } catch {
-    return false
-  }
-  return kind === 'posted_notes' ? isPostedNotesUrl(url) : isNoteAnalyzeListUrl(url)
+  if (kind === 'posted_notes') return isPostedNotesUrl(url)
+  if (kind === 'note_analyze_list') return isNoteAnalyzeListUrl(url)
+  return isNoteDetailApiUrl(url)
 }
 
 function assertExactApiUrl(value: string, endpoint: string): void {
@@ -1485,8 +1514,19 @@ function postedCaptureNeedsMore(
     if (Number.isSafeInteger(totalValue) && (totalValue as number) >= 0) {
       total = Math.max(total, totalValue as number)
     }
+    for (const tags of [data.tags, nested.tags]) {
+      if (!Array.isArray(tags)) continue
+      for (const value of tags) {
+        const count = objectRecord(value).notes_count
+        if (Number.isSafeInteger(count) && (count as number) >= 0) {
+          total = Math.max(total, count as number)
+        }
+      }
+    }
+    const pageCursor = data.page ?? nested.page
     lastHasMore = data.has_more === true || data.hasMore === true ||
-      nested.has_more === true || nested.hasMore === true
+      nested.has_more === true || nested.hasMore === true ||
+      (Number.isSafeInteger(pageCursor) && pageCursor !== -1)
   }
   if (!sawNotes || ids.size >= limit) return false
   return (total > 0 && ids.size < Math.min(total, limit)) || (total === 0 && lastHasMore)

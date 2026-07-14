@@ -27,10 +27,13 @@
 6. [加密备份与恢复](backup-and-restore.md)
    - 查看 `.svbackup` 的范围、加密参数、回滚和登录会话边界。
 
-7. [小红书 Session API 适配器](xiaohongshu-identity-adapter.md)
-   - 查看双资料接口身份校验、头像本地缓存、固定 JSON 接口、后台 workspace lease、作品指标响应捕获和停止条件。
+7. [GitHub CI/CD](ci-cd.md)
+   - 查看持续集成、跨平台打包、版本标签发布和代码签名边界。
 
-8. [知乎 Session API 适配器](zhihu-session-api-adapter.md)
+8. [小红书 Session API 适配器](xiaohongshu-identity-adapter.md)
+   - 查看双资料接口身份校验、头像本地缓存、固定 JSON 接口、后台 workspace lease、作品指标与正文摘要响应捕获和停止条件。
+
+9. [知乎 Session API 适配器](zhihu-session-api-adapter.md)
    - 查看知乎身份与资料接口、创作中心本人内容分页、可见指标、原帖链接和停止条件。
 
 ## 实现边界
@@ -52,6 +55,7 @@
 | 可交互界面原型 | v0.1 | 关键页面布局与交互验证 |
 | MVP 实现状态 | v0.4 | 实现范围、限制和验证结果 |
 | 加密备份与恢复 | v0.3 | 完整数据库备份格式与恢复保护 |
+| GitHub CI/CD | v0.1 | 持续集成、跨平台构件与版本发布 |
 | 小红书 Session API 适配器 | v0.4 | 首个平台 API、身份和数据同步说明 |
 | 知乎 Session API 适配器 | v0.2 | 知乎 API、身份、创作中心内容分页与数据同步说明 |
 

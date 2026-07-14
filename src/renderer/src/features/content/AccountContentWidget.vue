@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ContentSummary } from '../../../../shared/contracts'
 import { contentTypeLabel, delta, deltaLabel, formatDate, formatNumber, messageOf } from '../shared/format'
 import { primaryContentMetric } from './metrics'
@@ -9,6 +9,9 @@ const items = ref<ContentSummary[]>([])
 const loading = ref(false)
 const error = ref('')
 let loadSequence = 0
+let removeContentListener: (() => void) | null = null
+
+const excerptCount = computed(() => items.value.filter((item) => Boolean(item.bodyExcerpt)).length)
 
 async function load(accountId: string): Promise<void> {
   const sequence = ++loadSequence
@@ -29,12 +32,25 @@ watch(
   ([id]) => void load(id),
   { immediate: true }
 )
+
+onMounted(() => {
+  removeContentListener = window.socialVault.content.onChanged(() => void load(props.accountId))
+})
+
+onBeforeUnmount(() => {
+  removeContentListener?.()
+  removeContentListener = null
+})
 </script>
 
 <template>
   <section class="account-content-widget">
     <div class="feature-card-head">
-      <div><h3>内容数据</h3><p>最近同步的内容与指标</p></div>
+      <div>
+        <h3>内容数据</h3>
+        <p v-if="items.length > 0">最近同步的内容与指标 · {{ excerptCount }}/{{ items.length }} 条包含摘要</p>
+        <p v-else>最近同步的内容与指标</p>
+      </div>
       <button class="button" :disabled="loading" @click="load(accountId)">刷新</button>
     </div>
     <div v-if="error" class="alert error"><span>{{ error }}</span><button @click="error = ''">关闭</button></div>
@@ -43,7 +59,12 @@ watch(
     <div v-else class="account-content-list">
       <article v-for="item in items" :key="item.id">
         <span class="content-kind">{{ contentTypeLabel(item.type) }}</span>
-        <div><strong>{{ item.title || '未命名内容' }}</strong><small>{{ formatDate(item.publishedAt) }} · 最近采集 {{ formatDate(item.latestSnapshot?.capturedAt, true) }}</small></div>
+        <div class="account-content-copy">
+          <strong>{{ item.title || '未命名内容' }}</strong>
+          <p v-if="item.bodyExcerpt" class="account-content-excerpt">{{ item.bodyExcerpt }}</p>
+          <p v-else class="account-content-excerpt empty">平台未提供正文摘要</p>
+          <small>{{ formatDate(item.publishedAt) }} · 最近采集 {{ formatDate(item.latestSnapshot?.capturedAt, true) }}</small>
+        </div>
         <div class="mini-metric"><strong>{{ formatNumber(primaryContentMetric(item).value) }}</strong><small>{{ primaryContentMetric(item).label }} · {{ deltaLabel(delta(primaryContentMetric(item).value, primaryContentMetric(item).previousValue)) }}</small></div>
       </article>
     </div>

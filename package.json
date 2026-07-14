@@ -2,12 +2,19 @@
   "name": "streamfold",
   "version": "0.4.0",
   "private": true,
+  "author": "Streamfold Contributors",
+  "license": "UNLICENSED",
   "description": "归页：本地优先的个人社媒账号、内容与数据工作台",
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "pnpm typecheck && electron-vite build",
+    "dist": "pnpm build && electron-builder",
+    "dist:dir": "pnpm build && electron-builder --dir",
+    "dist:win": "pnpm build && electron-builder --win",
+    "dist:mac": "pnpm build && electron-builder --mac",
+    "dist:linux": "pnpm build && electron-builder --linux",
     "preview": "electron-vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
@@ -21,6 +28,7 @@
     "@types/node": "24.13.3",
     "@vitejs/plugin-vue": "6.0.7",
     "electron": "43.1.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "5.0.0",
     "typescript": "6.0.3",
     "vite": "7.3.6",
@@ -31,8 +39,66 @@
     "node": ">=22.13.0",
     "pnpm": ">=10"
   },
+  "build": {
+    "appId": "com.streamfold.app",
+    "productName": "归页",
+    "asar": true,
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/icons",
+        "to": "icons",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "artifactName": "Streamfold-${version}-windows-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "归页"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "Streamfold-${version}-macos-${arch}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "artifactName": "Streamfold-${version}-linux-${arch}.${ext}"
+    }
+  },
   "packageManager": "pnpm@10.24.0",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild"
+    ]
   }
 }

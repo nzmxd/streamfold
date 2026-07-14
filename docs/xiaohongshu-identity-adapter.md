@@ -16,8 +16,9 @@
 | 本人作品列表 | `/api/galaxy/v2/creator/note/user/posted` | 作品 ID、标题、发布时间、类型及接口提供的基础指标 |
 | 旧作品列表兼容 | `/api/galaxy/creator/note/user/posted` | 与 v2 路径相同用途，仅在页面实际请求该路径时接受 |
 | 作品分析 | `/api/galaxy/creator/datacenter/note/analyze/list` | 浏览、点赞、收藏、评论和分享 |
+| 作品正文摘要 | `GET https://edith.xiaohongshu.com/web_api/sns/capa/postgw/note/detail` | 校验 `data.id` 后读取 `data.desc`，标准化后最多保存 500 个 Unicode 字符 |
 
-作品管理结果是内容列表基线；作品分析结果按作品 ID 合并并覆盖对应指标。数据分析页没有返回的作品仍保留在内容列表中，其缺失指标保存为 `null`。
+作品管理结果是内容列表基线；作品分析结果按作品 ID 合并并覆盖对应指标。数据分析页没有返回的作品仍保留在内容列表中，其缺失指标保存为 `null`。若作品管理或分析 JSON 已包含 `desc`，直接使用该字段；否则只使用作品 ID 与类型构造创作中心编辑路由补取详情，不依赖公开原帖的 `xsec_token`。
 
 ## 2. 传输方式
 
@@ -35,17 +36,18 @@
 
 后台创建的 workspace 在最后一个 lease 释放后自动销毁；若接口表明登录失效，则该 workspace 会提升为同一个可见的官方浏览器窗口，让用户完成登录后继续使用原 Session。已有可见窗口会直接复用，不会为一次同步再创建第二份会话。
 
-### 2.2 签名 JSON 响应捕获
+### 2.2 页面自身 JSON 响应捕获
 
-作品管理和作品分析接口由平台页面生成请求参数。适配器的处理步骤是：
+作品管理、作品分析和作品详情接口由平台页面生成请求参数。适配器的处理步骤是：
 
 1. 连接该账号页面的 Chromium DevTools Protocol `Network` 域。
-2. 打开固定作品管理页或数据分析页。
-3. 只接受 Fetch/XHR 类型且 URL 命中精确接口白名单的响应。
+2. 列表与指标打开固定作品管理页或数据分析页；摘要补全只根据已经校验的本人作品 ID 和类型打开 `https://creator.xiaohongshu.com/publish/update?id=<作品ID>&noteType=normal|video`。
+3. 只接受 Fetch/XHR 类型且 URL 命中精确接口白名单的响应。作品详情必须是页面自身发出的 `GET https://edith.xiaohongshu.com/web_api/sns/capa/postgw/note/detail`，并且查询参数只能各有一个 `edit_mode`、`note_id` 和 `source`；适配器不读取这些参数值、请求头或请求正文。
 4. 在 `Network.loadingFinished` 后通过 `Network.getResponseBody` 读取 JSON 正文。
-5. 作品管理响应显示仍有目标范围内的下一页时，发送有上限的 `PageDown` 输入触发继续加载，并捕获新的白名单 JSON 响应；此过程不查询页面元素。
-6. 没有待完成响应且达到短暂静默窗口后结束捕获并解析结果。
-7. 无论成功或失败都关闭 `Network` 域并分离调试通道。
+5. 作品管理响应通过 `page` 游标与 `tags[].notes_count` 判断目标范围是否完整；显示仍有下一页时，发送有上限的 `PageDown` 输入触发继续加载，并捕获新的白名单 JSON 响应，此过程不查询页面元素。
+6. 详情响应中的作品 ID 必须与当前请求作品一致；同一页面产生的其他详情响应不会进入该作品摘要。
+7. 没有待完成响应且达到短暂静默窗口后结束捕获并解析结果。
+8. 无论成功或失败都关闭 `Network` 域并分离调试通道。
 
 适配器不生成或破解接口签名，也不读取完整 Cookie 列表。平台页面 DOM、HTML 和可见文本不参与采集。
 
@@ -87,31 +89,37 @@
 
 ## 5. 作品合并与完整性
 
-同步作品时依次读取作品管理和作品分析响应：
+同步作品时依次读取作品管理和作品分析响应，再按需补齐摘要：
 
 ```text
 作品管理列表 ──┐
                ├─ 按作品 ID 合并 ─→ 标准化内容与指标快照
 作品分析列表 ──┘
+                         │
+                         └─ 摘要为空 ─→ 打开创作中心编辑路由并串行捕获详情 JSON
 ```
 
 - 作品管理接口接受 `data.notes` 与 `data.data.notes`，并兼容已确认的 `note_list`、`items` 或 `list` 包装字段。
 - 远端 ID 兼容 `note_id`、`noteId`、`id`、`item_id` 和 `display_id` 等已确认字段。
 - 标题、发布时间和类型只从 JSON 字段读取。
+- 摘要只取 JSON 的 `desc`；清除控制字符、合并多余空白，并按 Unicode 字符截断到 500 字。
+- 详情 JSON 的 `data.id` 必须与当前作品 ID 完全一致；公开原帖链接及其签名参数不参与摘要请求。
+- 已保存的非空摘要不重复请求详情；单次同步最多补取 10 条，相邻详情请求至少间隔 2 秒，剩余项目由后续同步继续。
 - 分析接口指标优先用于同 ID 作品；没有分析记录的作品保留基础信息和可用指标。
-- 返回的 `total` 或 `has_more` 表示仍有未捕获内容且未达到请求范围时，拒绝返回不完整列表。
+- 返回的 `total`、`has_more`、`page` 或 `tags[].notes_count` 表示仍有未捕获内容且未达到请求范围时，拒绝返回不完整列表。
 - 单次最多标准化 100 条作品；内容 ID 非法、分析页重复 ID 或超过上限时失败。
 
 ## 6. 数据校验与限制
 
 | 项目 | 限制 |
 |---|---|
-| JSON API 主机 | 仅 `https://creator.xiaohongshu.com` |
+| JSON API 主机 | 仅 `creator.xiaohongshu.com` 与 `edith.xiaohongshu.com` 的对应固定用途；`www.xiaohongshu.com` 仅用于保存并打开官方原帖链接 |
 | 头像来源 | 仅小红书 HTTPS 域名与 CDN，最多 512 KiB |
 | 固定接口正文 | 每个最多 256 KiB |
 | 捕获接口正文 | 每个最多 512 KiB |
 | 捕获总量 | 最多 2 MiB |
 | 作品数量 | 最多 100 条 |
+| 详情补全 | 每次最多 10 条，严格串行，相邻请求至少 2 秒 |
 | 身份确认令牌 | 5 分钟 |
 | 身份核验最小间隔 | 60 秒 |
 | 同步最小间隔 | 60 秒 |
@@ -131,7 +139,8 @@
 |---|---|
 | 401/403 或平台返回登录错误 | 标记需要登录，并将当前后台 workspace 提升为同一个可见账号浏览器窗口 |
 | 406 或接口要求未支持的签名 | 终止当前操作 |
-| 429 或频率限制 | 返回错误；后续版本将补充 `Retry-After` 冷却 |
+| 429/461/471、验证或风控响应 | 立即停止后续详情请求，任务失败并将账号置于冷却状态 |
+| 可选详情捕获超时或结构暂时变化 | 保留既有摘要，资料、列表和指标仍可提交；任务结果记录后续补齐提示 |
 | 非 JSON、超限或字段结构变化 | 拒绝响应，不写入部分数据 |
 | 作品列表不完整 | 返回 `INCOMPLETE_CAPTURE`，不提交本次作品数据 |
 | 身份不匹配 | 返回 `IDENTITY_MISMATCH`，整次同步回滚 |
@@ -146,13 +155,17 @@
 - 关注、粉丝及累计获赞与收藏写入 `account_snapshots`，保留时间变化；账号资料直接展示最新绑定值。
 - 7 日指标保留在适配器响应模型中；当前账号汇总快照使用 30 日指标。
 - 内容以 `(account_id, remote_id)` 去重。
+- 作品摘要写入 `contents.body_excerpt`，既有非空摘要在下次同步前合并回结果；详情补全失败不会用空字符串覆盖它。
 - 指标值允许为 `null`，表示平台接口没有提供，不能用零替代。
-- 同时间相同快照保持幂等，失败任务保留错误码和错误信息。
+- 同时间相同快照保持幂等，失败任务保留错误码和错误信息；成功任务同时保存摘要补齐 warning。
+
+2026-07-14 使用已登录本人测试账号完成在线验收：8 条作品全部同步，其中 6 条详情 JSON 返回并落库非空 `data.desc`；另 2 条官方详情的 `data.desc` 本身为空，界面会明确标记为平台未提供摘要，不会生成或猜测正文。
 
 ## 9. 参考来源
 
 - [jackwener/OpenCLI](https://github.com/jackwener/OpenCLI)：创作者接口、页面同源请求和网络响应采集方式参考。
-- [ReaJason/xhs](https://github.com/ReaJason/xhs)：作品管理接口路径和字段交叉验证。
+- [ReaJason/xhs](https://github.com/ReaJason/xhs)：作品管理与公开 `/feed` 方案的调研参考；公开详情方案不在归页运行时使用。
+- [jackwener/xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli)：公开作品详情方案的调研参考；其 POST 载荷和签名逻辑不在归页运行时使用。
 - [jzOcb/xhs-note-health-checker](https://github.com/jzOcb/xhs-note-health-checker)：v2 作品列表响应形状交叉验证。
 
-归页当前清单固定参考标识为 `opencli-b0f84c99`。这些项目仅作为调研与接口行为参考；运行时使用归页自己的白名单传输、解析、身份核验和数据库事务实现。
+归页当前清单固定参考标识为 `opencli-b0f84c99-creator-detail`。这些项目仅作为调研与接口行为参考；运行时使用归页自己的白名单传输、解析、身份核验和数据库事务实现。

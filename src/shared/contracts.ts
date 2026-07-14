@@ -172,6 +172,7 @@ export interface SocialVaultApi {
     onState(callback: (state: BrowserState) => void): () => void
   }
   content: {
+    onChanged(callback: () => void): () => void
     list(query?: import('./content-contracts').ContentQuery): Promise<import('./content-contracts').ContentSummary[]>
     detail(id: string): Promise<import('./content-contracts').ContentDetail>
     openOriginal(id: string): Promise<BrowserState>

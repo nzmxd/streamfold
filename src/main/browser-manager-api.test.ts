@@ -71,13 +71,22 @@ function emitJsonCapture(
   contentType = 'application/json',
   requestId = 'request-1',
   json: unknown = { code: 0, data: { total: 0, note_infos: [] } },
-  finish = true
+  finish = true,
+  requestMethod = 'GET',
+  resourceType: 'Fetch' | 'XHR' = 'Fetch'
 ): void {
   const body = JSON.stringify(json)
   debuggerApi.bodies.set(requestId, { body, base64Encoded: false })
+  debuggerApi.emit('message', {}, 'Network.requestWillBeSent', {
+    requestId,
+    request: {
+      url,
+      method: requestMethod
+    }
+  })
   debuggerApi.emit('message', {}, 'Network.responseReceived', {
     requestId,
-    type: 'Fetch',
+    type: resourceType,
     response: {
       url,
       status: 200,
@@ -160,6 +169,28 @@ describe('BrowserManager Xiaohongshu API transport', () => {
     })
 
     expect(loadOfficial).not.toHaveBeenCalled()
+  })
+
+  it('restores the creator home before direct APIs when the workspace is on a note update route', async () => {
+    let currentUrl = `${origin}/publish/update?id=64a1234567890abcdef12345&noteType=normal`
+    const contents = {
+      getURL: () => currentUrl,
+      isLoading: () => false,
+      isDestroyed: () => false
+    }
+    const loadOfficial = vi.fn(async (url: string) => {
+      currentUrl = url
+    })
+
+    await __xiaohongshuApiTransportTest.prepareApiPage(contents, loadOfficial, {
+      quietMs: 1,
+      pollMs: 1,
+      timeoutMs: 100
+    })
+
+    expect(loadOfficial).toHaveBeenCalledOnce()
+    expect(loadOfficial).toHaveBeenCalledWith(XIAOHONGSHU_API_ROUTES.home)
+    expect(currentUrl).toBe(XIAOHONGSHU_API_ROUTES.home)
   })
 
   it('uses a fixed page-origin JSON request without page element access', async () => {
@@ -481,6 +512,120 @@ describe('BrowserManager Xiaohongshu API transport', () => {
     expect(debuggerApi.attached).toBe(false)
   })
 
+  it('captures only the exact GET note-detail API from an official creator update route', async () => {
+    const noteId = '64a1234567890abcdef12345'
+    const updateRoute = `${origin}/publish/update?id=${noteId}&noteType=normal`
+    const detailQuery = `note_id=${noteId}&edit_mode=edit&source=note_manage`
+    const detailUrl = `https://edith.xiaohongshu.com${XIAOHONGSHU_API_ENDPOINTS.noteDetail}?${detailQuery}`
+    const detailJson = {
+      code: 0,
+      success: true,
+      data: { id: noteId, desc: '作品摘要' }
+    }
+    const { contents, debuggerApi, loadURL } = fakeContents((current) => {
+      emitJsonCapture(current, detailUrl, 'application/json', 'detail-post', detailJson, true, 'POST')
+      emitJsonCapture(
+        current,
+        `https://evil.example${XIAOHONGSHU_API_ENDPOINTS.noteDetail}?${detailQuery}`,
+        'application/json',
+        'detail-wrong-host',
+        detailJson,
+        true,
+        'GET'
+      )
+      emitJsonCapture(
+        current,
+        `https://edith.xiaohongshu.com${XIAOHONGSHU_API_ENDPOINTS.noteDetail}/extra?${detailQuery}`,
+        'application/json',
+        'detail-wrong-path',
+        detailJson
+      )
+      emitJsonCapture(
+        current,
+        `${detailUrl}&unexpected=1`,
+        'application/json',
+        'detail-wrong-query',
+        detailJson
+      )
+      emitJsonCapture(
+        current,
+        `https://edith.xiaohongshu.com${XIAOHONGSHU_API_ENDPOINTS.noteDetail}?note_id=${noteId}&edit_mode=edit`,
+        'application/json',
+        'detail-missing-query',
+        detailJson
+      )
+      emitJsonCapture(current, detailUrl, 'application/json', 'detail-get', detailJson, true, 'GET', 'XHR')
+    })
+
+    const result = await __xiaohongshuApiTransportTest.captureSignedJson(
+      contents,
+      updateRoute,
+      'note_detail',
+      1,
+      200,
+      5
+    )
+
+    expect(result).toEqual([{ status: 200, url: detailUrl, json: detailJson }])
+    expect(loadURL).toHaveBeenCalledWith(updateRoute)
+    expect(debuggerApi.commands.filter((item) => item.method === 'Network.getResponseBody'))
+      .toEqual([{ method: 'Network.getResponseBody', params: { requestId: 'detail-get' } }])
+    expect(debuggerApi.attached).toBe(false)
+  })
+
+  it('rejects public explore and malformed creator routes for note-detail capture', async () => {
+    const noteId = '64a1234567890abcdef12345'
+    const wrongRoutes = [
+      `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=signed-token_123&xsec_source=pc_creatormng`,
+      `${origin}/new/note-manager`,
+      `${origin}/publish/update?id=${noteId}`,
+      `${origin}/publish/update?id=${noteId}&noteType=post`,
+      `${origin}/publish/update?id=${noteId}&noteType=normal&unexpected=1`,
+      `https://evil.example/publish/update?id=${noteId}&noteType=normal`
+    ]
+    const { contents, debuggerApi, loadURL } = fakeContents(() => undefined)
+
+    for (const route of wrongRoutes) {
+      await expect(__xiaohongshuApiTransportTest.captureSignedJson(
+        contents,
+        route,
+        'note_detail',
+        1,
+        20,
+        5
+      )).rejects.toThrow('拒绝非固定')
+    }
+
+    expect(loadURL).not.toHaveBeenCalled()
+    expect(debuggerApi.attached).toBe(false)
+  })
+
+  it('does not expose creator update query values when note-detail navigation fails', async () => {
+    const noteId = 'private-note-id_123'
+    const noteType = 'video'
+    const updateRoute = `${origin}/publish/update?id=${noteId}&noteType=${noteType}`
+    const { contents, debuggerApi, loadURL } = fakeContents(() => undefined)
+    loadURL.mockRejectedValueOnce(new Error(`failed to open ${updateRoute}`))
+
+    const error = await rejectionOf(() => __xiaohongshuApiTransportTest.captureSignedJson(
+      contents,
+      updateRoute,
+      'note_detail',
+      1,
+      200,
+      5
+    ))
+
+    expect(error.message).toBe('打开小红书官方数据页面失败')
+    expect(error.message).not.toContain(noteId)
+    expect(error.message).not.toContain(noteType)
+    expect(error.message).not.toContain(updateRoute)
+    expect(loadURL).toHaveBeenCalledWith(updateRoute)
+    expect(debuggerApi.attached).toBe(false)
+    expect(debuggerApi.listenerCount('message')).toBe(0)
+    expect(debuggerApi.listenerCount('detach')).toBe(0)
+  })
+
   it('keeps a slow second response pending beyond the first quiet window', async () => {
     const firstUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?page_num=1`
     const secondUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?page_num=2`
@@ -518,6 +663,56 @@ describe('BrowserManager Xiaohongshu API transport', () => {
       code: 0,
       success: true,
       data: { total: 2, has_more: false, notes: [{ note_id: 'bbbbbbbbbbbbbbbbbbbbbbbb' }] }
+    }
+    const { contents, sendInputEvent } = fakeContents((current) => {
+      emitJsonCapture(current, firstUrl, 'application/json', 'request-1', firstJson)
+    })
+    let emittedSecondPage = false
+    sendInputEvent.mockImplementation((event: Electron.InputEvent) => {
+      if (event.type !== 'keyUp' || emittedSecondPage) return
+      emittedSecondPage = true
+      queueMicrotask(() => emitJsonCapture(
+        (contents.debugger as unknown) as FakeDebugger,
+        secondUrl,
+        'application/json',
+        'request-2',
+        secondJson
+      ))
+    })
+
+    const result = await __xiaohongshuApiTransportTest.captureSignedJson(
+      contents,
+      XIAOHONGSHU_API_ROUTES.noteManager,
+      'posted_notes',
+      2,
+      200,
+      5
+    )
+
+    expect(result.map((item) => item.url)).toEqual([firstUrl, secondUrl])
+    expect(sendInputEvent).toHaveBeenCalledWith({ type: 'keyDown', keyCode: 'PageDown' })
+  })
+
+  it('drives pagination from the current posted-note cursor and tab total fields', async () => {
+    const firstUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.postedNotes}?tab=0&page=0`
+    const secondUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.postedNotes}?tab=0&page=1`
+    const firstJson = {
+      code: 0,
+      success: true,
+      data: {
+        page: 1,
+        tags: [{ notes_count: 2 }],
+        notes: [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaa' }]
+      }
+    }
+    const secondJson = {
+      code: 0,
+      success: true,
+      data: {
+        page: -1,
+        tags: [{ notes_count: 2 }],
+        notes: [{ id: 'bbbbbbbbbbbbbbbbbbbbbbbb' }]
+      }
     }
     const { contents, sendInputEvent } = fakeContents((current) => {
       emitJsonCapture(current, firstUrl, 'application/json', 'request-1', firstJson)

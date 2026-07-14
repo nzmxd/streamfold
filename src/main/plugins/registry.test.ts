@@ -12,7 +12,7 @@ describe('PluginRegistry', () => {
       availability: 'available',
       defaultEnabled: false,
       manifest: {
-        version: '0.1.0',
+        version: '0.2.0',
         mode: 'session_api',
         riskLevel: 'high',
         capabilities: [
@@ -22,7 +22,7 @@ describe('PluginRegistry', () => {
           'content.list',
           'content.metrics'
         ],
-        allowedHosts: ['creator.xiaohongshu.com']
+        allowedHosts: ['creator.xiaohongshu.com', 'www.xiaohongshu.com', 'edith.xiaohongshu.com']
       }
     })
     expect(xiaohongshu?.manifest.commitHash).toContain('opencli-b0f84c99')

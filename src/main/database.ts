@@ -867,7 +867,7 @@ export class SocialDatabase {
       )
       this.insertAccountSnapshot(account.id, profile, payload.capturedAt)
       const stats = this.writeNormalizedContents(account.id, payload.contents, payload.capturedAt, now)
-      const resultJson = JSON.stringify(stats)
+      const resultJson = JSON.stringify({ ...stats, warnings: payload.warnings })
       const jobUpdate = this.db.prepare(`
         UPDATE jobs SET status = 'succeeded', progress = 100, stage = '只读同步完成',
           result_json = ?, error_code = '', error_message = '', finished_at = ?

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type {
   Account,
   ContentDetail,
@@ -40,6 +40,7 @@ const edit = reactive({ note: '', tags: '' })
 let loadSequence = 0
 let detailSequence = 0
 let saveSequence = 0
+let removeContentListener: (() => void) | null = null
 
 const metricFields: Array<{ key: MetricKey; label: string }> = [
   { key: 'views', label: '浏览' },
@@ -163,13 +164,24 @@ function snapshotSecondaryLabel(snapshot: ContentSnapshot, primary: ContentMetri
 watch(selectedId, (id) => void loadDetail(id))
 watch([accountId, platformId, type, from, to], () => void loadItems())
 
+async function refreshContent(): Promise<void> {
+  await loadItems()
+  await loadDetail(selectedId.value)
+}
+
 onMounted(async () => {
+  removeContentListener = window.socialVault.content.onChanged(() => void refreshContent())
   try {
     accounts.value = await window.socialVault.accounts.list()
   } catch (cause) {
     error.value = messageOf(cause)
   }
   await loadItems()
+})
+
+onBeforeUnmount(() => {
+  removeContentListener?.()
+  removeContentListener = null
 })
 </script>
 

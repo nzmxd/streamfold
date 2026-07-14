@@ -211,8 +211,11 @@ describe('XiaohongshuApiService', () => {
       stats: { newContentCount: 2, snapshotCount: 2 },
       job: { status: 'succeeded', progress: 100 }
     })
+    expect(result.message).toBe('已同步账号资料和 2 条作品。其中 2 条包含正文摘要。')
     expect(database.listContents({ accountId: account.id }).map((item) => item.remoteId).sort())
       .toEqual(['aaaaaaaaaaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbbbbbbbbbb'])
+    expect(database.listContents({ accountId: account.id }).map((item) => item.bodyExcerpt).sort())
+      .toEqual(['正文：第一篇', '正文：第二篇'])
     expect(database.getStorageCounts()).toMatchObject({
       accountSnapshotCount: 1,
       contentCount: 2,
@@ -223,6 +226,76 @@ describe('XiaohongshuApiService', () => {
     expect(database.listJobs()[0]).toMatchObject({ status: 'succeeded', kind: 'managed_sync' })
     expect(plugins.list().find((item) => item.manifest.id === XIAOHONGSHU_API_PLUGIN_ID))
       .toMatchObject({ successCount: 1, failureCount: 0 })
+  })
+
+  it('does not request an existing excerpt again and preserves it on later syncs', async () => {
+    enablePlugin()
+    const account = createSyncableAccount('recent_20')
+    const transport = createTransport({ notes: [note()] })
+    const service = createService(() => transport)
+
+    await service.sync(account.id)
+    const firstDetailCalls = transport.captureSignedJson.mock.calls.filter((call) => call[1] === 'note_detail')
+    expect(firstDetailCalls).toHaveLength(1)
+    expect(database.listContents({ accountId: account.id })[0]?.bodyExcerpt).toBe('正文：API 返回的测试笔记')
+
+    nowMs += 61_000
+    await service.sync(account.id)
+    const allDetailCalls = transport.captureSignedJson.mock.calls.filter((call) => call[1] === 'note_detail')
+    expect(allDetailCalls).toHaveLength(1)
+    expect(database.listContents({ accountId: account.id })[0]?.bodyExcerpt).toBe('正文：API 返回的测试笔记')
+  })
+
+  it('commits core data with a warning when optional detail enrichment fails', async () => {
+    enablePlugin()
+    const account = createSyncableAccount('recent_20')
+    const transport = createTransport({ detailFailure: new Error('temporary detail failure') })
+
+    const result = await createService(() => transport).sync(account.id)
+
+    expect(result).toMatchObject({ contentCount: 1, job: { status: 'succeeded' } })
+    expect(result.message).toContain('后续同步')
+    expect(result.message).toContain('1 条摘要')
+    expect(result.job.result?.warnings).toEqual(['部分作品摘要暂未补齐，将在后续同步中继续处理。'])
+    expect(database.listContents({ accountId: account.id })[0]?.bodyExcerpt).toBe('')
+  })
+
+  it('reports official empty descriptions accurately instead of calling them deferred', async () => {
+    enablePlugin()
+    const account = createSyncableAccount('recent_20')
+    const firstId = 'aaaaaaaaaaaaaaaaaaaaaaaa'
+    const secondId = 'bbbbbbbbbbbbbbbbbbbbbbbb'
+    const transport = createTransport({
+      notes: [note(firstId, '第一篇'), note(secondId, '第二篇')],
+      descriptions: { [firstId]: '', [secondId]: '第二篇正文' }
+    })
+
+    const result = await createService(() => transport).sync(account.id)
+
+    expect(result.message).toBe(
+      '已同步账号资料和 2 条作品。其中 1 条包含正文摘要。1 条作品的平台详情未提供摘要。'
+    )
+    expect(result.message).not.toContain('后续同步')
+    expect(result.job.result?.warnings).toEqual([])
+    expect(database.listContents({ accountId: account.id }).map((item) => item.bodyExcerpt).sort())
+      .toEqual(['', '第二篇正文'])
+  })
+
+  it('stops immediately and places the account in cooldown on detail risk control', async () => {
+    enablePlugin()
+    const account = createSyncableAccount('recent_20')
+    const transport = createTransport({
+      notes: [note(), note('bbbbbbbbbbbbbbbbbbbbbbbb', '第二篇')],
+      detailStatus: 429
+    })
+
+    await expect(createService(() => transport).sync(account.id)).rejects.toMatchObject({
+      code: 'RISK_CONTROL'
+    })
+
+    expect(transport.captureSignedJson.mock.calls.filter((call) => call[1] === 'note_detail')).toHaveLength(1)
+    expect(database.listContents({ accountId: account.id })).toEqual([])
+    expect(database.getAccount(account.id)).toMatchObject({ syncStatus: 'cooldown' })
   })
 
   it('does not persist partial recent_20 data when identity changes during collection', async () => {
@@ -404,7 +477,8 @@ describe('XiaohongshuApiService', () => {
       plugins,
       jobs,
       clock: () => new Date(nowMs),
-      createToken
+      createToken,
+      detailWait: async () => undefined
     })
   }
 
@@ -417,6 +491,9 @@ function createTransport(options: {
   profiles?: Array<[string, string]>
   profileStatus?: number
   notes?: Array<Record<string, unknown>>
+  descriptions?: Record<string, string>
+  detailFailure?: Error
+  detailStatus?: number
 } = {}) {
   const profiles = [...(options.profiles ?? [[ownerId, ownerName] as [string, string]])]
   let currentIdentity = profiles[0]!
@@ -432,8 +509,11 @@ function createTransport(options: {
     if (endpoint === XIAOHONGSHU_API_ENDPOINTS.accountStats) return metricsResponse()
     throw new Error(`unexpected endpoint: ${endpoint}`)
   })
-  const captureSignedJson = vi.fn(async (route: string): Promise<readonly XiaohongshuJsonResponse[]> => {
-    if (route === XIAOHONGSHU_API_ROUTES.noteManager) {
+  const captureSignedJson = vi.fn(async (
+    route: string,
+    kind: string
+  ): Promise<readonly XiaohongshuJsonResponse[]> => {
+    if (kind === 'posted_notes') {
       return [response(
         `${XIAOHONGSHU_API_ENDPOINTS.postedNotes}?tab=0&page=0`,
         {
@@ -446,16 +526,37 @@ function createTransport(options: {
               note_id: item.id,
               display_title: item.title,
               publish_time: item.post_time,
-              type: item.type
+              type: item.type,
+              xsec_token: `signed_${String(item.id)}`,
+              xsec_source: 'pc_creatormng'
             }))
           }
         }
       )]
     }
-    return [response(
+    if (kind === 'note_analyze_list') return [response(
       `${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?type=0&page_size=20&page_num=1`,
       { code: 0, data: { total: notes.length, note_infos: notes } }
     )]
+    if (options.detailFailure) throw options.detailFailure
+    const id = new URL(route).searchParams.get('id')!
+    const source = notes.find((item) => item.id === id)
+    const detailUrl = new URL(XIAOHONGSHU_API_ENDPOINTS.noteDetail, 'https://edith.xiaohongshu.com')
+    detailUrl.searchParams.set('edit_mode', '1')
+    detailUrl.searchParams.set('note_id', id)
+    detailUrl.searchParams.set('source', 'pc_creatormng')
+    return [{
+      status: options.detailStatus ?? 200,
+      url: detailUrl.toString(),
+      json: {
+        code: 0,
+        success: true,
+        data: {
+          id,
+          desc: options.descriptions?.[id] ?? `正文：${String(source?.title ?? '')}`
+        }
+      }
+    }]
   })
   return { directJson, captureSignedJson }
 }

@@ -1,5 +1,6 @@
 const CREATOR_ORIGIN = 'https://creator.xiaohongshu.com'
 const PUBLIC_NOTE_ORIGIN = 'https://www.xiaohongshu.com'
+const NOTE_DETAIL_ORIGIN = 'https://edith.xiaohongshu.com'
 
 export const XIAOHONGSHU_API_ENDPOINTS = Object.freeze({
   personalInfo: '/api/galaxy/creator/home/personal_info',
@@ -7,7 +8,8 @@ export const XIAOHONGSHU_API_ENDPOINTS = Object.freeze({
   accountStats: '/api/galaxy/creator/data/note_detail_new',
   noteAnalyzeList: '/api/galaxy/creator/datacenter/note/analyze/list',
   postedNotes: '/api/galaxy/v2/creator/note/user/posted',
-  postedNotesLegacy: '/api/galaxy/creator/note/user/posted'
+  postedNotesLegacy: '/api/galaxy/creator/note/user/posted',
+  noteDetail: '/web_api/sns/capa/postgw/note/detail'
 })
 
 export const XIAOHONGSHU_API_ROUTES = Object.freeze({
@@ -20,10 +22,13 @@ const MAX_DIRECT_RESPONSE_BYTES = 256 * 1024
 const MAX_CAPTURE_RESPONSE_BYTES = 512 * 1024
 const MAX_CAPTURE_TOTAL_BYTES = 2 * 1024 * 1024
 const MAX_CONTENTS = 100
+const MAX_DETAIL_REQUESTS_PER_SYNC = 10
+const DETAIL_REQUEST_INTERVAL_MS = 2_000
+const MAX_EXCERPT_CHARACTERS = 500
 const MAX_COUNT = 1_000_000_000_000
 const ID_RE = /^[a-zA-Z0-9_-]{3,128}$/
 
-export type XiaohongshuCaptureKind = 'posted_notes' | 'note_analyze_list'
+export type XiaohongshuCaptureKind = 'posted_notes' | 'note_analyze_list' | 'note_detail'
 
 /**
  * A transport response is deliberately JSON-only. The browser implementation
@@ -53,8 +58,10 @@ export type XiaohongshuApiErrorCode =
   | 'MALFORMED_RESPONSE'
   | 'RESPONSE_TOO_LARGE'
   | 'IDENTITY_MISMATCH'
+  | 'CONTENT_MISMATCH'
   | 'DUPLICATE_CONTENT'
   | 'INCOMPLETE_CAPTURE'
+  | 'RISK_CONTROL'
 
 export class XiaohongshuApiError extends Error {
   constructor(
@@ -107,6 +114,7 @@ export type XiaohongshuContentType = 'post' | 'image' | 'video'
 export interface XiaohongshuContent {
   id: string
   title: string
+  bodyExcerpt: string
   postTime: string | null
   readCount: number | null
   likeCount: number | null
@@ -122,10 +130,27 @@ export interface XiaohongshuApiSnapshot {
   profile: XiaohongshuProfile
   accountMetrics: XiaohongshuAccountMetrics
   contents: XiaohongshuContent[]
+  warnings: string[]
+}
+
+export interface XiaohongshuContentOptions {
+  enrichExcerpts?: boolean
+  existingExcerpts?: ReadonlyMap<string, string>
+}
+
+export interface XiaohongshuApiOptions {
+  wait?: (milliseconds: number) => Promise<void>
 }
 
 export class XiaohongshuApi {
-  constructor(private readonly transport: XiaohongshuApiTransport) {}
+  private readonly wait: (milliseconds: number) => Promise<void>
+
+  constructor(
+    private readonly transport: XiaohongshuApiTransport,
+    options: XiaohongshuApiOptions = {}
+  ) {
+    this.wait = options.wait ?? waitFor
+  }
 
   async getProfile(): Promise<XiaohongshuProfile> {
     const personal = parsePersonalInfo(
@@ -152,7 +177,10 @@ export class XiaohongshuApi {
     return parseAccountMetrics(response)
   }
 
-  async getContents(limit = 20): Promise<XiaohongshuContent[]> {
+  async getContents(
+    limit = 20,
+    options: XiaohongshuContentOptions = {}
+  ): Promise<{ contents: XiaohongshuContent[], warnings: string[] }> {
     assertLimit(limit)
     const postedResponses = await this.transport.captureSignedJson(
       XIAOHONGSHU_API_ROUTES.noteManager,
@@ -166,7 +194,14 @@ export class XiaohongshuApi {
       limit
     )
     const analyzed = parseAnalyzeCaptures(analyzeResponses, limit, false)
-    return mergeContents(posted, analyzed, limit)
+    const contents = mergeContents(posted, analyzed, limit).map((content) => {
+      const existing = options.existingExcerpts?.get(content.id)
+      return !content.bodyExcerpt && existing
+        ? { ...content, bodyExcerpt: existing }
+        : content
+    })
+    if (!options.enrichExcerpts) return { contents, warnings: [] }
+    return this.enrichExcerpts(contents)
   }
 
   /**
@@ -174,13 +209,17 @@ export class XiaohongshuApi {
    * switch aborts the whole result; callers must only persist a returned
    * snapshot atomically.
    */
-  async collect(expectedRemoteId: string, limit = 20): Promise<XiaohongshuApiSnapshot> {
+  async collect(
+    expectedRemoteId: string,
+    limit = 20,
+    contentOptions: XiaohongshuContentOptions = {}
+  ): Promise<XiaohongshuApiSnapshot> {
     const expected = cleanId(expectedRemoteId, 'expectedRemoteId')
     assertLimit(limit)
     const before = await this.getProfile()
     assertExpectedIdentity(expected, before.remoteId)
     const accountMetrics = await this.getAccountMetrics()
-    const contents = await this.getContents(limit)
+    const contentResult = await this.getContents(limit, contentOptions)
     const after = await this.getProfile()
     assertExpectedIdentity(expected, after.remoteId)
     if (before.remoteId !== after.remoteId || before.remoteName !== after.remoteName) {
@@ -193,8 +232,43 @@ export class XiaohongshuApi {
       identity: { remoteId: after.remoteId, remoteName: after.remoteName },
       profile: after,
       accountMetrics,
-      contents
+      contents: contentResult.contents,
+      warnings: contentResult.warnings
     }
+  }
+
+  private async enrichExcerpts(
+    source: readonly XiaohongshuContent[]
+  ): Promise<{ contents: XiaohongshuContent[], warnings: string[] }> {
+    const contents = source.map((content) => ({ ...content }))
+    const missing = contents.filter((content) => !content.bodyExcerpt)
+    // Creator detail routes are built only from the validated work ID and type.
+    // Public xsec query values are useful for opening the original post, but are
+    // neither required nor read for excerpt enrichment.
+    const candidates = missing.slice(0, MAX_DETAIL_REQUESTS_PER_SYNC)
+    let failed = false
+
+    for (let index = 0; index < candidates.length; index += 1) {
+      if (index > 0) await this.wait(DETAIL_REQUEST_INTERVAL_MS)
+      const content = candidates[index]!
+      try {
+        const responses = await this.transport.captureSignedJson(creatorNoteUpdateUrl(content), 'note_detail', 1)
+        content.bodyExcerpt = parseNoteDetailCaptures(responses, content.id)
+      } catch (error) {
+        if (error instanceof XiaohongshuApiError &&
+          (error.code === 'AUTH_REQUIRED' || error.code === 'RISK_CONTROL')) {
+          throw error
+        }
+        failed = true
+        break
+      }
+    }
+
+    const warnings: string[] = []
+    if (failed || missing.length > candidates.length) {
+      warnings.push('部分作品摘要暂未补齐，将在后续同步中继续处理。')
+    }
+    return { contents, warnings }
   }
 }
 
@@ -322,10 +396,16 @@ export function parsePostedCaptures(
     const source = firstArraySource([data, nested], ['notes', 'note_list', 'items', 'list'])
     const notes = firstArray(source, ['notes', 'note_list', 'items', 'list'])
     const totalValue = firstDefined(data, ['total', 'note_count', 'count']) ??
-      (nested ? firstDefined(nested, ['total', 'note_count', 'count']) : undefined)
+      postedTagsTotal(data, 'posted_notes.data.tags') ??
+      (nested
+        ? firstDefined(nested, ['total', 'note_count', 'count']) ??
+          postedTagsTotal(nested, 'posted_notes.data.data.tags')
+        : undefined)
     if (totalValue !== undefined) maximumTotal = Math.max(maximumTotal, countValue(totalValue, 'posted_notes.data.total'))
     lastHasMore = data.has_more === true || data.hasMore === true ||
-      nested?.has_more === true || nested?.hasMore === true
+      nested?.has_more === true || nested?.hasMore === true ||
+      postedPageHasMore(data, 'posted_notes.data.page') ||
+      (nested ? postedPageHasMore(nested, 'posted_notes.data.data.page') : false)
     for (const raw of notes) {
       const content = parsePostedContent(raw)
       if (ids.has(content.id)) continue
@@ -342,6 +422,75 @@ export function parsePostedCaptures(
     )
   }
   return rows.slice(0, limit)
+}
+
+export function parseNoteDetailCapture(
+  response: XiaohongshuJsonResponse,
+  expectedNoteId: string
+): string {
+  const expected = cleanId(expectedNoteId, 'expectedNoteId')
+  const record = objectValue(response, 'transport.response')
+  if (!Number.isInteger(record.status) || (record.status as number) < 100 || (record.status as number) > 599) {
+    malformed('transport.response.status 非法')
+  }
+  if (!isNoteDetailApiUrl(record.url)) malformed('作品详情响应来源不在白名单')
+  const status = record.status as number
+  if (status === 401 || status === 403) {
+    throw new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录已失效，请在官方页面重新登录')
+  }
+  if (isRiskControlCode(status)) {
+    throw new XiaohongshuApiError('RISK_CONTROL', '小红书暂时限制了作品详情请求')
+  }
+  if (status < 200 || status >= 300) {
+    throw new XiaohongshuApiError('HTTP_STATUS', `小红书作品详情接口返回 HTTP ${status}`)
+  }
+  if (jsonBytes(record.json) > MAX_CAPTURE_RESPONSE_BYTES) tooLarge('作品详情响应超过 512 KiB')
+
+  const envelope = objectValue(record.json, 'note_detail.response')
+  const code = envelope.code
+  const message = typeof envelope.msg === 'string' ? envelope.msg.slice(0, 200) : ''
+  if (isRiskControlCode(code) || /(?:验证|风控|频繁|risk|captcha)/i.test(message)) {
+    throw new XiaohongshuApiError('RISK_CONTROL', '小红书暂时限制了作品详情请求')
+  }
+  if ((code !== undefined && code !== 0 && code !== '0') || envelope.success === false) {
+    if (/(?:登录|login|auth|session)/i.test(message) || code === 401 || code === -100) {
+      throw new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录已失效，请在官方页面重新登录')
+    }
+    throw new XiaohongshuApiError('API_REJECTED', '小红书作品详情接口拒绝了请求')
+  }
+  const data = objectValue(envelope.data, 'note_detail.data')
+  const actual = cleanId(data.id, 'note_detail.data.id')
+  if (actual !== expected) {
+    throw new XiaohongshuApiError('CONTENT_MISMATCH', '作品详情响应与请求的作品不一致')
+  }
+  if (data.desc === undefined || data.desc === null) return ''
+  if (typeof data.desc !== 'string') malformed('note_detail.data.desc 必须是字符串')
+  return normalizeXiaohongshuExcerpt(data.desc)
+}
+
+export function parseNoteDetailCaptures(
+  responses: readonly XiaohongshuJsonResponse[],
+  expectedNoteId: string
+): string {
+  if (!Array.isArray(responses) || responses.length === 0 || responses.length > 10) {
+    throw new XiaohongshuApiError('INCOMPLETE_CAPTURE', '作品详情接口未返回可验证的 JSON 响应')
+  }
+  const matches: string[] = []
+  let aggregateBytes = 0
+  for (const response of responses) {
+    aggregateBytes += jsonBytes(response.json)
+    if (aggregateBytes > MAX_CAPTURE_TOTAL_BYTES) tooLarge('作品详情捕获结果总量超过 2 MiB')
+    try {
+      matches.push(parseNoteDetailCapture(response, expectedNoteId))
+    } catch (error) {
+      if (error instanceof XiaohongshuApiError && error.code === 'CONTENT_MISMATCH') continue
+      throw error
+    }
+  }
+  if (matches.length !== 1) {
+    throw new XiaohongshuApiError('INCOMPLETE_CAPTURE', '作品详情接口未返回唯一匹配的作品')
+  }
+  return matches[0]!
 }
 
 export function isPostedNotesUrl(value: string): boolean {
@@ -363,6 +512,46 @@ export function isPostedNotesUrl(value: string): boolean {
   }
 }
 
+export function isNoteDetailApiUrl(value: unknown): boolean {
+  try {
+    if (typeof value !== 'string' || value.length > 2_048) return false
+    const url = new URL(value)
+    if (url.origin !== NOTE_DETAIL_ORIGIN || url.username || url.password || url.port || url.hash ||
+      url.pathname !== XIAOHONGSHU_API_ENDPOINTS.noteDetail) return false
+    for (const key of url.searchParams.keys()) {
+      if (key !== 'note_id' && key !== 'edit_mode' && key !== 'source') return false
+    }
+    if (url.searchParams.getAll('note_id').length !== 1 ||
+      url.searchParams.getAll('edit_mode').length !== 1 ||
+      url.searchParams.getAll('source').length !== 1) return false
+    const noteId = url.searchParams.get('note_id') ?? ''
+    const editMode = url.searchParams.get('edit_mode') ?? ''
+    const source = url.searchParams.get('source') ?? ''
+    return ID_RE.test(noteId) && /^[A-Za-z0-9_-]{0,64}$/.test(editMode) &&
+      /^[A-Za-z0-9_-]{0,64}$/.test(source)
+  } catch {
+    return false
+  }
+}
+
+export function isCreatorNoteUpdateRoute(value: unknown): boolean {
+  try {
+    if (typeof value !== 'string' || value.length > 2_048) return false
+    const url = new URL(value)
+    if (url.origin !== CREATOR_ORIGIN || url.username || url.password || url.port || url.hash ||
+      url.pathname !== '/publish/update') return false
+    for (const key of url.searchParams.keys()) {
+      if (key !== 'id' && key !== 'noteType') return false
+    }
+    return url.searchParams.getAll('id').length === 1 &&
+      url.searchParams.getAll('noteType').length === 1 &&
+      ID_RE.test(url.searchParams.get('id') ?? '') &&
+      ['normal', 'video'].includes(url.searchParams.get('noteType') ?? '')
+  } catch {
+    return false
+  }
+}
+
 function mergeContents(
   posted: readonly XiaohongshuContent[],
   analyzed: readonly XiaohongshuContent[],
@@ -376,6 +565,7 @@ function mergeContents(
     return {
       ...content,
       title: content.title || metrics.title,
+      bodyExcerpt: content.bodyExcerpt || metrics.bodyExcerpt,
       postTime: content.postTime ?? metrics.postTime,
       type: content.type ?? metrics.type,
       readCount: metrics.readCount,
@@ -393,6 +583,7 @@ export function isNoteAnalyzeListUrl(value: string): boolean {
     if (typeof value !== 'string' || value.length > 2_048) return false
     const url = new URL(value, CREATOR_ORIGIN)
     return url.protocol === 'https:' && url.hostname === 'creator.xiaohongshu.com' &&
+      !url.username && !url.password && !url.port &&
       url.pathname === XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList
   } catch {
     return false
@@ -422,6 +613,7 @@ function parseContent(value: unknown): XiaohongshuContent {
     // The API can temporarily return an empty title for a newly published note.
     // Keep that API value instead of deriving text from the page.
     title: cleanString(item.title, 'note.title', 200, true),
+    bodyExcerpt: safeExcerpt(item.desc),
     postTime: timestampValue(item.post_time, 'note.post_time'),
     readCount: countValue(item.read_count, 'note.read_count'),
     likeCount: countValue(item.like_count, 'note.like_count'),
@@ -449,6 +641,7 @@ function parsePostedContent(value: unknown): XiaohongshuContent {
       200,
       true
     ),
+    bodyExcerpt: safeExcerpt(item.desc),
     postTime: optionalTimestamp(
       firstDefined(item, ['post_time', 'publish_time', 'published_at', 'create_time', 'createTime', 'time']),
       'posted_note.publish_time'
@@ -456,11 +649,17 @@ function parsePostedContent(value: unknown): XiaohongshuContent {
     readCount: optionalCount(firstDefined(item, ['read_count', 'view_count', 'views']), 'posted_note.read_count'),
     likeCount: optionalCount(firstDefined(item, ['like_count', 'likes']), 'posted_note.like_count'),
     favoriteCount: optionalCount(
-      firstDefined(item, ['fav_count', 'collect_count', 'favorite_count']),
+      firstDefined(item, ['fav_count', 'collect_count', 'collected_count', 'favorite_count']),
       'posted_note.favorite_count'
     ),
-    commentCount: optionalCount(firstDefined(item, ['comment_count', 'comments']), 'posted_note.comment_count'),
-    shareCount: optionalCount(firstDefined(item, ['share_count', 'shares']), 'posted_note.share_count'),
+    commentCount: optionalCount(
+      firstDefined(item, ['comment_count', 'comments_count', 'comments']),
+      'posted_note.comment_count'
+    ),
+    shareCount: optionalCount(
+      firstDefined(item, ['share_count', 'shared_count', 'shares']),
+      'posted_note.share_count'
+    ),
     type: contentType(firstDefined(item, ['type', 'note_type'])),
     url: publicNoteUrl(
       id,
@@ -474,8 +673,15 @@ function publicNoteUrl(id: string, token: string | null = null, source: string |
   const url = new URL(`/explore/${encodeURIComponent(id)}`, PUBLIC_NOTE_ORIGIN)
   if (token) {
     url.searchParams.set('xsec_token', token)
-    if (source) url.searchParams.set('xsec_source', source)
+    url.searchParams.set('xsec_source', source ?? 'pc_user')
   }
+  return url.toString()
+}
+
+function creatorNoteUpdateUrl(content: Pick<XiaohongshuContent, 'id' | 'type'>): string {
+  const url = new URL('/publish/update', CREATOR_ORIGIN)
+  url.searchParams.set('id', content.id)
+  url.searchParams.set('noteType', content.type === 'video' ? 'video' : 'normal')
   return url.toString()
 }
 
@@ -490,6 +696,27 @@ function safeXsecSource(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const source = value.trim()
   return /^[A-Za-z0-9_-]{1,64}$/.test(source) ? source : null
+}
+
+export function normalizeXiaohongshuExcerpt(value: string): string {
+  const normalized = value
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+  return Array.from(normalized).slice(0, MAX_EXCERPT_CHARACTERS).join('')
+}
+
+function safeExcerpt(value: unknown): string {
+  return typeof value === 'string' ? normalizeXiaohongshuExcerpt(value) : ''
+}
+
+function isRiskControlCode(value: unknown): boolean {
+  const code = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value
+  return code === 429 || code === 461 || code === 471
+}
+
+function waitFor(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
 function responseData(
@@ -509,6 +736,9 @@ function responseData(
   if (status === 406) {
     throw new XiaohongshuApiError('SIGNATURE_REQUIRED', '当前请求需要在账号浏览器中重新发起')
   }
+  if (isRiskControlCode(status)) {
+    throw new XiaohongshuApiError('RISK_CONTROL', '小红书暂时限制了数据请求')
+  }
   if (status < 200 || status >= 300) {
     throw new XiaohongshuApiError('HTTP_STATUS', `小红书只读接口返回 HTTP ${status}`)
   }
@@ -518,6 +748,9 @@ function responseData(
   const success = envelope.success
   if ((code !== undefined && code !== 0 && code !== '0') || success === false) {
     const message = typeof envelope.msg === 'string' ? envelope.msg.slice(0, 200) : '平台拒绝请求'
+    if (isRiskControlCode(code) || /(?:验证|风控|频繁|risk|captcha)/i.test(message)) {
+      throw new XiaohongshuApiError('RISK_CONTROL', '小红书暂时限制了数据请求')
+    }
     if (/(?:登录|login|auth|session)/i.test(message) || code === 401 || code === -100) {
       throw new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录已失效，请在官方页面重新登录')
     }
@@ -653,6 +886,25 @@ function firstDefined(record: Record<string, unknown>, names: readonly string[])
     if (record[name] !== undefined && record[name] !== null && record[name] !== '') return record[name]
   }
   return undefined
+}
+
+function postedTagsTotal(record: Record<string, unknown>, path: string): number | undefined {
+  if (record.tags === undefined || record.tags === null) return undefined
+  if (!Array.isArray(record.tags)) malformed(`${path} 必须是数组`)
+  let maximum: number | undefined
+  for (const [index, value] of record.tags.entries()) {
+    const tag = objectValue(value, `${path}[${index}]`)
+    if (tag.notes_count === undefined || tag.notes_count === null) continue
+    const count = countValue(tag.notes_count, `${path}[${index}].notes_count`)
+    maximum = maximum === undefined ? count : Math.max(maximum, count)
+  }
+  return maximum
+}
+
+function postedPageHasMore(record: Record<string, unknown>, path: string): boolean {
+  if (record.page === undefined || record.page === null) return false
+  if (!Number.isSafeInteger(record.page) || (record.page as number) < -1) malformed(`${path} 非法`)
+  return record.page !== -1
 }
 
 function assertExpectedIdentity(expected: string, actual: string): void {

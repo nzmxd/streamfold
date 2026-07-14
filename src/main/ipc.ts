@@ -51,6 +51,9 @@ export function registerIpc(
   const notifyAccountsChanged = (): void => {
     if (!window.isDestroyed()) window.webContents.send('accounts:changed')
   }
+  const notifyContentChanged = (): void => {
+    if (!window.isDestroyed()) window.webContents.send('content:changed')
+  }
   const runTracked = async <T>(handler: () => T | Promise<T>): Promise<T> => {
     if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
     activeOperations += 1
@@ -134,6 +137,7 @@ export function registerIpc(
       database.disconnectAccount(id)
       await browser.purgeAccountMedia(id)
       database.removeAccount(id)
+      notifyContentChanged()
     } finally {
       disconnectingAccounts.delete(id)
     }
@@ -160,7 +164,9 @@ export function registerIpc(
     const id = parseId(value)
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理，请稍候')
     try {
-      return await services.platformSync.sync(id)
+      const result = await services.platformSync.sync(id)
+      notifyContentChanged()
+      return result
     } finally {
       notifyAccountsChanged()
     }
@@ -187,8 +193,14 @@ export function registerIpc(
     }
     return browser.openAt(content.accountId, content.url)
   }))
-  ipcMain.handle('content:update', trusted((_event, value) => database.updateContent(parseUpdateContent(value))))
-  ipcMain.handle('content:clear-account', trusted((_event, value) => database.clearAccountData(parseId(value))))
+  ipcMain.handle('content:update', trusted((_event, value) => {
+    return database.updateContent(parseUpdateContent(value))
+  }))
+  ipcMain.handle('content:clear-account', trusted((_event, value) => {
+    const result = database.clearAccountData(parseId(value))
+    notifyContentChanged()
+    return result
+  }))
   ipcMain.handle('analytics:overview', trusted((_event, value) => database.getAnalytics(parseAnalyticsQuery(value))))
   ipcMain.handle('analytics:dashboard', trusted(() => database.getDashboard()))
   ipcMain.handle('plugins:list', trusted(() => services.plugins.list()))
@@ -211,7 +223,10 @@ export function registerIpc(
     const input = parseRestoreEncryptedBackup(value)
     await beginMaintenance()
     try {
-      return await services.backup.restore(input)
+      const result = await services.backup.restore(input)
+      notifyAccountsChanged()
+      notifyContentChanged()
+      return result
     } finally {
       maintenance = false
     }

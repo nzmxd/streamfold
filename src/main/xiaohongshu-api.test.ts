@@ -5,9 +5,13 @@ import {
   XIAOHONGSHU_API_ENDPOINTS,
   XIAOHONGSHU_API_ROUTES,
   isNoteAnalyzeListUrl,
+  isNoteDetailApiUrl,
   isPostedNotesUrl,
+  normalizeXiaohongshuExcerpt,
   parseAccountMetrics,
   parseAnalyzeCaptures,
+  parseNoteDetailCapture,
+  parseNoteDetailCaptures,
   parsePersonalInfo,
   parsePostedCaptures,
   parseUserInfo,
@@ -16,6 +20,7 @@ import {
 } from './xiaohongshu-api'
 
 const origin = 'https://creator.xiaohongshu.com'
+const detailOrigin = 'https://edith.xiaohongshu.com'
 
 function response(path: string, json: unknown, status = 200): XiaohongshuJsonResponse {
   return { status, url: `${origin}${path}`, json }
@@ -135,6 +140,30 @@ function postedNote(
   }
 }
 
+function detailCapture(
+  id = 'aaaaaaaaaaaaaaaaaaaaaaaa',
+  desc: unknown = 'API 返回的作品正文摘要',
+  status = 200
+): XiaohongshuJsonResponse {
+  return {
+    status,
+    url: detailApiUrl(id),
+    json: {
+      code: 0,
+      success: true,
+      data: { id, desc }
+    }
+  }
+}
+
+function detailApiUrl(id = 'aaaaaaaaaaaaaaaaaaaaaaaa'): string {
+  const url = new URL(XIAOHONGSHU_API_ENDPOINTS.noteDetail, detailOrigin)
+  url.searchParams.set('edit_mode', '1')
+  url.searchParams.set('note_id', id)
+  url.searchParams.set('source', 'pc_creatormng')
+  return url.toString()
+}
+
 function expectCode(action: () => unknown, code: string): void {
   try {
     action()
@@ -195,6 +224,7 @@ describe('XiaohongshuApi JSON-only adapter', () => {
       contents: [{
         id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
         title: 'API 返回的测试笔记',
+        bodyExcerpt: '',
         postTime: '2026-03-18T12:01:00.000Z',
         readCount: 521,
         likeCount: 18,
@@ -203,7 +233,8 @@ describe('XiaohongshuApi JSON-only adapter', () => {
         shareCount: 2,
         type: 'image',
         url: 'https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa'
-      }]
+      }],
+      warnings: []
     })
     expect(captureSignedJson).toHaveBeenNthCalledWith(
       1,
@@ -267,6 +298,118 @@ describe('XiaohongshuApi JSON-only adapter', () => {
       likeCount: null
     })
     expect(result.contents.some((item) => item.id === 'cccccccccccccccccccccccc')).toBe(false)
+  })
+
+  it('preserves an analyze excerpt when the posted-note record has no body text', async () => {
+    const id = 'aaaaaaaaaaaaaaaaaaaaaaaa'
+    const api = new XiaohongshuApi({
+      directJson: vi.fn(),
+      captureSignedJson: vi.fn(async (_route, kind) => kind === 'posted_notes'
+        ? [postedCapture([postedNote(id)])]
+        : [capture([note(id, { desc: '  分析接口\r\n返回的正文摘要  ' })])])
+    })
+
+    const result = await api.getContents(1)
+
+    expect(result.contents[0]?.bodyExcerpt).toBe('分析接口 返回的正文摘要')
+  })
+
+  it('fills missing excerpts from creator detail JSON without requiring a public signed link', async () => {
+    const firstId = 'aaaaaaaaaaaaaaaaaaaaaaaa'
+    const secondId = 'bbbbbbbbbbbbbbbbbbbbbbbb'
+    const thirdId = 'cccccccccccccccccccccccc'
+    const wait = vi.fn(async () => undefined)
+    const captureSignedJson = vi.fn(async (route: string, kind: string) => {
+      if (kind === 'posted_notes') {
+        return [postedCapture([
+          postedNote(firstId),
+          postedNote(secondId),
+          postedNote(thirdId)
+        ], 3)]
+      }
+      if (kind === 'note_analyze_list') return [capture([note(firstId), note(secondId), note(thirdId)], 3)]
+      const id = new URL(route).searchParams.get('id')!
+      return [detailCapture(id, id === secondId ? '  第一行\r\n\t 第二行  😀  ' : '第三篇摘要')]
+    })
+    const api = new XiaohongshuApi({
+      directJson: vi.fn(async (endpoint) => directResponse(endpoint)),
+      captureSignedJson
+    }, { wait })
+
+    const result = await api.collect('5605904194', 20, {
+      enrichExcerpts: true,
+      existingExcerpts: new Map([[firstId, '已保存的摘要']])
+    })
+
+    expect(result.contents.map((content) => [content.id, content.bodyExcerpt])).toEqual([
+      [firstId, '已保存的摘要'],
+      [secondId, '第一行 第二行 😀'],
+      [thirdId, '第三篇摘要']
+    ])
+    expect(result.warnings).toEqual([])
+    const detailCalls = captureSignedJson.mock.calls.filter((call) => call[1] === 'note_detail')
+    expect(detailCalls).toHaveLength(2)
+    expect(detailCalls.map((call) => call[0])).toEqual([
+      `https://creator.xiaohongshu.com/publish/update?id=${secondId}&noteType=normal`,
+      `https://creator.xiaohongshu.com/publish/update?id=${thirdId}&noteType=normal`
+    ])
+    expect(detailCalls.every((call) => !call[0].includes('xsec'))).toBe(true)
+    expect(wait).toHaveBeenCalledOnce()
+    expect(wait).toHaveBeenCalledWith(2_000)
+  })
+
+  it('stops excerpt enrichment after an ordinary detail failure and returns a warning', async () => {
+    const ids = ['aaaaaaaaaaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbbbbbbbbbb']
+    const captureSignedJson = vi.fn(async (_route: string, kind: string) => {
+      if (kind === 'posted_notes') {
+        return [postedCapture(ids.map((id) => postedNote(id)), ids.length)]
+      }
+      if (kind === 'note_analyze_list') return [capture(ids.map((id) => note(id)), ids.length)]
+      throw new Error('temporary capture failure')
+    })
+    const api = new XiaohongshuApi({
+      directJson: vi.fn(async (endpoint) => directResponse(endpoint)),
+      captureSignedJson
+    }, { wait: vi.fn(async () => undefined) })
+
+    const result = await api.collect('5605904194', 20, { enrichExcerpts: true })
+
+    expect(result.contents.every((content) => content.bodyExcerpt === '')).toBe(true)
+    expect(result.warnings).toHaveLength(1)
+    expect(captureSignedJson.mock.calls.filter((call) => call[1] === 'note_detail')).toHaveLength(1)
+  })
+
+  it('normalizes and validates note-detail JSON without accepting a different note', () => {
+    expect(parseNoteDetailCapture(detailCapture(undefined, '\u0000 甲\r\n 乙\t😀 '), 'aaaaaaaaaaaaaaaaaaaaaaaa'))
+      .toBe('甲 乙 😀')
+    expect(normalizeXiaohongshuExcerpt(`${'文'.repeat(499)}😀尾`)).toBe(`${'文'.repeat(499)}😀`)
+    expect(parseNoteDetailCapture(detailCapture(undefined, null), 'aaaaaaaaaaaaaaaaaaaaaaaa')).toBe('')
+    expectCode(() => parseNoteDetailCapture(
+      detailCapture('bbbbbbbbbbbbbbbbbbbbbbbb'),
+      'aaaaaaaaaaaaaaaaaaaaaaaa'
+    ), 'CONTENT_MISMATCH')
+    expect(parseNoteDetailCaptures([
+      detailCapture('bbbbbbbbbbbbbbbbbbbbbbbb', '错误作品'),
+      detailCapture('aaaaaaaaaaaaaaaaaaaaaaaa', '正确作品')
+    ], 'aaaaaaaaaaaaaaaaaaaaaaaa')).toBe('正确作品')
+  })
+
+  it('accepts only the exact detail endpoint and stops on risk-control responses', async () => {
+    expect(isNoteDetailApiUrl(detailApiUrl())).toBe(true)
+    for (const url of [
+      detailApiUrl().replace('https://', 'http://'),
+      detailApiUrl().replace('edith.xiaohongshu.com', 'edith.xiaohongshu.com.evil.test'),
+      detailApiUrl().replace('https://', 'https://user@'),
+      detailApiUrl().replace('edith.xiaohongshu.com', 'edith.xiaohongshu.com:444'),
+      detailApiUrl().replace(XIAOHONGSHU_API_ENDPOINTS.noteDetail, `${XIAOHONGSHU_API_ENDPOINTS.noteDetail}/extra`),
+      `${detailApiUrl()}&unexpected=secret`,
+      `${detailOrigin}${XIAOHONGSHU_API_ENDPOINTS.noteDetail}?note_id=aaaaaaaaaaaaaaaaaaaaaaaa`,
+      detailApiUrl().replace('note_id=aaaaaaaaaaaaaaaaaaaaaaaa', 'note_id=bad%2Fid')
+    ]) expect(isNoteDetailApiUrl(url)).toBe(false)
+
+    for (const status of [429, 461, 471]) {
+      expectCode(() => parseNoteDetailCapture(detailCapture(undefined, '正文', status), 'aaaaaaaaaaaaaaaaaaaaaaaa'), 'RISK_CONTROL')
+    }
   })
 
   it('reports HTTP login expiry and API login expiry', () => {
@@ -400,6 +543,43 @@ describe('XiaohongshuApi JSON-only adapter', () => {
 
   it('rejects incomplete posted-note captures', () => {
     expectCode(() => parsePostedCaptures([postedCapture([postedNote()], 5)], 5), 'INCOMPLETE_CAPTURE')
+  })
+
+  it('recognizes the current posted-note page cursor and tab total as an incomplete capture', () => {
+    const firstPage = response(`${XIAOHONGSHU_API_ENDPOINTS.postedNotes}?tab=0&page=0`, {
+      code: 0,
+      success: true,
+      data: {
+        notes: [postedNote()],
+        page: 1,
+        tags: [{ notes_count: 2 }]
+      }
+    })
+
+    expectCode(() => parsePostedCaptures([firstPage], 2), 'INCOMPLETE_CAPTURE')
+  })
+
+  it('maps the current official posted-note metric field names', () => {
+    const result = parsePostedCaptures([postedCapture([postedNote(undefined, {
+      publish_time: undefined,
+      time: '2026-03-18T12:01:00.000Z',
+      type: 'normal',
+      view_count: 11,
+      likes: 12,
+      collected_count: 13,
+      comments_count: 14,
+      shared_count: 15
+    })])], 1)
+
+    expect(result[0]).toMatchObject({
+      postTime: '2026-03-18T12:01:00.000Z',
+      type: 'image',
+      readCount: 11,
+      likeCount: 12,
+      favoriteCount: 13,
+      commentCount: 14,
+      shareCount: 15
+    })
   })
 
   it('sorts posted pages, accepts nested response data and tolerates unknown optional fields', () => {

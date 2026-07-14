@@ -51,6 +51,11 @@ const api: SocialVaultApi = {
     }
   },
   content: {
+    onChanged: (callback) => {
+      const listener = (): void => callback()
+      ipcRenderer.on('content:changed', listener)
+      return () => ipcRenderer.removeListener('content:changed', listener)
+    },
     list: (query) => ipcRenderer.invoke('content:list', query),
     detail: (id) => ipcRenderer.invoke('content:detail', id),
     openOriginal: (id) => ipcRenderer.invoke('content:open-original', id),

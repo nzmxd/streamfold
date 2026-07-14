@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Account, SyncMode } from '../shared/contracts'
+import type { ContentQuery, ContentSummary } from '../shared/content-contracts'
 import type {
   ApiIdentityCheckResult,
   ConfirmApiIdentityInput,
@@ -32,6 +33,7 @@ interface ApiBrowser {
 
 interface ApiRepository {
   getAccount(id: string): Account | null
+  listContents(query?: ContentQuery): ContentSummary[]
   getSetting<T>(key: string): T | null
   setSetting(key: string, value: unknown): void
   applyManagedIdentity(
@@ -76,6 +78,7 @@ export interface XiaohongshuApiServiceOptions {
   jobs: JobService
   clock?: () => Date
   createToken?: () => string
+  detailWait?: (milliseconds: number) => Promise<void>
 }
 
 /** Coordinates the only live platform integration: fixed, read-only JSON APIs. */
@@ -160,12 +163,21 @@ export class XiaohongshuApiService {
         this.options.repository.markManagedSyncStarted(account.id, startedAt)
 
         lease = await this.options.browser.acquireXiaohongshuApiTransport(account.id)
-        const api = new XiaohongshuApi(lease.transport)
+        const api = new XiaohongshuApi(lease.transport, { wait: this.options.detailWait })
         const capturedAt = this.now()
         const limit = account.syncMode === 'recent_20' ? 20 : account.syncMode === 'recent_100' ? 100 : 0
+        const existingExcerpts = limit > 0
+          ? new Map(this.options.repository.listContents({ accountId: account.id, limit: 5_000 }).map((content) => [
+              content.remoteId,
+              content.bodyExcerpt
+            ]))
+          : new Map<string, string>()
         const snapshot = limit === 0
           ? await collectProfileOnly(api, account.remoteId!)
-          : await api.collect(account.remoteId!, limit)
+          : await api.collect(account.remoteId!, limit, {
+              enrichExcerpts: true,
+              existingExcerpts
+            })
         const cachedAvatar = await this.cacheAvatar(account.id, snapshot.profile)
         const payload = toPayload(snapshot, capturedAt, cachedAvatar)
         job = await this.options.jobs.transition(job, 'committing', { progress: 85, stage: '保存同步数据' })
@@ -189,6 +201,8 @@ export class XiaohongshuApiService {
             if (error instanceof XiaohongshuApiError && error.code === 'AUTH_REQUIRED') {
               this.showLoginWorkspace(lease)
               this.options.repository.applyManagedProbeStatus(accountId, 'login_required', messageOf(error), failedAt)
+            } else if (error instanceof XiaohongshuApiError && error.code === 'RISK_CONTROL') {
+              this.options.repository.applyManagedProbeStatus(accountId, 'challenge', messageOf(error), failedAt)
             } else if (error instanceof XiaohongshuApiError && error.code === 'IDENTITY_MISMATCH') {
               this.options.repository.markManagedIdentityMismatch(accountId, messageOf(error), failedAt)
             } else {
@@ -302,6 +316,9 @@ export class XiaohongshuApiService {
         message
       }
     }
+    if (error instanceof XiaohongshuApiError && error.code === 'RISK_CONTROL') {
+      this.options.repository.applyManagedProbeStatus(accountId, 'challenge', message, this.now())
+    }
     throw error
   }
 
@@ -410,7 +427,8 @@ async function collectProfileOnly(
     identity: { remoteId: after.remoteId, remoteName: after.remoteName },
     profile: after,
     accountMetrics,
-    contents: []
+    contents: [],
+    warnings: []
   }
 }
 
@@ -445,7 +463,7 @@ function toPayload(
       remoteId: content.id,
       type: content.type ?? 'post',
       title: content.title,
-      bodyExcerpt: '',
+      bodyExcerpt: content.bodyExcerpt,
       url: content.url,
       publishedAt: content.postTime,
       snapshots: [{
@@ -457,7 +475,7 @@ function toPayload(
         favorites: content.favoriteCount
       }]
     })),
-    warnings: []
+    warnings: snapshot.warnings
   }
 }
 
@@ -468,6 +486,16 @@ function syncResult(
   committed: ManagedSyncCommitResult,
   job: JobRecord
 ): XiaohongshuSyncResult {
+  const excerptCount = snapshot.contents.filter((content) => Boolean(content.bodyExcerpt)).length
+  const missingExcerptCount = snapshot.contents.length - excerptCount
+  const excerptMessage = excerptCount > 0
+    ? `其中 ${excerptCount} 条包含正文摘要。`
+    : ''
+  const missingExcerptMessage = missingExcerptCount > 0
+    ? snapshot.warnings.length > 0
+      ? `${missingExcerptCount} 条摘要将在后续同步中继续补齐。`
+      : `${missingExcerptCount} 条作品的平台详情未提供摘要。`
+    : ''
   return {
     accountId: account.id,
     mode: account.syncMode as XiaohongshuSyncResult['mode'],
@@ -486,7 +514,7 @@ function syncResult(
     stats: committed.stats,
     job,
     message: snapshot.contents.length > 0
-      ? `已同步账号资料和 ${snapshot.contents.length} 条作品。`
+      ? `已同步账号资料和 ${snapshot.contents.length} 条作品。${excerptMessage}${missingExcerptMessage}`
       : '已同步账号资料和账号指标。'
   }
 }

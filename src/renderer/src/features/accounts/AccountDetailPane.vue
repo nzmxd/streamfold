@@ -43,6 +43,7 @@ const activeTab = ref<DetailTab>('overview')
 const busy = ref(false)
 const localMessage = ref('')
 const verification = ref<SessionApiIdentityCheckResult | null>(null)
+const messageSyncAt = ref<string | null>(null)
 const supportsManagedSync = computed(() => (
   props.account?.platformId === 'xiaohongshu' || props.account?.platformId === 'zhihu'
 ))
@@ -84,6 +85,9 @@ watch(
       activeTab.value = 'overview'
       localMessage.value = ''
       verification.value = null
+      messageSyncAt.value = null
+    } else if (previous.lastSyncedAt !== account.lastSyncedAt && messageSyncAt.value !== account.lastSyncedAt) {
+      localMessage.value = ''
     }
     form.alias = account.alias
     form.note = account.note
@@ -193,6 +197,7 @@ async function syncOwnedData(): Promise<void> {
   try {
     const result = await props.syncAccount(props.account.id)
     localMessage.value = result.message
+    messageSyncAt.value = props.account?.lastSyncedAt ?? null
   } catch {
     // The account store renders the sanitized error at page level.
   } finally {

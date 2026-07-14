@@ -10,7 +10,7 @@
 - 本地备注名、备注、标签、自定义分组、排序、批量分组与暂停、默认账号和同步范围管理；添加账号时备注名可留空，首次身份绑定后自动采用平台昵称，清空备注名可恢复自动跟随。
 - 每个账号使用独立的大尺寸浏览器窗口完成官方入口登录，关闭窗口后保留该账号会话。
 - 主动同步会在后台获取该账号的隐藏 Chromium workspace lease，无需预先打开浏览器窗口；仅在登录失效时显示同一个官方浏览器窗口供用户处理。
-- 小红书 `xiaohongshu-session-api`：同源请求固定的 `user/info`、`personal_info` 和账号指标 JSON API，并捕获作品管理与数据分析页面发起的签名 JSON 响应。
+- 小红书 `xiaohongshu-session-api`：同源请求固定的 `user/info`、`personal_info` 和账号指标 JSON API，捕获作品管理、数据分析及创作中心本人作品详情的精确 JSON 响应；缺失摘要来自详情 `data.desc`，只补空值并按安全节奏串行执行。
 - 知乎 `zhihu-session-api`：用 `/api/v4/me` 与本人资料校验身份，再从创作中心内容管理 JSON API 同步回答、文章、阅读/赞同/评论/收藏指标和原帖链接。
 - API 身份预览与本人确认、同步前后身份一致性检查、登录失效与身份不匹配阻断。
 - 展示平台账号 ID、头像、昵称、简介、关注、粉丝和累计获赞与收藏；头像经过来源、类型与大小校验后缓存到本地，并通过同源 `app://shell/media` 路由加载。
@@ -29,6 +29,7 @@
 - [可交互界面原型](prototypes/social-account-manager.html)：账号列表、账号详情、浏览器入口、内容数据和备注设置的交互演示。
 - [MVP 实现状态](docs/implementation-status.md)：当前实现范围、未完成项和验证范围。
 - [加密备份与恢复](docs/backup-and-restore.md)：备份范围、密码学参数、数据库回滚和登录会话边界。
+- [GitHub CI/CD](docs/ci-cd.md)：持续集成、跨平台打包、版本发布与代码签名边界。
 - [小红书 Session API 适配器](docs/xiaohongshu-identity-adapter.md)：接口白名单、网络响应采集、身份核验和停止条件。
 - [知乎 Session API 适配器](docs/zhihu-session-api-adapter.md)：身份与资料接口、创作中心本人内容、指标、分页和停止条件。
 - [文档索引](docs/README.md)：推荐阅读顺序。
@@ -43,7 +44,7 @@
 - 普通接口由账号浏览器在创作中心同源发起固定 `GET` 请求；需要页面签名的接口通过 Chromium DevTools Protocol 读取对应 XHR/Fetch 的 JSON 响应。
 - 当前开放小红书和知乎适配器；其他平台必须完成单独的接口确认、字段校验和测试账号验收后才能启用。
 - 本地备注名、分组、标签和备注不写回社媒平台；备注名留空时使用并自动跟随平台昵称。
-- SQLite schema 当前为 v6，保存备注名自定义状态、资料字段和头像缓存元数据；关注、粉丝及累计获赞与收藏仍按时间写入账号快照。
+- SQLite schema 当前为 v8，保存备注名自定义状态、资料字段、头像缓存元数据、官方原帖地址与去重后的指标快照；关注、粉丝及累计获赞与收藏仍按时间写入账号快照。
 - 不采用收费 API、收费代理或验证码服务。
 
 ## 本地开发
@@ -64,5 +65,16 @@ pnpm build
 pnpm test:smoke
 pnpm preview
 ```
+
+本地桌面构件由 electron-builder 输出到 `release/`：
+
+```powershell
+pnpm dist:dir
+pnpm dist:win
+pnpm dist:mac
+pnpm dist:linux
+```
+
+跨平台安装包应在对应操作系统上生成；GitHub Actions 的版本标签流程会在 Windows、macOS 和 Linux 原生 runner 上分别打包。
 
 首次运行会在 Electron 用户数据目录创建 `social-vault.sqlite`。平台登录状态由账号对应的 Chromium Session Partition 保存，不写入该 SQLite 数据库。
