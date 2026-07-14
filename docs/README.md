@@ -30,6 +30,9 @@
 7. [小红书 Session API 适配器](xiaohongshu-identity-adapter.md)
    - 查看双资料接口身份校验、头像本地缓存、固定 JSON 接口、后台 workspace lease、作品指标响应捕获和停止条件。
 
+8. [知乎 Session API 适配器](zhihu-session-api-adapter.md)
+   - 查看知乎身份与资料接口、创作中心本人内容分页、可见指标、原帖链接和停止条件。
+
 ## 实现边界
 
 - 账号登录在应用内置 Chromium 的独立窗口中完成，每个账号使用独立持久 Session Partition。
@@ -50,6 +53,7 @@
 | MVP 实现状态 | v0.4 | 实现范围、限制和验证结果 |
 | 加密备份与恢复 | v0.3 | 完整数据库备份格式与恢复保护 |
 | 小红书 Session API 适配器 | v0.4 | 首个平台 API、身份和数据同步说明 |
+| 知乎 Session API 适配器 | v0.2 | 知乎 API、身份、创作中心内容分页与数据同步说明 |
 
 ## 后续建议补充
 

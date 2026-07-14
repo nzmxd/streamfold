@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { NormalizedImportPayload } from './plugins/types'
-import { SocialDatabase } from './database'
+import { CURRENT_SCHEMA_VERSION, SocialDatabase } from './database'
 import { PluginService } from './plugin-service'
 
 describe('SocialDatabase', () => {
@@ -256,6 +256,30 @@ describe('SocialDatabase', () => {
       following: 3,
       capturedAt: payload.capturedAt
     })
+  })
+
+  it('skips a later content snapshot when every metric is unchanged', () => {
+    const account = createAccount(database, '账号 A')
+    const first = importPayload('remote-account-a', 'content-a')
+    database.commitImport(first, importMetadata(account.id))
+    const capturedAt = '2026-07-14T09:00:00.000Z'
+    const unchanged: NormalizedImportPayload = {
+      ...first,
+      capturedAt,
+      contents: first.contents.map((content) => ({
+        ...content,
+        snapshots: content.snapshots.map((snapshot) => ({ ...snapshot, capturedAt }))
+      }))
+    }
+
+    expect(database.commitImport(unchanged, importMetadata(account.id))).toEqual({
+      newContentCount: 0,
+      updatedContentCount: 1,
+      snapshotCount: 0,
+      skippedSnapshotCount: 1
+    })
+    const content = database.listContents({ accountId: account.id })[0]!
+    expect(database.getContentDetail(content.id).snapshots).toHaveLength(1)
   })
 
   it('attaches only the newest account snapshot when listing accounts', () => {
@@ -561,7 +585,7 @@ describe('SocialDatabase migrations', () => {
 
     database = new SocialDatabase(path)
 
-    expect(database.getSchemaVersion()).toBe(7)
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
     expect(database.getAccount('legacy-account')).toMatchObject({
       status: 'paused',
       connectionStatus: 'pending',
@@ -600,7 +624,7 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(7)
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
     expect(database.getAccount(account.id)).toMatchObject({
       ownershipStatus: 'user_confirmed',
       ownershipConfirmedAt: '2026-07-01T00:00:00.000Z',
@@ -629,7 +653,7 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(7)
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
     expect(database.getAccount(account.id)).toMatchObject({
       connectionStatus: 'ready', ownershipStatus: 'user_confirmed', syncEnabled: false
     })
@@ -708,7 +732,7 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(7)
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
     expect(database.getAccount(account.id)).toMatchObject({
       alias: '历史本地别名',
       aliasCustomized: true,
@@ -746,9 +770,40 @@ describe('SocialDatabase migrations', () => {
     previous.close()
 
     database = new SocialDatabase(path)
-    expect(database.getSchemaVersion()).toBe(7)
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
     expect(database.getContentDetail('legacy-content').url)
       .toBe('https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa')
+  })
+
+  it('compacts consecutive unchanged content snapshots in v8', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v7.sqlite')
+    database = new SocialDatabase(path)
+    const account = createAccount(database, '历史快照账号')
+    const payload = importPayload('snapshot-owner', 'snapshot-content')
+    database.commitImport(payload, importMetadata(account.id))
+    const contentId = database.listContents({ accountId: account.id })[0]!.id
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    const insert = previous.prepare(`
+      INSERT INTO content_snapshots (
+        id, content_id, views, likes, comments, shares, favorites, captured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    insert.run('same-1', contentId, 120, 10, 2, 1, 3, '2026-07-14T09:00:00.000Z')
+    insert.run('same-2', contentId, 120, 10, 2, 1, 3, '2026-07-14T10:00:00.000Z')
+    insert.run('changed', contentId, 121, 10, 2, 1, 3, '2026-07-14T11:00:00.000Z')
+    insert.run('same-after-change', contentId, 121, 10, 2, 1, 3, '2026-07-14T12:00:00.000Z')
+    previous.exec('PRAGMA user_version = 7')
+    previous.close()
+
+    database = new SocialDatabase(path)
+
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
+    expect(database.getContentDetail(contentId).snapshots.map((snapshot) => snapshot.views))
+      .toEqual([120, 121])
   })
 })
 

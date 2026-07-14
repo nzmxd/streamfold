@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import type { ContentSummary } from '../../../../shared/contracts'
 import { contentTypeLabel, delta, deltaLabel, formatDate, formatNumber, messageOf } from '../shared/format'
+import { primaryContentMetric } from './metrics'
 
 const props = defineProps<{ accountId: string; refreshKey?: string | null }>()
 const items = ref<ContentSummary[]>([])
@@ -43,7 +44,7 @@ watch(
       <article v-for="item in items" :key="item.id">
         <span class="content-kind">{{ contentTypeLabel(item.type) }}</span>
         <div><strong>{{ item.title || '未命名内容' }}</strong><small>{{ formatDate(item.publishedAt) }} · 最近采集 {{ formatDate(item.latestSnapshot?.capturedAt, true) }}</small></div>
-        <div class="mini-metric"><strong>{{ formatNumber(item.latestSnapshot?.views) }}</strong><small>浏览 · {{ deltaLabel(delta(item.latestSnapshot?.views, item.previousSnapshot?.views)) }}</small></div>
+        <div class="mini-metric"><strong>{{ formatNumber(primaryContentMetric(item).value) }}</strong><small>{{ primaryContentMetric(item).label }} · {{ deltaLabel(delta(primaryContentMetric(item).value, primaryContentMetric(item).previousValue)) }}</small></div>
       </article>
     </div>
   </section>

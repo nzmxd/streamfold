@@ -21,10 +21,12 @@ import { ExportService } from './export-service'
 import { loadApplicationIcon, loadTrayIcon } from './icon-assets'
 import { registerIpc, unregisterIpc } from './ipc'
 import { PluginService } from './plugin-service'
+import { PlatformSyncService } from './platform-sync-service'
 import { ProfileMediaStore } from './profile-media'
 import { SettingsService } from './settings-service'
 import { JobService } from './services/job-service'
 import { XiaohongshuApiService } from './xiaohongshu-api-service'
+import { ZhihuApiService } from './zhihu-api-service'
 import { isTrustedShellUrl } from './shell-security'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
@@ -231,6 +233,19 @@ function createWindow(): void {
     plugins: pluginService,
     jobs: jobService
   })
+  const zhihuApiService = new ZhihuApiService({
+    repository: database,
+    browser: browserManager,
+    plugins: pluginService,
+    jobs: jobService
+  })
+  const platformSyncService = new PlatformSyncService({
+    repository: database,
+    adapters: {
+      xiaohongshu: xiaohongshuApiService,
+      zhihu: zhihuApiService
+    }
+  })
   const settingsService = new SettingsService({
     getStorageCounts: () => database!.getStorageCounts(),
     getSetting: (key) => database!.getSetting<string>(key),
@@ -252,7 +267,7 @@ function createWindow(): void {
     beforeRestore: () => {
       restorePartitions = database!.listAccounts().map((account) => account.sessionPartition)
       browserManager?.closeAll()
-      xiaohongshuApiService.invalidatePreviews()
+      platformSyncService.invalidatePreviews()
     },
     afterRestore: () => pluginService.initialize(),
     afterCommit: async () => {
@@ -273,7 +288,7 @@ function createWindow(): void {
     settings: settingsService,
     exporter: exportService,
     backup: backupService,
-    xiaohongshuApi: xiaohongshuApiService
+    platformSync: platformSyncService
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {

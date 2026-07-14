@@ -3,7 +3,7 @@ import {
   platformIds,
   type AnalyticsQuery,
   type BulkUpdateAccountsInput,
-  type ConfirmApiIdentityInput,
+  type ConfirmSessionApiIdentityInput,
   type ContentQuery,
   type CreateAccountInput,
   type CreateEncryptedBackupInput,
@@ -164,7 +164,7 @@ export function parseCreateEncryptedBackup(value: unknown): CreateEncryptedBacku
   return { password: asPassword(record.password) }
 }
 
-export function parseConfirmApiIdentity(value: unknown): ConfirmApiIdentityInput {
+export function parseConfirmApiIdentity(value: unknown): ConfirmSessionApiIdentityInput {
   const record = asRecord(value)
   return {
     accountId: asId(record.accountId),

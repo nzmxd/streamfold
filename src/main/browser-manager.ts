@@ -24,9 +24,17 @@ import {
   type XiaohongshuCaptureKind,
   type XiaohongshuJsonResponse
 } from './xiaohongshu-api'
+import {
+  ZhihuApiError,
+  normalizeZhihuApiEndpoint,
+  type ZhihuApiTransport,
+  type ZhihuJsonResponse
+} from './zhihu-api'
 
 const TOOLBAR_HEIGHT = 92
 const XIAOHONGSHU_CREATOR_ORIGIN = 'https://creator.xiaohongshu.com'
+const ZHIHU_ORIGIN = 'https://www.zhihu.com'
+const ZHIHU_API_HOME = `${ZHIHU_ORIGIN}/`
 const DIRECT_JSON_TIMEOUT_MS = 12_000
 const API_NAVIGATION_STABLE_MS = 250
 const API_NAVIGATION_TIMEOUT_MS = 8_000
@@ -35,6 +43,7 @@ const API_NETWORK_RETRY_DELAY_MS = 250
 const SIGNED_CAPTURE_TIMEOUT_MS = 20_000
 const SIGNED_CAPTURE_QUIET_MS = 600
 const DIRECT_JSON_LIMIT_BYTES = 256 * 1024
+const ZHIHU_JSON_LIMIT_BYTES = 512 * 1024
 const SIGNED_JSON_LIMIT_BYTES = 512 * 1024
 
 interface ManagedWorkspace {
@@ -52,6 +61,12 @@ interface ManagedWorkspace {
 
 export interface XiaohongshuApiTransportLease {
   readonly transport: XiaohongshuApiTransport
+  showForLogin(): void
+  release(): void
+}
+
+export interface ZhihuApiTransportLease {
+  readonly transport: ZhihuApiTransport
   showForLogin(): void
   release(): void
 }
@@ -169,6 +184,45 @@ export class BrowserManager {
     })
   }
 
+  async acquireZhihuApiTransport(accountId: string): Promise<ZhihuApiTransportLease> {
+    if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
+    const account = this.findAccount(accountId)
+    if (!account) throw new Error('账号不存在')
+    if (account.platformId !== 'zhihu') throw new Error('该 API 传输仅允许知乎账号')
+
+    let managed = this.workspaces.get(accountId)
+    if (!managed || managed.disposed || managed.window.isDestroyed() ||
+      managed.view.webContents.isDestroyed()) {
+      managed = await this.createWorkspace(account, false)
+    } else {
+      await managed.shellReady
+    }
+
+    beginApiLease(managed)
+    let released = false
+    try {
+      await this.prepareZhihuApiPage(managed)
+      this.requireZhihuApiWorkspace(accountId)
+    } catch (error) {
+      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      throw error
+    }
+
+    const transport = this.createZhihuApiTransport(accountId)
+    return Object.freeze({
+      transport,
+      showForLogin: (): void => {
+        if (released || managed.disposed) return
+        this.showWorkspace(managed)
+      },
+      release: (): void => {
+        if (released) return
+        released = true
+        if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      }
+    })
+  }
+
   private showWorkspace(managed: ManagedWorkspace): void {
     promoteApiWorkspace(managed)
     managed.state = { ...managed.state, windowOpen: true }
@@ -185,6 +239,24 @@ export class BrowserManager {
     if (managed.apiPageReady) return managed.apiPageReady
 
     const pending = prepareXiaohongshuApiContents(
+      managed.view.webContents,
+      (url) => this.safeLoad(managed, url)
+    )
+    managed.apiPageReady = pending
+    try {
+      await pending
+    } finally {
+      if (managed.apiPageReady === pending) managed.apiPageReady = null
+    }
+  }
+
+  private async prepareZhihuApiPage(managed: ManagedWorkspace): Promise<void> {
+    if (managed.disposed || managed.window.isDestroyed() || managed.view.webContents.isDestroyed()) {
+      throw new Error('账号浏览器工作区已关闭')
+    }
+    if (managed.apiPageReady) return managed.apiPageReady
+
+    const pending = prepareZhihuApiContents(
       managed.view.webContents,
       (url) => this.safeLoad(managed, url)
     )
@@ -224,6 +296,20 @@ export class BrowserManager {
     })
   }
 
+  createZhihuApiTransport(accountId: string): ZhihuApiTransport {
+    return Object.freeze({
+      getJson: async (endpoint: string): Promise<ZhihuJsonResponse> => {
+        const managed = this.requireZhihuApiWorkspace(accountId)
+        return fetchZhihuPageJson(
+          managed.view.webContents,
+          endpoint,
+          DIRECT_JSON_TIMEOUT_MS,
+          () => this.prepareZhihuApiPage(managed)
+        )
+      }
+    })
+  }
+
   async cacheXiaohongshuAvatar(
     accountId: string,
     sourceUrl: string
@@ -233,6 +319,26 @@ export class BrowserManager {
     if (!account) throw new Error('账号不存在')
     if (account.platformId !== 'xiaohongshu') throw new Error('头像缓存仅允许小红书账号')
     const managed = this.requireXiaohongshuApiWorkspace(accountId)
+    const accountSession = electronSession.fromPartition(account.sessionPartition)
+    if (managed.view.webContents.session !== accountSession) {
+      throw new Error('头像缓存会话与账号独立登录分区不匹配')
+    }
+    return this.profileMedia.cacheAvatar(
+      account.id,
+      sourceUrl,
+      (url, init) => accountSession.fetch(url, init)
+    )
+  }
+
+  async cacheZhihuAvatar(
+    accountId: string,
+    sourceUrl: string
+  ): Promise<CachedProfileAvatar | null> {
+    if (!this.profileMedia) return null
+    const account = this.findAccount(accountId)
+    if (!account) throw new Error('账号不存在')
+    if (account.platformId !== 'zhihu') throw new Error('头像缓存仅允许知乎账号')
+    const managed = this.requireZhihuApiWorkspace(accountId)
     const accountSession = electronSession.fromPartition(account.sessionPartition)
     if (managed.view.webContents.session !== accountSession) {
       throw new Error('头像缓存会话与账号独立登录分区不匹配')
@@ -641,6 +747,24 @@ export class BrowserManager {
     return managed
   }
 
+  private requireZhihuApiWorkspace(accountId: string): ManagedWorkspace {
+    const account = this.findAccount(accountId)
+    const managed = this.workspaces.get(accountId)
+    if (!account || !managed || managed.disposed || managed.window.isDestroyed() ||
+      managed.view.webContents.isDestroyed()) {
+      throw new Error('请先打开该账号的内置浏览器窗口')
+    }
+    if (account.platformId !== 'zhihu' || managed.account.platformId !== 'zhihu') {
+      throw new Error('该 API 传输仅允许知乎账号')
+    }
+    if (managed.account.id !== account.id ||
+      managed.account.sessionPartition !== account.sessionPartition ||
+      managed.view.webContents.session !== electronSession.fromPartition(account.sessionPartition)) {
+      throw new Error('浏览器工作区与账号独立登录分区不匹配')
+    }
+    return managed
+  }
+
   private disposeWorkspace(managed: ManagedWorkspace, closeWindow: boolean): void {
     if (managed.disposed) return
     managed.disposed = true
@@ -716,9 +840,35 @@ function isStableXiaohongshuCreatorPage(
     isXiaohongshuCreatorPage(contents.getURL())
 }
 
+function isZhihuApiPage(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.hostname === 'www.zhihu.com' &&
+      !url.username && !url.password && !url.port
+  } catch {
+    return false
+  }
+}
+
+async function prepareZhihuApiContents(
+  contents: Pick<WebContents, 'getURL' | 'isLoading' | 'isDestroyed'>,
+  loadOfficial: (url: string) => Promise<void>,
+  options: NavigationStabilityOptions = {}
+): Promise<void> {
+  if (isZhihuApiPage(contents.getURL())) {
+    await waitForNavigationStable(contents, options)
+    if (!contents.isDestroyed() && !contents.isLoading() && isZhihuApiPage(contents.getURL())) return
+  }
+
+  await loadOfficial(ZHIHU_API_HOME)
+  await waitForNavigationStable(contents, options, '等待知乎页面导航稳定超时')
+  if (!isZhihuApiPage(contents.getURL())) throw new Error('知乎官方页面未能完成加载')
+}
+
 async function waitForNavigationStable(
   contents: Pick<WebContents, 'getURL' | 'isLoading' | 'isDestroyed'>,
-  options: NavigationStabilityOptions = {}
+  options: NavigationStabilityOptions = {},
+  timeoutMessage = '等待小红书创作中心导航稳定超时'
 ): Promise<void> {
   const quietMs = options.quietMs ?? API_NAVIGATION_STABLE_MS
   const timeoutMs = options.timeoutMs ?? API_NAVIGATION_TIMEOUT_MS
@@ -741,8 +891,147 @@ async function waitForNavigationStable(
     } else if (now - stableSince >= quietMs) {
       return
     }
-    if (now - startedAt >= timeoutMs) throw new Error('等待小红书创作中心导航稳定超时')
+    if (now - startedAt >= timeoutMs) throw new Error(timeoutMessage)
     await delay(Math.min(pollMs, Math.max(1, timeoutMs - (now - startedAt))))
+  }
+}
+
+async function fetchZhihuPageJson(
+  contents: Pick<WebContents, 'executeJavaScript' | 'getURL' | 'isDestroyed'>,
+  endpointValue: string,
+  timeoutMs = DIRECT_JSON_TIMEOUT_MS,
+  beforeNetworkRetry: (() => Promise<void>) | null = null
+): Promise<ZhihuJsonResponse> {
+  const endpoint = normalizeZhihuApiEndpoint(endpointValue)
+  if (contents.isDestroyed()) throw new Error('浏览器页面已关闭')
+  if (!isZhihuApiPage(contents.getURL())) throw new Error('请先在账号浏览器中打开知乎官方页面')
+
+  const source = `(async () => {
+    const endpoint = ${JSON.stringify(endpoint)};
+    const target = new URL(endpoint, 'https://www.zhihu.com');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ${timeoutMs});
+    try {
+      const response = await fetch(target.href, {
+        method: 'GET',
+        credentials: 'include',
+        redirect: 'manual',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal
+      });
+      if (response.type === 'opaqueredirect' ||
+          (response.status >= 300 && response.status < 400)) {
+        return { error: 'AUTH_REDIRECT' };
+      }
+      if (response.status === 0) return { error: 'NETWORK' };
+      const contentType = response.headers.get('content-type') || '';
+      const normalizedContentType = contentType.split(';', 1)[0].trim().toLowerCase();
+      const isJson = normalizedContentType === 'application/json' ||
+        normalizedContentType === 'text/json' || normalizedContentType.endsWith('+json');
+      if (!isJson) {
+        return {
+          status: response.status,
+          url: response.url || target.href,
+          redirected: response.redirected === true,
+          contentType,
+          text: ''
+        };
+      }
+      const declaredLength = Number(response.headers.get('content-length') || '0');
+      if (Number.isFinite(declaredLength) && declaredLength > ${ZHIHU_JSON_LIMIT_BYTES}) {
+        controller.abort();
+        return { error: 'TOO_LARGE' };
+      }
+      if (!response.body) return { error: 'NO_BODY' };
+      const reader = response.body.getReader();
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        total += part.value.byteLength;
+        if (total > ${ZHIHU_JSON_LIMIT_BYTES}) {
+          controller.abort();
+          return { error: 'TOO_LARGE' };
+        }
+        chunks.push(part.value);
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      return {
+        status: response.status,
+        url: response.url || target.href,
+        redirected: response.redirected === true,
+        contentType,
+        text: new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      };
+    } catch {
+      return { error: controller.signal.aborted ? 'TIMEOUT' : 'NETWORK' };
+    } finally {
+      clearTimeout(timeout);
+    }
+  })()`
+
+  let raw: Record<string, unknown> = {}
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    raw = objectRecord(await withTimeout(
+      contents.executeJavaScript(source),
+      timeoutMs + 2_000,
+      '知乎只读 API 请求超时'
+    ))
+    if (raw.error !== 'NETWORK' || attempt === 1) break
+    if (beforeNetworkRetry) await beforeNetworkRetry()
+    else await delay(API_NETWORK_RETRY_DELAY_MS)
+  }
+
+  if (raw.error === 'TIMEOUT') throw new Error('知乎只读 API 请求超时')
+  if (raw.error === 'TOO_LARGE') {
+    throw new ZhihuApiError('RESPONSE_TOO_LARGE', '知乎 API 响应超过 512 KiB')
+  }
+  if (raw.error === 'AUTH_REDIRECT') {
+    throw new ZhihuApiError('AUTH_REQUIRED', '知乎登录状态已失效，请重新登录')
+  }
+  if (raw.error === 'NETWORK') throw new Error('知乎 API 暂时无法连接，请稍后重试')
+  if (raw.error) throw new Error('知乎 API 请求失败')
+  if (!Number.isInteger(raw.status) || typeof raw.url !== 'string' || typeof raw.text !== 'string') {
+    throw new ZhihuApiError('MALFORMED_RESPONSE', '知乎 API 响应结构非法')
+  }
+
+  const expectedUrl = new URL(endpoint, ZHIHU_ORIGIN).href
+  if (raw.redirected === true || isZhihuSigninUrl(raw.url)) {
+    throw new ZhihuApiError('AUTH_REQUIRED', '知乎登录状态已失效，请重新登录')
+  }
+  if (raw.url !== expectedUrl) {
+    throw new ZhihuApiError('MALFORMED_RESPONSE', '知乎 API 响应地址与请求不一致')
+  }
+  if (raw.status === 401 || raw.status === 403) {
+    throw new ZhihuApiError('AUTH_REQUIRED', '知乎登录状态已失效，请重新登录')
+  }
+  if (raw.status === 429) {
+    throw new ZhihuApiError('RATE_LIMITED', '知乎同步暂时受限，请稍后重试')
+  }
+  try {
+    assertJsonContentType(typeof raw.contentType === 'string' ? raw.contentType : '')
+  } catch {
+    if (raw.status === 200) {
+      throw new ZhihuApiError('AUTH_REQUIRED', '知乎登录状态已失效，请重新登录')
+    }
+    throw new ZhihuApiError('MALFORMED_RESPONSE', '知乎 API 未返回 JSON 数据')
+  }
+  if (Buffer.byteLength(raw.text, 'utf8') > ZHIHU_JSON_LIMIT_BYTES) {
+    throw new ZhihuApiError('RESPONSE_TOO_LARGE', '知乎 API 响应超过 512 KiB')
+  }
+  return { status: raw.status as number, url: raw.url, json: parseJson(raw.text) }
+}
+
+function isZhihuSigninUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.origin === ZHIHU_ORIGIN &&
+      (url.pathname === '/signin' || url.pathname.startsWith('/signin/'))
+  } catch {
+    return false
   }
 }
 
@@ -1219,6 +1508,11 @@ export const __xiaohongshuApiTransportTest = Object.freeze({
   fetchPageJson: fetchXiaohongshuPageJson,
   prepareApiPage: prepareXiaohongshuApiContents,
   captureSignedJson: captureXiaohongshuSignedJson
+})
+
+export const __zhihuApiTransportTest = Object.freeze({
+  fetchPageJson: fetchZhihuPageJson,
+  prepareApiPage: prepareZhihuApiContents
 })
 
 export const __browserWorkspaceLeaseTest = Object.freeze({

@@ -23,12 +23,17 @@ describe('PluginService', () => {
     expect(service.setEnabled('xiaohongshu-session-api', true)).toMatchObject({
       enabled: true, availability: 'available'
     })
+    expect(service.setEnabled('zhihu-session-api', true)).toMatchObject({
+      enabled: true, availability: 'available'
+    })
     expect(() => service.setEnabled('weibo-session-api', true)).toThrow('计划中的插件不能启用')
   })
 
   it('persists the user toggle for the available API plugin', () => {
     expect(service.setEnabled('xiaohongshu-session-api', true).enabled).toBe(true)
+    expect(service.setEnabled('zhihu-session-api', true).enabled).toBe(true)
     service.initialize()
     expect(service.list().find((plugin) => plugin.manifest.id === 'xiaohongshu-session-api')?.enabled).toBe(true)
+    expect(service.list().find((plugin) => plugin.manifest.id === 'zhihu-session-api')?.enabled).toBe(true)
   })
 })

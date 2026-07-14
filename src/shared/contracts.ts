@@ -156,9 +156,9 @@ export interface SocialVaultApi {
     bulkUpdate(input: BulkUpdateAccountsInput): Promise<Account[]>
     disconnect(id: string): Promise<void>
     purge(id: string): Promise<void>
-    verifyIdentity(id: string): Promise<import('./xiaohongshu-api-contracts').ApiIdentityCheckResult>
-    confirmIdentity(input: import('./xiaohongshu-api-contracts').ConfirmApiIdentityInput): Promise<import('./xiaohongshu-api-contracts').ApiIdentityCheckResult>
-    sync(id: string): Promise<import('./xiaohongshu-api-contracts').XiaohongshuSyncResult>
+    verifyIdentity(id: string): Promise<import('./session-api-contracts').SessionApiIdentityCheckResult>
+    confirmIdentity(input: import('./session-api-contracts').ConfirmSessionApiIdentityInput): Promise<import('./session-api-contracts').SessionApiIdentityCheckResult>
+    sync(id: string): Promise<import('./session-api-contracts').SessionApiSyncResult>
   }
   groups: {
     list(): Promise<Group[]>
@@ -212,4 +212,5 @@ export * from './job-contracts'
 export * from './plugin-contracts'
 export * from './settings-contracts'
 export * from './backup-contracts'
+export * from './session-api-contracts'
 export * from './xiaohongshu-api-contracts'

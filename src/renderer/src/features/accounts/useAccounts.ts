@@ -3,12 +3,12 @@ import type {
   Account,
   BrowserState,
   BulkUpdateAccountsInput,
-  ConfirmApiIdentityInput,
+  ConfirmSessionApiIdentityInput,
   CreateAccountInput,
   CreateGroupInput,
   Group,
-  ApiIdentityCheckResult,
-  XiaohongshuSyncResult,
+  SessionApiIdentityCheckResult,
+  SessionApiSyncResult,
   MoveGroupInput,
   PlatformDefinition,
   UpdateAccountInput,
@@ -183,7 +183,7 @@ export function useAccounts() {
     })
   }
 
-  async function verifyIdentity(id: string): Promise<ApiIdentityCheckResult> {
+  async function verifyIdentity(id: string): Promise<SessionApiIdentityCheckResult> {
     return run(async () => {
       const result = await window.socialVault.accounts.verifyIdentity(id)
       await reload()
@@ -191,7 +191,7 @@ export function useAccounts() {
     })
   }
 
-  async function confirmIdentity(input: ConfirmApiIdentityInput): Promise<ApiIdentityCheckResult> {
+  async function confirmIdentity(input: ConfirmSessionApiIdentityInput): Promise<SessionApiIdentityCheckResult> {
     return run(async () => {
       const result = await window.socialVault.accounts.confirmIdentity(input)
       await reload()
@@ -199,7 +199,7 @@ export function useAccounts() {
     })
   }
 
-  async function syncAccount(id: string): Promise<XiaohongshuSyncResult> {
+  async function syncAccount(id: string): Promise<SessionApiSyncResult> {
     return run(async () => {
       const result = await window.socialVault.accounts.sync(id)
       await reload()

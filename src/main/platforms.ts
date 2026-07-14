@@ -34,7 +34,7 @@ const definitions: Record<PlatformId, PlatformDefinition> = {
     shortName: '知',
     loginUrl: 'https://www.zhihu.com/signin?next=%2Fcreator',
     homeUrl: 'https://www.zhihu.com/creator',
-    officialHosts: ['www.zhihu.com'],
+    officialHosts: ['www.zhihu.com', 'zhuanlan.zhihu.com'],
     riskNote: '仅打开知乎官方登录与创作页面；不自动填写登录信息。'
   }
 }
@@ -60,7 +60,7 @@ export function isOfficialUrl(platformId: PlatformId, value: string): boolean {
     return false
   }
 
-  if (url.protocol !== 'https:') return false
+  if (url.protocol !== 'https:' || hasExplicitPort(value)) return false
   if (url.username || url.password) return false
   if (url.port && url.port !== '443') return false
 
@@ -117,7 +117,41 @@ export function isOfficialContentUrl(
     }
   }
 
+  if (platformId === 'zhihu') {
+    try {
+      const url = new URL(value)
+      if (url.search || url.hash) return false
+
+      const answer = /^answer:([1-9]\d{0,31}):([1-9]\d{0,31})$/.exec(remoteId)
+      if (answer) {
+        return url.hostname.toLowerCase() === 'www.zhihu.com' &&
+          url.pathname === `/question/${answer[1]}/answer/${answer[2]}`
+      }
+
+      const article = /^article:([1-9]\d{0,31})$/.exec(remoteId)
+      if (article) {
+        return url.hostname.toLowerCase() === 'zhuanlan.zhihu.com' &&
+          url.pathname === `/p/${article[1]}`
+      }
+
+      const pin = /^pin:([1-9]\d{0,31})$/.exec(remoteId)
+      if (pin) {
+        return url.hostname.toLowerCase() === 'www.zhihu.com' &&
+          url.pathname === `/pin/${pin[1]}`
+      }
+
+      return false
+    } catch {
+      return false
+    }
+  }
+
   return true
+}
+
+function hasExplicitPort(value: string): boolean {
+  const authority = /^https:\/\/([^/?#]+)/i.exec(value)?.[1] ?? ''
+  return /:\d+$/.test(authority)
 }
 
 function isIpAddress(hostname: string): boolean {

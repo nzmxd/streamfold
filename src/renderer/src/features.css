@@ -190,6 +190,7 @@
 .profile-summary-copy .profile-account-id { margin-top: 4px; color: var(--text-secondary); font-size: var(--font-secondary); line-height: var(--line-secondary); }
 .profile-summary-copy .profile-bio { margin-top: 7px; overflow: hidden; color: var(--text-tertiary); font-size: var(--font-secondary); line-height: var(--line-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .profile-stat-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; padding: 0; }
+.profile-stat-list.four-columns { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .profile-stat-list div { min-width: 0; padding: 5px 16px; border-left: 1px solid var(--border); }
 .profile-stat-list dt { overflow: hidden; color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); text-overflow: ellipsis; white-space: nowrap; }
 .profile-stat-list dd { margin: 5px 0 0; overflow: hidden; color: var(--text); font-size: var(--font-metric); font-weight: 700; line-height: var(--line-metric); text-overflow: ellipsis; white-space: nowrap; }

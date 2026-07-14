@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 7
+export const CURRENT_SCHEMA_VERSION = 8
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -37,6 +37,10 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 7) {
     inTransaction(db, () => migrateV6ToV7(db))
+    version = 7
+  }
+  if (version < 8) {
+    inTransaction(db, () => migrateV7ToV8(db))
   }
 }
 
@@ -342,6 +346,50 @@ function migrateV6ToV7(db: DatabaseSync): void {
       url LIKE 'https://creator.xiaohongshu.com/statistics/note-detail?noteId=%'
     );
     PRAGMA user_version = 7;
+  `)
+}
+
+function migrateV7ToV8(db: DatabaseSync): void {
+  db.exec(`
+    WITH ordered AS (
+      SELECT
+        id,
+        views,
+        likes,
+        comments,
+        shares,
+        favorites,
+        ROW_NUMBER() OVER (
+          PARTITION BY content_id ORDER BY captured_at ASC, id ASC
+        ) AS snapshot_number,
+        LAG(views) OVER (
+          PARTITION BY content_id ORDER BY captured_at ASC, id ASC
+        ) AS previous_views,
+        LAG(likes) OVER (
+          PARTITION BY content_id ORDER BY captured_at ASC, id ASC
+        ) AS previous_likes,
+        LAG(comments) OVER (
+          PARTITION BY content_id ORDER BY captured_at ASC, id ASC
+        ) AS previous_comments,
+        LAG(shares) OVER (
+          PARTITION BY content_id ORDER BY captured_at ASC, id ASC
+        ) AS previous_shares,
+        LAG(favorites) OVER (
+          PARTITION BY content_id ORDER BY captured_at ASC, id ASC
+        ) AS previous_favorites
+      FROM content_snapshots
+    )
+    DELETE FROM content_snapshots
+    WHERE id IN (
+      SELECT id FROM ordered
+      WHERE snapshot_number > 1
+        AND views IS previous_views
+        AND likes IS previous_likes
+        AND comments IS previous_comments
+        AND shares IS previous_shares
+        AND favorites IS previous_favorites
+    );
+    PRAGMA user_version = 8;
   `)
 }
 

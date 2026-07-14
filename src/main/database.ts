@@ -1038,6 +1038,13 @@ export class SocialDatabase {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(content_id, captured_at) DO NOTHING
     `)
+    const findLatestSnapshot = this.db.prepare(`
+      SELECT views, likes, comments, shares, favorites, captured_at
+      FROM content_snapshots
+      WHERE content_id = ?
+      ORDER BY captured_at DESC, id DESC
+      LIMIT 1
+    `)
 
     for (const content of contents) {
       const existing = findContent.get(accountId, content.remoteId) as unknown as { id: string } | undefined
@@ -1056,6 +1063,11 @@ export class SocialDatabase {
         )
       }
       for (const snapshot of content.snapshots) {
+        const latest = findLatestSnapshot.get(contentId) as unknown as SnapshotRow | undefined
+        if (latest && sameSnapshotMetrics(latest, snapshot)) {
+          skippedSnapshotCount += 1
+          continue
+        }
         const result = insertSnapshot.run(
           randomUUID(), contentId, snapshot.views, snapshot.likes, snapshot.comments,
           snapshot.shares, snapshot.favorites, snapshot.capturedAt
@@ -1532,6 +1544,17 @@ export class SocialDatabase {
       throw error
     }
   }
+}
+
+function sameSnapshotMetrics(
+  previous: Pick<SnapshotRow, 'views' | 'likes' | 'comments' | 'shares' | 'favorites'>,
+  current: Pick<ContentSnapshot, 'views' | 'likes' | 'comments' | 'shares' | 'favorites'>
+): boolean {
+  return previous.views === current.views &&
+    previous.likes === current.likes &&
+    previous.comments === current.comments &&
+    previous.shares === current.shares &&
+    previous.favorites === current.favorites
 }
 
 function mapAccount(

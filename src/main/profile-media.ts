@@ -9,6 +9,16 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const CACHE_KEY_RE = /^([0-9a-f]{64})\.(jpg|png|webp|gif|avif)$/
 const MEDIA_PATH_RE = /^\/media\/avatars\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/([0-9a-f]{64}\.(?:jpg|png|webp|gif|avif))$/
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
+const ZHIHU_AVATAR_HOSTS = new Set([
+  'pic.zhimg.com',
+  'pic1.zhimg.com',
+  'pic2.zhimg.com',
+  'pic3.zhimg.com',
+  'pic4.zhimg.com',
+  'pica.zhimg.com',
+  'picb.zhimg.com',
+  'picx.zhimg.com'
+])
 
 const MIME_EXTENSIONS = Object.freeze({
   'image/jpeg': 'jpg',
@@ -19,6 +29,7 @@ const MIME_EXTENSIONS = Object.freeze({
 } as const)
 
 type SupportedMime = keyof typeof MIME_EXTENSIONS
+type AvatarSourceFamily = 'xiaohongshu' | 'zhihu'
 
 export interface CachedProfileAvatar {
   cacheKey: string
@@ -139,6 +150,8 @@ export class ProfileMediaStore {
     signal: AbortSignal
   ): Promise<CachedProfileAvatar> {
     let current = assertAvatarSourceUrl(sourceUrl)
+    const sourceFamily = avatarSourceFamily(current.hostname)
+    if (!sourceFamily) throw new Error('头像地址不在允许的平台域名内')
     let response: Response | null = null
     for (let redirects = 0; ; redirects += 1) {
       if (signal.aborted) throw new Error('头像下载已取消')
@@ -154,7 +167,7 @@ export class ProfileMediaStore {
         signal
       })
       if (response.redirected) throw new Error('头像请求发生了未经核验的自动跳转')
-      if (response.url) assertAvatarSourceUrl(response.url)
+      if (response.url) assertAvatarSourceUrl(response.url, sourceFamily)
       if (!REDIRECT_STATUSES.has(response.status)) break
       await cancelBody(response)
       if (redirects >= MAX_REDIRECTS) throw new Error('头像重定向次数超过上限')
@@ -166,7 +179,7 @@ export class ProfileMediaStore {
       } catch {
         throw new Error('头像重定向地址无效')
       }
-      current = assertAvatarSourceUrl(next.href)
+      current = assertAvatarSourceUrl(next.href, sourceFamily)
     }
 
     if (!response || response.status !== 200) {
@@ -241,7 +254,7 @@ export class ProfileMediaStore {
   }
 }
 
-function assertAvatarSourceUrl(value: string): URL {
+function assertAvatarSourceUrl(value: string, expectedFamily?: AvatarSourceFamily): URL {
   if (typeof value !== 'string' || value.length < 1 || value.length > 2_048) {
     throw new Error('头像地址无效')
   }
@@ -254,13 +267,22 @@ function assertAvatarSourceUrl(value: string): URL {
   const authority = /^https:\/\/([^/?#]+)/i.exec(value)?.[1] ?? ''
   const hasExplicitPort = /:\d+$/.test(authority)
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
-  const allowed = hostname === 'xhscdn.com' || hostname.endsWith('.xhscdn.com') ||
-    hostname === 'xiaohongshu.com' || hostname.endsWith('.xiaohongshu.com')
-  if (url.protocol !== 'https:' || !allowed || url.username || url.password || url.port ||
+  const family = avatarSourceFamily(hostname)
+  if (url.protocol !== 'https:' || !family || (expectedFamily && family !== expectedFamily) ||
+    url.username || url.password || url.port ||
     hasExplicitPort || url.hash) {
     throw new Error('头像地址不在允许的平台域名内')
   }
   return url
+}
+
+function avatarSourceFamily(hostname: string): AvatarSourceFamily | null {
+  const normalized = hostname.toLowerCase().replace(/\.$/, '')
+  if (normalized === 'xhscdn.com' || normalized.endsWith('.xhscdn.com') ||
+    normalized === 'xiaohongshu.com' || normalized.endsWith('.xiaohongshu.com')) {
+    return 'xiaohongshu'
+  }
+  return ZHIHU_AVATAR_HOSTS.has(normalized) ? 'zhihu' : null
 }
 
 function parseContentType(value: string | null): SupportedMime {

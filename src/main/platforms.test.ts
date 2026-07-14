@@ -20,6 +20,7 @@ describe('isOfficialUrl', () => {
     expect(isOfficialUrl('xiaohongshu', 'https://creator.xiaohongshu.com/')).toBe(true)
     expect(isOfficialUrl('weibo', 'https://passport.weibo.com/')).toBe(true)
     expect(isOfficialUrl('zhihu', 'https://www.zhihu.com/signin')).toBe(true)
+    expect(isOfficialUrl('zhihu', 'https://zhuanlan.zhihu.com/p/123')).toBe(true)
     expect(isOfficialUrl('weibo', 'https://login.sina.com.cn/')).toBe(true)
   })
 
@@ -35,6 +36,7 @@ describe('isOfficialUrl', () => {
   it('rejects credentials, IP addresses and nonstandard ports', () => {
     expect(isOfficialUrl('weibo', 'https://user:pass@weibo.com/')).toBe(false)
     expect(isOfficialUrl('weibo', 'https://weibo.com:8443/')).toBe(false)
+    expect(isOfficialUrl('zhihu', 'https://www.zhihu.com:443/')).toBe(false)
     expect(isOfficialUrl('weibo', 'https://127.0.0.1/')).toBe(false)
   })
 })
@@ -83,5 +85,43 @@ describe('isOfficialContentUrl', () => {
       `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=bad%20token`,
       noteId
     )).toBe(false)
+  })
+
+  it('accepts exact Zhihu answer, article and pin canonical paths', () => {
+    expect(isOfficialContentUrl(
+      'zhihu',
+      'https://www.zhihu.com/question/123456789/answer/987654321',
+      'answer:123456789:987654321'
+    )).toBe(true)
+    expect(isOfficialContentUrl(
+      'zhihu',
+      'https://zhuanlan.zhihu.com/p/123456789',
+      'article:123456789'
+    )).toBe(true)
+    expect(isOfficialContentUrl(
+      'zhihu',
+      'https://www.zhihu.com/pin/1621203130250403840',
+      'pin:1621203130250403840'
+    )).toBe(true)
+  })
+
+  it.each([
+    ['lookalike answer host', 'https://www.zhihu.com.evil.test/question/123/answer/456', 'answer:123:456'],
+    ['wrong answer id', 'https://www.zhihu.com/question/123/answer/457', 'answer:123:456'],
+    ['wrong question id', 'https://www.zhihu.com/question/124/answer/456', 'answer:123:456'],
+    ['answer on article host', 'https://zhuanlan.zhihu.com/question/123/answer/456', 'answer:123:456'],
+    ['article on main host', 'https://www.zhihu.com/p/456', 'article:456'],
+    ['pin on article host', 'https://zhuanlan.zhihu.com/pin/456', 'pin:456'],
+    ['unexpected query', 'https://www.zhihu.com/question/123/answer/456?utm_source=test', 'answer:123:456'],
+    ['unexpected hash', 'https://zhuanlan.zhihu.com/p/456#comment', 'article:456'],
+    ['trailing slash', 'https://www.zhihu.com/pin/456/', 'pin:456'],
+    ['encoded path id', 'https://zhuanlan.zhihu.com/p/%34%35%36', 'article:456'],
+    ['non-HTTPS URL', 'http://www.zhihu.com/pin/456', 'pin:456'],
+    ['credentials', 'https://user:secret@www.zhihu.com/pin/456', 'pin:456'],
+    ['explicit default port', 'https://www.zhihu.com:443/pin/456', 'pin:456'],
+    ['unknown content namespace', 'https://www.zhihu.com/pin/456', 'video:456'],
+    ['ambiguous unscoped id', 'https://www.zhihu.com/pin/456', '456']
+  ])('rejects unsafe or mismatched Zhihu content URLs: %s', (_case, url, remoteId) => {
+    expect(isOfficialContentUrl('zhihu', url, remoteId)).toBe(false)
   })
 })

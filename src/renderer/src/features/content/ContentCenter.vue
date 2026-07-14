@@ -3,16 +3,22 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import type {
   Account,
   ContentDetail,
+  ContentSnapshot,
   ContentSummary,
   ContentType,
-  MetricValues,
   PlatformId
 } from '../../../../shared/contracts'
 import { accountDisplayName } from '../accounts/presentation'
 import { contentTypeLabel, delta, deltaLabel, formatDate, formatNumber, messageOf, platformLabel } from '../shared/format'
+import {
+  contentMetricLabel,
+  preferredSnapshotMetricKey,
+  primaryContentMetric,
+  type ContentMetricKey
+} from './metrics'
 import { contentQueryFromFilters, reconcileContentSelection } from './query'
 
-type MetricKey = keyof MetricValues
+type MetricKey = ContentMetricKey
 
 const accounts = ref<Account[]>([])
 const items = ref<ContentSummary[]>([])
@@ -44,6 +50,7 @@ const metricFields: Array<{ key: MetricKey; label: string }> = [
 ]
 
 const selectedSummary = computed(() => items.value.find((item) => item.id === selectedId.value) ?? null)
+const historyMetricKey = computed(() => preferredSnapshotMetricKey(detail.value?.snapshots ?? []))
 
 async function loadItems(): Promise<void> {
   const sequence = ++loadSequence
@@ -134,8 +141,23 @@ function metricDelta(item: ContentSummary, key: MetricKey): number | null {
   return delta(item.latestSnapshot?.[key], item.previousSnapshot?.[key])
 }
 
-function maxSnapshotViews(value: ContentDetail): number {
-  return Math.max(1, ...value.snapshots.map((snapshot) => snapshot.views ?? 0))
+function snapshotMetricWidth(
+  snapshot: ContentSnapshot,
+  key: ContentMetricKey,
+  value: ContentDetail
+): number {
+  const current = snapshot[key]
+  if (current === null || current <= 0) return 0
+  const maximum = Math.max(0, ...value.snapshots.map((item) => item[key] ?? 0))
+  return maximum > 0 ? Math.max(2, (current / maximum) * 100) : 0
+}
+
+function snapshotSecondaryLabel(snapshot: ContentSnapshot, primary: ContentMetricKey | null): string {
+  const values = metricFields
+    .filter((field) => field.key !== primary && snapshot[field.key] !== null)
+    .slice(0, 2)
+    .map((field) => `${formatNumber(snapshot[field.key])} ${field.label}`)
+  return values.join(' · ') || '暂无其他指标'
 }
 
 watch(selectedId, (id) => void loadDetail(id))
@@ -189,7 +211,7 @@ onMounted(async () => {
         >
           <span class="content-kind">{{ contentTypeLabel(item.type) }}</span>
           <span class="content-row-main"><strong>{{ item.title || '未命名内容' }}</strong><small>{{ item.accountAlias }} · {{ platformLabel(item.platformId) }} · {{ formatDate(item.publishedAt) }}</small><em>{{ item.bodyExcerpt || '没有正文摘要' }}</em></span>
-          <span class="content-row-metric"><strong>{{ formatNumber(item.latestSnapshot?.views) }}</strong><small>浏览</small></span>
+          <span class="content-row-metric"><strong>{{ formatNumber(primaryContentMetric(item).value) }}</strong><small>{{ primaryContentMetric(item).label }}</small></span>
         </button>
       </div>
 
@@ -229,8 +251,9 @@ onMounted(async () => {
             <div v-if="detail.snapshots.length === 0" class="compact-empty"><span>暂无指标快照</span></div>
             <div v-for="snapshot in detail.snapshots.slice().reverse()" :key="snapshot.capturedAt" class="snapshot-row">
               <span>{{ formatDate(snapshot.capturedAt, true) }}</span>
-              <i><b :style="{ width: `${Math.max(2, ((snapshot.views ?? 0) / maxSnapshotViews(detail)) * 100)}%` }"></b></i>
-              <strong>{{ formatNumber(snapshot.views) }} 浏览</strong><small>{{ formatNumber(snapshot.likes) }} 赞 · {{ formatNumber(snapshot.comments) }} 评</small>
+              <i><b v-if="historyMetricKey && snapshot[historyMetricKey] !== null" :style="{ width: `${snapshotMetricWidth(snapshot, historyMetricKey, detail)}%` }"></b></i>
+              <strong v-if="historyMetricKey">{{ formatNumber(snapshot[historyMetricKey]) }} {{ contentMetricLabel(historyMetricKey) }}</strong><strong v-else>暂无可用指标</strong>
+              <small>{{ snapshotSecondaryLabel(snapshot, historyMetricKey) }}</small>
             </div>
           </section>
 

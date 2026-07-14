@@ -106,6 +106,50 @@ describe('ProfileMediaStore', () => {
     expect(unsafeRedirect).toHaveBeenCalledOnce()
   })
 
+  it('accepts only explicitly listed Zhihu avatar CDN hosts and same-platform redirects', async () => {
+    const zhihuSource = 'https://picx.zhimg.com/v2-avatar.png?source=account_card'
+    const calls: string[] = []
+    const fetcher: ProfileMediaFetcher = vi.fn(async (url) => {
+      calls.push(url)
+      if (calls.length === 1) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://pic1.zhimg.com/v2-avatar.png' }
+        })
+      }
+      return imageResponse(png, 'image/png')
+    })
+
+    await expect(store.cacheAvatar(firstAccount, zhihuSource, fetcher))
+      .resolves.toMatchObject({ mime: 'image/png' })
+    expect(calls).toEqual([
+      zhihuSource,
+      'https://pic1.zhimg.com/v2-avatar.png'
+    ])
+
+    for (const value of [
+      'https://zhimg.com/avatar.png',
+      'https://unreviewed.zhimg.com/avatar.png',
+      'https://picx.zhimg.com.evil.example/avatar.png',
+      'https://sub.picx.zhimg.com/avatar.png',
+      'http://picx.zhimg.com/avatar.png',
+      'https://user:secret@picx.zhimg.com/avatar.png',
+      'https://picx.zhimg.com:443/avatar.png',
+      'https://picx.zhimg.com:444/avatar.png'
+    ]) {
+      await expect(store.cacheAvatar(secondAccount, value, responseFetcher(png, 'image/png')))
+        .rejects.toThrow('允许的平台域名')
+    }
+
+    const crossPlatformRedirect = vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: source }
+    }))
+    await expect(store.cacheAvatar(secondAccount, zhihuSource, crossPlatformRedirect))
+      .rejects.toThrow('允许的平台域名')
+    expect(crossPlatformRedirect).toHaveBeenCalledOnce()
+  })
+
   it('stops after at most three validated redirects', async () => {
     let step = 0
     const fetcher = vi.fn(async () => {

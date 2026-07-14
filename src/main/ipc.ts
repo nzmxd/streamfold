@@ -5,9 +5,9 @@ import type { BackupService } from './backup-service'
 import type { SocialDatabase } from './database'
 import type { ExportService } from './export-service'
 import type { PluginService } from './plugin-service'
+import type { PlatformSyncService } from './platform-sync-service'
 import { isOfficialContentUrl, listPlatforms } from './platforms'
 import type { SettingsService } from './settings-service'
-import type { XiaohongshuApiService } from './xiaohongshu-api-service'
 import { isTrustedShellUrl } from './shell-security'
 import {
   parseAnalyticsQuery,
@@ -33,7 +33,7 @@ export interface IpcServices {
   settings: SettingsService
   exporter: ExportService
   backup: BackupService
-  xiaohongshuApi: XiaohongshuApiService
+  platformSync: PlatformSyncService
 }
 
 let removeNativeThemeListener: (() => void) | null = null
@@ -114,7 +114,7 @@ export function registerIpc(
   )))
   ipcMain.handle('accounts:disconnect', trusted(async (_event, value) => {
     const id = parseId(value)
-    if (services.xiaohongshuApi.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
+    if (services.platformSync.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
     if (disconnectingAccounts.has(id)) throw new Error('账号正在断开')
     disconnectingAccounts.add(id)
     try {
@@ -126,7 +126,7 @@ export function registerIpc(
   }))
   ipcMain.handle('accounts:purge', trusted(async (_event, value) => {
     const id = parseId(value)
-    if (services.xiaohongshuApi.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
+    if (services.platformSync.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理')
     disconnectingAccounts.add(id)
     try {
@@ -142,7 +142,7 @@ export function registerIpc(
     const id = parseId(value)
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理，请稍候')
     try {
-      return await services.xiaohongshuApi.verifyIdentity(id)
+      return await services.platformSync.verifyIdentity(id)
     } finally {
       notifyAccountsChanged()
     }
@@ -151,7 +151,7 @@ export function registerIpc(
     const input = parseConfirmApiIdentity(value)
     if (disconnectingAccounts.has(input.accountId)) throw new Error('账号正在处理，请稍候')
     try {
-      return await services.xiaohongshuApi.confirmIdentity(input)
+      return await services.platformSync.confirmIdentity(input)
     } finally {
       notifyAccountsChanged()
     }
@@ -160,7 +160,7 @@ export function registerIpc(
     const id = parseId(value)
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理，请稍候')
     try {
-      return await services.xiaohongshuApi.sync(id)
+      return await services.platformSync.sync(id)
     } finally {
       notifyAccountsChanged()
     }

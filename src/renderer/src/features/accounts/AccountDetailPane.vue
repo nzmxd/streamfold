@@ -3,10 +3,10 @@ import { computed, reactive, ref, watch } from 'vue'
 import type {
   Account,
   BrowserState,
-  ConfirmApiIdentityInput,
+  ConfirmSessionApiIdentityInput,
   Group,
-  ApiIdentityCheckResult,
-  XiaohongshuSyncResult,
+  SessionApiIdentityCheckResult,
+  SessionApiSyncResult,
   PlatformDefinition,
   SyncMode,
   UpdateAccountInput
@@ -32,9 +32,9 @@ const props = defineProps<{
   browserState?: BrowserState
   save: (input: UpdateAccountInput) => Promise<Account>
   openBrowser: (id: string) => Promise<BrowserState>
-  verifyIdentity: (id: string) => Promise<ApiIdentityCheckResult>
-  confirmIdentity: (input: ConfirmApiIdentityInput) => Promise<ApiIdentityCheckResult>
-  syncAccount: (id: string) => Promise<XiaohongshuSyncResult>
+  verifyIdentity: (id: string) => Promise<SessionApiIdentityCheckResult>
+  confirmIdentity: (input: ConfirmSessionApiIdentityInput) => Promise<SessionApiIdentityCheckResult>
+  syncAccount: (id: string) => Promise<SessionApiSyncResult>
   disconnect: (id: string) => Promise<void>
   purge: (id: string) => Promise<void>
 }>()
@@ -42,7 +42,10 @@ const props = defineProps<{
 const activeTab = ref<DetailTab>('overview')
 const busy = ref(false)
 const localMessage = ref('')
-const verification = ref<ApiIdentityCheckResult | null>(null)
+const verification = ref<SessionApiIdentityCheckResult | null>(null)
+const supportsManagedSync = computed(() => (
+  props.account?.platformId === 'xiaohongshu' || props.account?.platformId === 'zhihu'
+))
 const form = reactive({
   alias: '',
   note: '',
@@ -161,7 +164,7 @@ async function confirmLoginIdentity(): Promise<void> {
   const candidate = verification.value
   const confirmationToken = candidate.confirmationToken!
   const confirmed = await confirmDialog({
-    title: '绑定当前小红书账号？',
+    title: `绑定当前${props.platform?.name || '平台'}账号？`,
     description: '确认后将再次核对账号信息，并把当前身份关联到这个本地账号。',
     details: [`昵称：${candidate.remoteName}`, `账号 ID：${candidate.remoteId}`],
     confirmLabel: '确认绑定'
@@ -294,10 +297,14 @@ async function purgeAccount(): Promise<void> {
               <p class="profile-bio">{{ account.bio || '暂无简介' }}</p>
             </div>
           </div>
-          <dl class="profile-stat-list">
+          <dl class="profile-stat-list" :class="{ 'four-columns': account.platformId === 'zhihu' }">
             <div><dt>关注</dt><dd>{{ formatNumber(account.latestSnapshot?.following) }}</dd></div>
             <div><dt>粉丝</dt><dd>{{ formatNumber(account.latestSnapshot?.followers) }}</dd></div>
-            <div><dt>累计获赞与收藏</dt><dd>{{ formatNumber(account.latestSnapshot?.likesAndFavoritesTotal) }}</dd></div>
+            <template v-if="account.platformId === 'zhihu'">
+              <div><dt>累计获赞</dt><dd>{{ formatNumber(account.latestSnapshot?.likes) }}</dd></div>
+              <div><dt>获收藏</dt><dd>{{ formatNumber(account.latestSnapshot?.favorites) }}</dd></div>
+            </template>
+            <div v-else><dt>累计获赞与收藏</dt><dd>{{ formatNumber(account.latestSnapshot?.likesAndFavoritesTotal) }}</dd></div>
           </dl>
         </section>
 
@@ -330,11 +337,11 @@ async function purgeAccount(): Promise<void> {
             <div><h3>同步本人数据</h3><p>同步账号资料、作品列表和统计指标。</p></div>
             <button
               class="button primary"
-              :disabled="busy || account.platformId !== 'xiaohongshu' || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled"
+              :disabled="busy || !supportsManagedSync || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled"
               @click="syncOwnedData"
             >{{ busy ? '同步中…' : '立即同步' }}</button>
           </div>
-          <p v-if="account.platformId !== 'xiaohongshu'" class="muted">该平台的数据同步功能仍在开发中。</p>
+          <p v-if="!supportsManagedSync" class="muted">该平台的数据同步功能仍在开发中。</p>
           <p v-else-if="account.ownershipStatus !== 'plugin_verified'" class="muted">请先登录账号，再到“浏览器”页签核验当前账号。</p>
           <p v-else-if="!account.syncEnabled" class="muted">请在“设置与备注”中启用数据同步。</p>
           <p v-else class="muted">将自动使用该账号的登录会话；需要重新登录时会打开账号浏览器。</p>
@@ -356,13 +363,13 @@ async function purgeAccount(): Promise<void> {
               {{ browserState?.windowOpen ? '切换到已打开的窗口' : account.connectionStatus === 'disconnected' ? `重新打开 ${platform?.name}` : `打开 ${platform?.name} 登录页面` }} ↗
             </button>
             <button
-              v-if="account.platformId === 'xiaohongshu'"
+              v-if="supportsManagedSync"
               class="button large-action"
               :disabled="busy"
               @click="verifyLoginIdentity"
             >{{ busy ? '正在核验…' : '核验当前账号' }}</button>
             <button
-              v-if="account.platformId === 'xiaohongshu'"
+              v-if="supportsManagedSync"
               class="button primary large-action"
               :disabled="busy || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled"
               @click="syncOwnedData"

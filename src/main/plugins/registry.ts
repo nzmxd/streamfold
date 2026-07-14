@@ -4,6 +4,7 @@ import type {
   PluginManifest
 } from '../../shared/plugin-contracts'
 import { XIAOHONGSHU_API_PLUGIN_ID } from '../xiaohongshu-api-service'
+import { ZHIHU_API_PLUGIN_ID } from '../zhihu-api-service'
 
 export interface PluginDefinition {
   manifest: PluginManifest
@@ -38,6 +39,25 @@ export const xiaohongshuSessionApiManifest = manifest({
   riskLevel: 'high'
 })
 
+export const zhihuSessionApiManifest = manifest({
+  schemaVersion: 1,
+  id: ZHIHU_API_PLUGIN_ID,
+  name: '知乎数据同步',
+  version: '0.2.0',
+  description: '使用当前账号的登录会话，同步本人资料及创作中心中的回答、文章和统计指标。',
+  license: 'builtin',
+  source: 'builtin',
+  commitHash: 'builtin:zhihu-session-api@0.2.0+creator-v2',
+  mode: 'session_api',
+  readOnly: true,
+  ownedAccountOnly: true,
+  capabilities: ['account.identity', 'account.profile', 'account.metrics', 'content.list', 'content.metrics'],
+  allowedHosts: ['www.zhihu.com'],
+  minimumIntervalSeconds: 300,
+  recommendedSyncIntervalHours: 24,
+  riskLevel: 'high'
+})
+
 const plannedAdapters: PluginManifest[] = [
   {
     id: 'weibo-session-api',
@@ -51,12 +71,6 @@ const plannedAdapters: PluginManifest[] = [
     description: '抖音账号数据同步功能（计划中）。',
     allowedHosts: ['creator.douyin.com', 'www.douyin.com']
   },
-  {
-    id: 'zhihu-session-api',
-    name: '知乎数据同步',
-    description: '知乎账号数据同步功能（计划中）。',
-    allowedHosts: ['www.zhihu.com']
-  }
 ].map((item) => manifest({
   schemaVersion: 1,
   version: '0.0.0-planned',
@@ -76,6 +90,11 @@ const plannedAdapters: PluginManifest[] = [
 const definitions: readonly PluginDefinition[] = Object.freeze([
   Object.freeze({
     manifest: xiaohongshuSessionApiManifest,
+    availability: 'available' as const,
+    defaultEnabled: false
+  }),
+  Object.freeze({
+    manifest: zhihuSessionApiManifest,
     availability: 'available' as const,
     defaultEnabled: false
   }),
