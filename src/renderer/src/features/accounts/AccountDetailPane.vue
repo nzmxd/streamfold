@@ -359,22 +359,26 @@ async function purgeAccount(): Promise<void> {
             <h3>在独立窗口中完成登录</h3>
             <p>打开浏览器后，按平台页面提示完成登录。关闭窗口后，下次可以继续使用当前登录状态。</p>
             <ul><li>可使用前进、后退和刷新</li><li>登录完成后返回这里核验账号</li></ul>
-            <button class="button primary large-action" :disabled="busy" @click="openBrowserWindow">
-              {{ browserState?.windowOpen ? '切换到已打开的窗口' : account.connectionStatus === 'disconnected' ? `重新打开 ${platform?.name}` : `打开 ${platform?.name} 登录页面` }} ↗
-            </button>
-            <button
-              v-if="supportsManagedSync"
-              class="button large-action"
-              :disabled="busy"
-              @click="verifyLoginIdentity"
-            >{{ busy ? '正在核验…' : '核验当前账号' }}</button>
-            <button
-              v-if="supportsManagedSync"
-              class="button primary large-action"
-              :disabled="busy || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled"
-              @click="syncOwnedData"
-            >{{ busy ? '同步中…' : `同步账号数据（${syncModeLabel(account.syncMode)}）` }}</button>
-            <p v-else class="muted">该平台的数据同步功能仍在开发中。</p>
+            <div class="browser-actions" role="group" aria-label="账号浏览器操作">
+              <button class="button primary large-action browser-open-action" type="button" :disabled="busy" @click="openBrowserWindow">
+                {{ browserState?.windowOpen ? '切换到已打开的窗口' : account.connectionStatus === 'disconnected' ? `重新打开 ${platform?.name}` : `打开 ${platform?.name} 登录页面` }} ↗
+              </button>
+              <div v-if="supportsManagedSync" class="browser-followup-actions">
+                <button
+                  class="button large-action verify-action"
+                  type="button"
+                  :disabled="busy"
+                  @click="verifyLoginIdentity"
+                >{{ busy ? '正在核验…' : '核验当前账号' }}</button>
+                <button
+                  class="button primary large-action sync-action"
+                  type="button"
+                  :disabled="busy || account.ownershipStatus !== 'plugin_verified' || !account.syncEnabled"
+                  @click="syncOwnedData"
+                >{{ busy ? '同步中…' : `同步数据 · ${syncModeLabel(account.syncMode)}` }}</button>
+              </div>
+            </div>
+            <p v-if="!supportsManagedSync" class="muted">该平台的数据同步功能仍在开发中。</p>
             <p v-if="verification" :class="{ 'success-message': verification.status === 'verified', 'danger-text': verification.status === 'identity_mismatch', muted: !['verified', 'identity_mismatch'].includes(verification.status) }">{{ verification.message }}<template v-if="verification.remoteName"> 当前身份：{{ verification.remoteName }}</template></p>
             <div v-if="verification?.status === 'confirmation_required'" class="form-actions">
               <button class="button primary" :disabled="busy" @click="confirmLoginIdentity">确认绑定此账号</button>

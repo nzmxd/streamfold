@@ -139,7 +139,13 @@ h1, h2, h3, p { margin: 0; }
 .browser-launch-copy p { max-width: 560px; margin-top: 11px; color: #707884; font-size: var(--font-secondary); line-height: var(--line-secondary); }
 .browser-launch-copy ul { display: grid; gap: 8px; margin: 17px 0; padding: 0; color: #515861; font-size: var(--font-body); line-height: var(--line-body); list-style: none; }
 .browser-launch-copy li::before { margin-right: 7px; color: #35a36a; content: "✓"; font-weight: 700; }
-.large-action { min-height: 42px; padding-inline: 18px; }
+.browser-actions { display: grid; width: min(100%, 560px); gap: 10px; }
+.browser-actions > .button { width: 100%; }
+.browser-followup-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.browser-followup-actions .verify-action { flex: 1 1 160px; }
+.browser-followup-actions .sync-action { flex: 1.45 1 260px; }
+.browser-followup-actions .button { min-width: 0; }
+.large-action { min-height: 44px; padding-inline: 18px; }
 .browser-session-status { display: grid; grid-template-columns: 110px 120px minmax(0, 1fr); gap: 1px; margin-top: 12px; overflow: hidden; background: #e2e6ea; border: 1px solid #e2e6ea; border-radius: 9px; }
 .browser-session-status > div { display: grid; gap: 5px; padding: 11px 13px; background: #fafbfc; }
 .browser-session-status span { color: #8a919a; font-size: var(--font-caption); line-height: var(--line-caption); }
