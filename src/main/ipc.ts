@@ -67,6 +67,7 @@ export function registerIpc(
 ): void {
   const disconnectingAccounts = new Set<string>()
   let maintenance = false
+  let maintenanceMessage = '本地数据库正在恢复，请稍候'
   let activeOperations = 0
   const idleWaiters = new Set<() => void>()
   const notifyAccountsChanged = (): void => {
@@ -79,7 +80,7 @@ export function registerIpc(
     if (!window.isDestroyed()) window.webContents.send('tasks:changed')
   }
   const runTracked = async <T>(handler: () => T | Promise<T>): Promise<T> => {
-    if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
+    if (maintenance) throw new Error(maintenanceMessage)
     activeOperations += 1
     try {
       return await handler()
@@ -91,12 +92,18 @@ export function registerIpc(
       }
     }
   }
-  const beginMaintenance = async (): Promise<void> => {
-    if (maintenance) throw new Error('本地数据库正在恢复')
+  const beginMaintenance = (message = '本地数据库正在恢复，请稍候'): Promise<void> => {
+    if (maintenance) throw new Error(maintenanceMessage)
     maintenance = true
+    maintenanceMessage = message
     if (activeOperations > 0) {
-      await new Promise<void>((resolve) => idleWaiters.add(resolve))
+      return new Promise<void>((resolve) => idleWaiters.add(resolve))
     }
+    return Promise.resolve()
+  }
+  const endMaintenance = (): void => {
+    maintenance = false
+    maintenanceMessage = '本地数据库正在恢复，请稍候'
   }
   const trusted = <T>(handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => T | Promise<T>) => {
     return async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<T> => {
@@ -415,13 +422,23 @@ export function registerIpc(
   ipcMain.handle('updates:download', trusted(() => services.updates.download()))
   ipcMain.handle('updates:restart-and-install', async (event) => {
     assertTrustedSender(window, event)
-    if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
-    if (activeOperations > 0 || services.syncBatches.hasRunningTasks() ||
-      services.pluginAutomation.hasRunningTasks()) {
-      throw new Error('当前仍有任务正在运行，请稍候再安装更新')
-    }
     if (services.updates.getState().phase !== 'downloaded') throw new Error('更新尚未下载完成')
-    setImmediate(() => services.updates.restartAndInstall())
+    const idle = beginMaintenance('应用正在准备安装更新，请稍候')
+    try {
+      services.syncBatches.stop()
+      services.pluginAutomation.stop()
+      await idle
+      if (activeOperations > 0 || services.syncBatches.hasRunningTasks() ||
+        services.pluginAutomation.hasRunningTasks()) {
+        throw new Error('当前仍有任务正在运行，请稍候再安装更新')
+      }
+      services.updates.restartAndInstall()
+    } catch (error) {
+      endMaintenance()
+      services.pluginAutomation.start()
+      services.syncBatches.start()
+      throw error
+    }
   })
   ipcMain.handle('settings:overview', trusted(() => services.settings.overview()))
   ipcMain.handle('settings:update', trusted(async (_event, value) => {
@@ -447,7 +464,7 @@ export function registerIpc(
   ipcMain.handle('settings:backup-restore', async (event, value) => {
     assertTrustedSender(window, event)
     const input = parseRestoreEncryptedBackup(value)
-    if (maintenance) throw new Error('本地数据库正在恢复')
+    if (maintenance) throw new Error(maintenanceMessage)
     if (services.syncBatches.hasRunningTasks() || services.pluginAutomation.hasRunningTasks()) {
       throw new Error('后台任务正在运行，请完成后再恢复备份')
     }
@@ -462,7 +479,7 @@ export function registerIpc(
       notifyContentChanged()
       return result
     } finally {
-      maintenance = false
+      endMaintenance()
       services.pluginAutomation.start()
       services.syncBatches.start()
     }
@@ -475,7 +492,7 @@ export function registerIpc(
   })
   ipcMain.handle('browser-workspace:set-appearance', (event, value) => {
     browser.assertTrustedSender(event)
-    if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
+    if (maintenance) throw new Error(maintenanceMessage)
     const preference = parseThemePreference(value)
     database.setSetting('appearance.theme', preference)
     nativeTheme.themeSource = preference

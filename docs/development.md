@@ -4,7 +4,7 @@
 
 ## 1. 环境
 
-- Node.js 22.13.0 或更高的 22.x 版本
+- Node.js 22.21.1 或更高的兼容版本
 - pnpm 10.x；仓库声明的版本为 10.24.0
 - Windows、macOS 或 Linux 桌面环境
 
@@ -32,6 +32,7 @@ pnpm dev
 | `pnpm plugin:official-webhook:verify` | 验证随应用分发的官方 Webhook 包、签名与固定信任信息 |
 | `pnpm test:package-plugins -- release` | 检查安装目录中的沙箱入口、QuickJS 依赖和签名插件资源 |
 | `pnpm test:package-runtime -- release` | 启动安装目录应用并在真实 Utility Process 中执行 QuickJS Smoke |
+| `pnpm test:update-artifacts` | 按环境变量校验更新清单引用、SHA-512、blockmap 和安装目录更新源 |
 | `pnpm preview` | 预览生产构建 |
 | `pnpm dist:dir` | 生成未打包安装器的应用目录 |
 | `pnpm dist:win` | 生成 Windows NSIS 和 ZIP |
@@ -131,7 +132,7 @@ git diff --check
 
 ## 9. CI、打包与发布
 
-`.github/workflows/ci.yml` 在 `master`、`main` 的推送与 Pull Request 上使用 Node.js 22.13.0、pnpm 10.24.0 和冻结锁文件执行测试、类型检查与生产构建。
+`.github/workflows/ci.yml` 在 `master`、`main` 的推送与 Pull Request 上使用 Node.js 22.21.1、pnpm 10.24.0 和冻结锁文件执行测试、类型检查与生产构建。该最低补丁版本规避了 Windows 上旧版实验性 `node:sqlite` 关闭后仍占用 WAL/数据库文件的问题。
 
 `.github/workflows/release.yml` 支持手动打包和版本标签发布：
 
@@ -139,23 +140,23 @@ git diff --check
 - 标签必须是严格的稳定 SemVer，例如 `v0.6.0`，并与 `package.json` 版本一致。
 - Windows、macOS、Linux 在各自原生 runner 上打包；三个任务都成功后才汇总 Release。
 - 每个平台打包后都会检查 `plugin-sandbox.js`、QuickJS 运行资源和官方签名 Webhook 包。
-- 已存在同名 Release 时拒绝覆盖；发布先创建 draft，完整上传后再标记为 latest。
+- 已发布的同名 Release 拒绝覆盖；失败运行留下的同名 draft 会在重跑时删除并重新创建，完整上传后再标记为 latest。
 
-Release 仓库必须配置 Actions Variable `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`（Ed25519 SPKI DER Base64 或完整公钥）。目录 URL 在构建时固定为同一 GitHub 所有者的 `https://<owner>.github.io/streamfold-plugins/catalog.json`；这两个值会编译进主进程 Bundle，运行时环境变量不能替换信任根。
+远程插件目录是可选能力。配置 Actions Variable `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`（Ed25519 SPKI DER Base64）后，目录 URL 固定为同一 GitHub 所有者的 `https://<owner>.github.io/streamfold-plugins/catalog.json`；未配置时工作流会把 URL 和根公钥同时编译为空，“发现”页显示未配置，但不阻塞内置插件、签名 Webhook 或应用发布。根私钥不得进入仓库或 Actions。
 
 官方 Webhook 源码位于 `tooling/builtin-plugins/streamfold.webhook`，提交的签名包位于 `resources/plugins`。日常验证只运行 `plugin:official-webhook:verify`。需要重签时，通过 `STREAMFOLD_OFFICIAL_PLUGIN_PRIVATE_KEY_FILE` 指向受保护的 Ed25519 私钥后运行 `plugin:official-webhook:build`；私钥不得进入仓库、Actions 构件或安装包。
 
 | 平台 | 用户构件 | 在线更新资产 | 应用内更新边界 |
 |---|---|---|---|
 | Windows | NSIS `.exe`、`.zip` | `latest.yml`、安装包和 blockmap | NSIS 安装版；ZIP 手动更新 |
-| macOS | `.dmg`、`.zip` | `latest-mac.yml`、ZIP 和 blockmap | 需要签名应用；DMG 用于首次/手动安装 |
+| macOS | `.dmg`、`.zip` | 无 | 0.6.0 未签名，使用 DMG/ZIP 手动更新；完成 Developer ID 签名与公证后再启用应用内更新 |
 | Linux | `.AppImage`、`.tar.gz` | `latest-linux.yml`、AppImage | 仅 AppImage；`tar.gz` 手动更新 |
 
-工作流还生成 `SHA256SUMS.txt`。`latest*.yml` 中的 SHA-512 是 electron-updater 发现和校验资源所必需的资产，不能只上传安装包。
+工作流还生成 `SHA256SUMS.txt`。Windows/Linux 打包会解析 `latest*.yml`，逐项核对其引用文件、大小、SHA-512、blockmap，以及安装目录 `app-update.yml` 中的 GitHub owner/repo；不能只验证文件名存在。
 
 ### 客户端更新行为
 
-只有标签工作流生成、包含 `app-update.yml` 的正式受支持安装包启用更新。默认启动 15 秒后检查，此后每 6 小时检查；发现版本后后台下载，必须由用户确认才重启安装。开发版、目录构建、Windows ZIP 和 Linux `tar.gz` 不执行应用内更新。
+只有标签工作流生成、包含 `app-update.yml` 且构建时明确启用更新的正式安装包才会连接更新源。默认启动 15 秒后检查，此后每 6 小时检查；发现版本后后台下载，必须由用户确认才重启安装。开发版、目录构建、未签名 macOS 构件和 Linux `tar.gz` 不执行应用内更新；Windows 以 NSIS 安装版为正式验收目标。
 
 更新源是公开 GitHub Release，客户端不保存 GitHub Token。私有仓库需要分发读取凭据，不符合当前安全边界。Renderer 无权修改更新源、版本或安装文件；恢复数据库等业务操作进行时，主进程拒绝重启安装。
 
@@ -165,7 +166,7 @@ Release 仓库必须配置 Actions Variable `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`
 2. 执行 `pnpm test`、`pnpm typecheck`、`pnpm build`、`pnpm test:smoke` 与 `git diff --check`。
 3. 确认没有提交 `.env`、证书、密钥、SQLite、Session、真实响应或个人数据。
 4. 提交代码并创建与版本完全一致的稳定标签。
-5. 核对三个平台构件、`latest*.yml`、blockmap、校验和及 draft Release，再正式发布。
+5. 核对三个平台构件、Windows/Linux `latest*.yml`、blockmap、校验和及 draft Release，再正式发布。
 6. 使用两个不同版本的正式安装包完成一次真实在线更新验收。
 
 当前工作流关闭证书自动发现，默认构件未签名。正式对外分发前应完成 Windows Authenticode、macOS Developer ID 签名与 Apple 公证，并把签名凭据放入受保护的 GitHub Environment 或 Actions Secrets；不要提交证书、密码或令牌。
@@ -187,7 +188,7 @@ Release 仓库必须配置 Actions Variable `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`
 - 微博、抖音 Session API 适配器和真实本人账号验收。
 - 小红书多页大账号、空作品、更多登录失效与 429/461/471 在线场景。
 - 知乎空列表、真实 401/403/429 与账号切换在线场景。
-- Windows/macOS 正式签名、公证，以及公开 GitHub 仓库的首次 Release/在线更新验收。
+- Windows/macOS 正式签名、公证，macOS 应用内更新，以及从较低正式版本升级到后续版本的真实验收。
 - 媒体文件备份、XLSX 导出、分组拖拽和浏览器窗口位置恢复。
 
 优先顺序是先继续收口 0.6.0 的真实多账号长时间运行场景，再基于连续快照增强分析，最后通过签名目录逐个平台开放新适配器。详细版本范围、技术改造和验收门槛见[产品路线图](roadmap.md)。

@@ -14,6 +14,7 @@ export type UpdatePhase = (typeof updatePhases)[number]
 export type UpdateUnsupportedReason =
   | 'development'
   | 'missing-source'
+  | 'manual-update-only'
   | 'unsupported-package'
 
 export interface UpdateProgress {

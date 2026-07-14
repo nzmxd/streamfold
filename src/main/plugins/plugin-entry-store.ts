@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { access, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
@@ -11,28 +12,11 @@ export class PluginEntryStore {
   async stageAndActivate(plugin: VerifiedPluginPackage): Promise<void> {
     const target = this.versionDirectory(plugin.manifest.id, plugin.manifest.version)
     if (await exists(target)) {
-      const existing = await readFile(join(target, '.content-hash'), 'utf8').catch(() => '')
-      if (existing.trim() !== plugin.contentHash) throw new Error('相同插件版本的内容摘要不一致')
-      for (const [name, expected] of plugin.entries) {
-        const file = resolve(target, ...name.split('/'))
-        assertInside(target, file)
-        const metadata = await lstat(file).catch(() => null)
-        if (!metadata?.isFile() || metadata.isSymbolicLink()) {
-          throw new Error('已安装插件文件与验证包不一致')
-        }
-        const actual = await readFile(file)
-        try {
-          if (!actual.equals(Buffer.from(expected.buffer, expected.byteOffset, expected.byteLength))) {
-            throw new Error('已安装插件文件与验证包不一致')
-          }
-        } finally {
-          actual.fill(0)
-        }
-      }
+      await this.assertInstalledPackage(target, plugin)
       return
     }
     await mkdir(this.rootDirectory, { recursive: true })
-    const staging = join(this.rootDirectory, `.staging-${plugin.manifest.id}-${Date.now()}-${process.pid}`)
+    const staging = join(this.rootDirectory, `.staging-${plugin.manifest.id}-${randomUUID()}`)
     await rm(staging, { recursive: true, force: true })
     try {
       for (const [name, value] of plugin.entries) {
@@ -43,10 +27,14 @@ export class PluginEntryStore {
       }
       await writeFile(join(staging, '.content-hash'), plugin.contentHash, { flag: 'wx', mode: 0o600 })
       await mkdir(dirname(target), { recursive: true })
-      await rename(staging, target)
-    } catch (error) {
+      try {
+        await renameWithRetry(staging, target)
+      } catch (error) {
+        if (!await exists(target)) throw error
+        await this.assertInstalledPackage(target, plugin)
+      }
+    } finally {
       await rm(staging, { recursive: true, force: true })
-      throw error
     }
   }
 
@@ -86,6 +74,27 @@ export class PluginEntryStore {
     assertInside(this.rootDirectory, directory)
     return directory
   }
+
+  private async assertInstalledPackage(target: string, plugin: VerifiedPluginPackage): Promise<void> {
+    const existing = await readFile(join(target, '.content-hash'), 'utf8').catch(() => '')
+    if (existing.trim() !== plugin.contentHash) throw new Error('相同插件版本的内容摘要不一致')
+    for (const [name, expected] of plugin.entries) {
+      const file = resolve(target, ...name.split('/'))
+      assertInside(target, file)
+      const metadata = await lstat(file).catch(() => null)
+      if (!metadata?.isFile() || metadata.isSymbolicLink()) {
+        throw new Error('已安装插件文件与验证包不一致')
+      }
+      const actual = await readFile(file)
+      try {
+        if (!actual.equals(Buffer.from(expected.buffer, expected.byteOffset, expected.byteLength))) {
+          throw new Error('已安装插件文件与验证包不一致')
+        }
+      } finally {
+        actual.fill(0)
+      }
+    }
+  }
 }
 
 export class PluginEntryResolver {
@@ -103,6 +112,27 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+const renameRetryDelays = [25, 50, 100, 200, 400, 800] as const
+
+async function renameWithRetry(source: string, target: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(source, target)
+      return
+    } catch (error) {
+      if (!isRetryableRenameError(error) || attempt >= renameRetryDelays.length) throw error
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, renameRetryDelays[attempt]))
+    }
+  }
+}
+
+function isRetryableRenameError(value: unknown): boolean {
+  const code = value && typeof value === 'object' && 'code' in value
+    ? String((value as { code?: unknown }).code)
+    : ''
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY'
 }
 
 function assertInside(root: string, target: string): void {

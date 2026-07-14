@@ -27,7 +27,7 @@ vi.mock('electron', () => ({
 
 import { registerIpc, unregisterIpc, type IpcServices } from './ipc'
 
-describe('plugin IPC trust boundary', () => {
+describe('IPC trust and maintenance boundary', () => {
   beforeEach(() => {
     electronMock.handlers.clear()
     vi.clearAllMocks()
@@ -64,6 +64,60 @@ describe('plugin IPC trust boundary', () => {
     expect(fixture.pluginHost.listPackages).toHaveBeenCalledOnce()
     expect(fixture.pluginLifecycle.installDevelopment).toHaveBeenCalledWith()
   })
+
+  it('keeps update maintenance active after schedulers stop and installation starts', async () => {
+    const fixture = ipcFixture()
+    const activePackages = deferred<Array<{ id: string }>>()
+    fixture.pluginHost.listPackages.mockImplementationOnce(() => activePackages.promise)
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+
+    const packages = requiredHandler('plugins:packages')
+    const activeRequest = packages(eventFixture(fixture))
+    const installation = requiredHandler('updates:restart-and-install')(eventFixture(fixture))
+
+    await vi.waitFor(() => expect(fixture.syncBatches.stop).toHaveBeenCalledOnce())
+    await expect(packages(eventFixture(fixture))).rejects.toThrow('应用正在准备安装更新')
+    expect(fixture.updates.restartAndInstall).not.toHaveBeenCalled()
+
+    activePackages.resolve([{ id: 'safe-package' }])
+    await expect(activeRequest).resolves.toEqual([{ id: 'safe-package' }])
+    await expect(installation).resolves.toBeUndefined()
+
+    expect(fixture.syncBatches.stop).toHaveBeenCalledOnce()
+    expect(fixture.pluginAutomation.stop).toHaveBeenCalledOnce()
+    expect(fixture.updates.restartAndInstall).toHaveBeenCalledOnce()
+    expect(fixture.syncBatches.start).not.toHaveBeenCalled()
+    expect(fixture.pluginAutomation.start).not.toHaveBeenCalled()
+    await expect(packages(eventFixture(fixture)))
+      .rejects.toThrow('应用正在准备安装更新')
+  })
+
+  it('restores schedulers and IPC access when update installation cannot start', async () => {
+    const fixture = ipcFixture()
+    fixture.updates.restartAndInstall.mockImplementation(() => { throw new Error('installer failed') })
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+
+    await expect(requiredHandler('updates:restart-and-install')(eventFixture(fixture)))
+      .rejects.toThrow('installer failed')
+
+    expect(fixture.pluginAutomation.start).toHaveBeenCalledOnce()
+    expect(fixture.syncBatches.start).toHaveBeenCalledOnce()
+    await expect(requiredHandler('plugins:packages')(eventFixture(fixture)))
+      .resolves.toEqual([{ id: 'safe-package' }])
+  })
+
+  it('rechecks running tasks after schedulers stop and restores them on rejection', async () => {
+    const fixture = ipcFixture()
+    fixture.syncBatches.hasRunningTasks.mockReturnValue(true)
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+
+    await expect(requiredHandler('updates:restart-and-install')(eventFixture(fixture)))
+      .rejects.toThrow('当前仍有任务正在运行')
+
+    expect(fixture.updates.restartAndInstall).not.toHaveBeenCalled()
+    expect(fixture.pluginAutomation.start).toHaveBeenCalledOnce()
+    expect(fixture.syncBatches.start).toHaveBeenCalledOnce()
+  })
 })
 
 function ipcFixture() {
@@ -79,23 +133,43 @@ function ipcFixture() {
     setTitleBarOverlay: vi.fn()
   } as unknown as BrowserWindow
   const pluginHost = {
-    listPackages: vi.fn(() => [{ id: 'safe-package' }])
+    listPackages: vi.fn<() => unknown>(() => [{ id: 'safe-package' }])
   }
   const pluginLifecycle = {
     installDevelopment: vi.fn(async () => null)
   }
+  const pluginAutomation = {
+    onChanged: vi.fn(() => vi.fn()),
+    stop: vi.fn(),
+    start: vi.fn(),
+    hasRunningTasks: vi.fn(() => false)
+  }
+  const syncBatches = {
+    stop: vi.fn(),
+    start: vi.fn(),
+    hasRunningTasks: vi.fn(() => false)
+  }
+  const updates = {
+    subscribe: vi.fn(() => vi.fn()),
+    getState: vi.fn(() => ({ phase: 'downloaded' })),
+    restartAndInstall: vi.fn()
+  }
   const services = {
     pluginHost,
     pluginLifecycle,
-    pluginAutomation: { onChanged: vi.fn(() => vi.fn()) },
+    pluginAutomation,
+    syncBatches,
     jobs: { onChanged: vi.fn(() => vi.fn()) },
-    updates: { subscribe: vi.fn(() => vi.fn()) }
+    updates
   } as unknown as IpcServices
   return {
     mainFrame,
     window,
     pluginHost,
     pluginLifecycle,
+    pluginAutomation,
+    syncBatches,
+    updates,
     services,
     database: {} as Parameters<typeof registerIpc>[1],
     browser: { applyAppearance: vi.fn() } as unknown as Parameters<typeof registerIpc>[2]
@@ -116,4 +190,10 @@ function requiredHandler(channel: string): (...args: unknown[]) => Promise<unkno
   const handler = electronMock.handlers.get(channel)
   if (!handler) throw new Error(`missing IPC handler: ${channel}`)
   return async (...args: unknown[]) => await handler(...args)
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((currentResolve) => { resolve = currentResolve })
+  return { promise, resolve }
 }

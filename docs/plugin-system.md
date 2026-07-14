@@ -35,7 +35,7 @@ flowchart LR
 
 ## 2. 开始开发
 
-要求 Node.js 22.13+。先构建仓库内 SDK：
+要求 Node.js 22.21.1+。先构建仓库内 SDK：
 
 ```powershell
 pnpm --dir packages/plugin-sdk build
@@ -300,7 +300,7 @@ Ed25519.sign(
 | `STREAMFOLD_PLUGIN_CATALOG_URL` | 签名 `catalog.json` 的公网 HTTPS 直链 |
 | `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY` | Ed25519 根公钥；完整 PEM 或 SPKI DER Base64 |
 
-两项必须同时配置。缺失时“发现”页显示目录未配置，不影响内置插件和本地数据。GitHub Release 工作流把 URL 固定为同一所有者的 `https://<owner>.github.io/streamfold-plugins/catalog.json`，并要求仓库变量 `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`。这里只配置公钥；目录根私钥只能存在于隔离的签名环境。
+两项必须同时配置。缺失时“发现”页显示目录未配置，不影响内置插件和本地数据。GitHub Release 工作流仅在仓库变量 `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY` 非空时，才把 URL 固定为同一所有者的 `https://<owner>.github.io/streamfold-plugins/catalog.json`；未配置变量不会阻塞应用发布。这里只配置公钥；目录根私钥只能存在于隔离的签名环境。
 
 发布构建应在受控打包环境中提供固定 URL 和根公钥，不允许 Renderer、用户配置、启动环境或远程目录覆盖。变更根公钥需要应用版本更新或经过单独设计的密钥轮换机制，不能只在目录里声明新根。
 

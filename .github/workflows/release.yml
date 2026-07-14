@@ -32,7 +32,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.13.0
+          node-version: 22.21.1
           cache: pnpm
 
       - name: Install dependencies
@@ -62,6 +62,17 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match package version v$packageVersion"
           }
 
+      - name: Verify public release repository
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $visibility = gh api "repos/$env:GITHUB_REPOSITORY" --jq '.visibility'
+          if ($visibility -ne 'public') {
+            throw "Tagged releases require a public repository so installed applications can access update metadata without a GitHub token"
+          }
+
       - name: Run tests and type checks
         run: pnpm test && pnpm typecheck
 
@@ -77,6 +88,7 @@ jobs:
           - label: Windows
             os: windows-latest
             builder_args: --win
+            auto_update_enabled: true
             update_manifest: latest.yml
             requires_external_blockmap: true
             artifact_name: streamfold-windows
@@ -88,17 +100,15 @@ jobs:
           - label: macOS
             os: macos-latest
             builder_args: --mac
-            update_manifest: latest-mac.yml
-            requires_external_blockmap: true
+            auto_update_enabled: false
             artifact_name: streamfold-macos
             artifact_path: |
               release/*.dmg
               release/*.zip
-              release/latest-mac.yml
-              release/*.blockmap
           - label: Linux
             os: ubuntu-latest
             builder_args: --linux
+            auto_update_enabled: true
             update_manifest: latest-linux.yml
             requires_external_blockmap: false
             artifact_name: streamfold-linux
@@ -110,7 +120,7 @@ jobs:
 
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      STREAMFOLD_PLUGIN_CATALOG_URL: https://${{ github.repository_owner }}.github.io/streamfold-plugins/catalog.json
+      STREAMFOLD_AUTO_UPDATE_ENABLED: ${{ matrix.auto_update_enabled }}
       STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY: ${{ vars.STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY }}
 
     steps:
@@ -126,23 +136,34 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.13.0
+          node-version: 22.21.1
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify plugin catalog trust configuration
+      - name: Configure optional plugin catalog
         shell: pwsh
         run: |
           if ([string]::IsNullOrWhiteSpace($env:STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY)) {
-            throw "Repository variable STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY must contain the Ed25519 catalog root public key"
+            "STREAMFOLD_PLUGIN_CATALOG_URL=" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY=" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "Plugin catalog discovery is disabled because STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY is not configured."
+          } else {
+            "STREAMFOLD_PLUGIN_CATALOG_URL=https://${{ github.repository_owner }}.github.io/streamfold-plugins/catalog.json" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "Plugin catalog discovery is enabled for the signed repository catalog."
           }
 
-      - name: Package application
-        run: |
-          pnpm build
-          pnpm exec electron-builder ${{ matrix.builder_args }} --publish never --config.publish.provider=github --config.publish.owner="${{ github.repository_owner }}" --config.publish.repo="${{ github.event.repository.name }}"
+      - name: Build application
+        run: pnpm build
+
+      - name: Package application with update metadata
+        if: matrix.auto_update_enabled == true
+        run: pnpm exec electron-builder ${{ matrix.builder_args }} --publish never --config.publish.provider=github --config.publish.owner="${{ github.repository_owner }}" --config.publish.repo="${{ github.event.repository.name }}"
+
+      - name: Package application without update metadata
+        if: matrix.auto_update_enabled != true
+        run: pnpm exec electron-builder ${{ matrix.builder_args }} --publish never
 
       - name: Verify packaged plugin runtime
         run: pnpm test:package-plugins -- release
@@ -150,14 +171,15 @@ jobs:
       - name: Run packaged QuickJS smoke
         run: pnpm test:package-runtime -- release
 
-      - name: Verify update metadata
+      - name: Verify update artifacts
+        if: matrix.auto_update_enabled == true
         env:
-          UPDATE_MANIFEST: release/${{ matrix.update_manifest }}
-        run: node -e "require('node:fs').accessSync(process.env.UPDATE_MANIFEST)"
-
-      - name: Verify external blockmap
-        if: matrix.requires_external_blockmap
-        run: node -e "if (!require('node:fs').readdirSync('release').some((name) => name.endsWith('.blockmap'))) throw new Error('No external blockmap was generated')"
+          RELEASE_DIR: release
+          UPDATE_MANIFEST: ${{ matrix.update_manifest }}
+          UPDATE_PROVIDER_OWNER: ${{ github.repository_owner }}
+          UPDATE_PROVIDER_REPO: ${{ github.event.repository.name }}
+          REQUIRE_EXTERNAL_BLOCKMAP: ${{ matrix.requires_external_blockmap }}
+        run: pnpm test:update-artifacts
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v4
@@ -187,13 +209,18 @@ jobs:
         working-directory: release-assets
         run: find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
 
-      - name: Refuse to replace an existing release
+      - name: Remove an existing draft or refuse a published release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $GITHUB_REF_NAME already exists; published releases are immutable." >&2
-            exit 1
+          if existing_draft="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            if [ "$existing_draft" = "true" ]; then
+              echo "Removing existing draft release $GITHUB_REF_NAME before rebuilding it."
+              gh release delete "$GITHUB_REF_NAME" --yes --repo "$GITHUB_REPOSITORY"
+            else
+              echo "Release $GITHUB_REF_NAME is already published; published releases are immutable." >&2
+              exit 1
+            fi
           fi
 
       - name: Create draft GitHub release with all assets

@@ -28,7 +28,8 @@
     "plugin:official-webhook:build": "pnpm sdk:build && node scripts/build-official-webhook.mjs build",
     "plugin:official-webhook:verify": "pnpm sdk:build && node scripts/build-official-webhook.mjs verify",
     "test:package-plugins": "pnpm sdk:build && node scripts/verify-packaged-plugins.mjs",
-    "test:package-runtime": "node scripts/smoke-packaged.mjs"
+    "test:package-runtime": "node scripts/smoke-packaged.mjs",
+    "test:update-artifacts": "node scripts/verify-update-artifacts.mjs"
   },
   "dependencies": {
     "electron-updater": "6.8.9",
@@ -45,13 +46,14 @@
     "electron": "43.1.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "5.0.0",
+    "js-yaml": "4.3.0",
     "typescript": "6.0.3",
     "vite": "7.3.6",
     "vitest": "4.1.10",
     "vue-tsc": "3.3.7"
   },
   "engines": {
-    "node": ">=22.13.0",
+    "node": ">=22.21.1",
     "pnpm": ">=10"
   },
   "build": {

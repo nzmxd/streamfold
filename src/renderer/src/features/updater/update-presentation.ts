@@ -26,6 +26,16 @@ export function presentUpdate(state: UpdateState): UpdatePresentation {
 
   switch (state.phase) {
     case 'unsupported':
+      if (state.unsupportedReason === 'manual-update-only') {
+        return presentation({
+          badge: '手动更新',
+          title: '当前版本需要手动更新',
+          description: '当前构件未启用应用内更新，请从官方发布页下载新版本并手动安装。',
+          tone: 'neutral',
+          action: null,
+          titlebarLabel: '查看手动更新说明'
+        })
+      }
       return presentation({
         badge: '暂不可用',
         title: '此安装版本不支持在线更新',
@@ -136,6 +146,7 @@ function presentation(value: Partial<UpdatePresentation> & Pick<UpdatePresentati
 function unsupportedDescription(reason: UpdateUnsupportedReason | null): string {
   if (reason === 'development') return '开发环境不会连接正式更新源，请在正式安装版本中检查更新。'
   if (reason === 'missing-source') return '当前版本没有配置可用的更新源。'
+  if (reason === 'manual-update-only') return '当前构件仅支持手动更新。'
   if (reason === 'unsupported-package') return '当前 Linux 安装格式不支持在线更新，请改用 AppImage。'
   return '请使用正式安装包获取后续在线更新。'
 }

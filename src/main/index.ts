@@ -49,6 +49,8 @@ import { isTrustedShellUrl } from './shell-security'
 import { ElectronUpdateClient } from './electron-update-client'
 import { UpdateService } from './update-service'
 
+declare const __STREAMFOLD_AUTO_UPDATE_ENABLED__: boolean
+
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const smokeMode = process.env.SOCIAL_VAULT_SMOKE === '1'
 const reviewMode = process.env.SOCIAL_VAULT_REVIEW === '1'
@@ -819,6 +821,7 @@ function createUpdateService(): UpdateService {
 
 function updateUnsupportedReason(): UpdateUnsupportedReason | null {
   if (!app.isPackaged || smokeMode || reviewMode) return 'development'
+  if (!__STREAMFOLD_AUTO_UPDATE_ENABLED__) return 'manual-update-only'
   if (!existsSync(join(process.resourcesPath, 'app-update.yml'))) return 'missing-source'
   if (process.platform === 'linux' && !process.env.APPIMAGE) return 'unsupported-package'
   return null

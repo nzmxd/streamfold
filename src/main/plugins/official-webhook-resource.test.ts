@@ -58,7 +58,7 @@ describe('official webhook package resource', () => {
     try {
       const verified = await verifyOfficialWebhookResource(resolve(process.cwd(), 'resources'))
       const entries = new PluginEntryStore(root)
-      await entries.stageAndActivate(verified)
+      await Promise.all(Array.from({ length: 4 }, () => entries.stageAndActivate(verified)))
       database.upsertPluginPackage(verified.manifest, {
         source: 'builtin',
         status: 'active',

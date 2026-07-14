@@ -77,6 +77,13 @@ describe('update presentation', () => {
       .toContain('开发环境')
     expect(presentUpdate(state('unsupported', { unsupportedReason: 'missing-source' })).description)
       .toContain('更新源')
+    expect(presentUpdate(state('unsupported', { unsupportedReason: 'manual-update-only' }))).toMatchObject({
+      badge: '手动更新',
+      title: '当前版本需要手动更新',
+      description: expect.stringContaining('手动安装'),
+      action: null,
+      titlebarLabel: '查看手动更新说明'
+    })
     expect(presentUpdate(state('unsupported', { unsupportedReason: 'unsupported-package' })).description)
       .toContain('AppImage')
   })
