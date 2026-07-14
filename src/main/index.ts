@@ -40,6 +40,9 @@ import { registerManifestPlatforms } from './platforms'
 import { ProfileMediaStore } from './profile-media'
 import { SettingsService } from './settings-service'
 import { JobService } from './services/job-service'
+import { AccountExecutionCoordinator } from './services/account-execution-coordinator'
+import { SyncBatchService } from './services/sync-batch-service'
+import { TaskQueryService } from './services/task-query-service'
 import { XiaohongshuApiService } from './xiaohongshu-api-service'
 import { ZhihuApiService } from './zhihu-api-service'
 import { isTrustedShellUrl } from './shell-security'
@@ -85,10 +88,14 @@ let applicationIcon: NativeImage | null = null
 let tray: Tray | null = null
 let updateService: UpdateService | null = null
 let pluginAutomationService: PluginAutomationService | null = null
+let syncBatchService: SyncBatchService | null = null
+let taskQueryService: TaskQueryService | null = null
 let pluginEntryStore: PluginEntryStore | null = null
 let officialWebhookPackage: VerifiedPluginPackage | null = null
 let removeTrayUpdateListener: (() => void) | null = null
+let removeTrayTaskListener: (() => void) | null = null
 let trayMenuSignature = ''
+let trayRefreshSequence = 0
 
 app.on('second-instance', () => {
   showMainWindow()
@@ -145,12 +152,17 @@ app.on('before-quit', () => {
   tray = null
   removeTrayUpdateListener?.()
   removeTrayUpdateListener = null
+  removeTrayTaskListener?.()
+  removeTrayTaskListener = null
   updateService?.destroy()
   updateService = null
   browserManager?.destroy()
   browserManager = null
   pluginAutomationService?.stop()
   pluginAutomationService = null
+  syncBatchService?.stop()
+  syncBatchService = null
+  taskQueryService = null
   unregisterIpc()
   database?.close()
   database = null
@@ -181,9 +193,27 @@ function createTray(): void {
 }
 
 function refreshTrayMenu(): void {
+  const sequence = ++trayRefreshSequence
+  void refreshTrayMenuAsync(sequence)
+}
+
+async function refreshTrayMenuAsync(sequence: number): Promise<void> {
   if (!tray || !updateService) return
   const state = updateService.getState()
-  const signature = `${state.phase}:${state.availableVersion ?? ''}:${state.unsupportedReason ?? ''}`
+  const taskSummary = taskQueryService
+    ? await taskQueryService.summary().catch(() => null)
+    : null
+  if (sequence !== trayRefreshSequence || !tray || !updateService) return
+  const automationPaused = pluginAutomationService?.isPaused() ?? false
+  const signature = [
+    state.phase,
+    state.availableVersion ?? '',
+    state.unsupportedReason ?? '',
+    taskSummary?.runningCount ?? 0,
+    taskSummary?.queuedCount ?? 0,
+    taskSummary?.needsAttentionCount ?? 0,
+    automationPaused ? 1 : 0
+  ].join(':')
   if (trayMenuSignature === signature) return
   trayMenuSignature = signature
 
@@ -199,6 +229,27 @@ function refreshTrayMenu(): void {
 
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示归页', click: showMainWindow },
+    {
+      label: `任务 · 运行 ${taskSummary?.runningCount ?? 0} · 排队 ${taskSummary?.queuedCount ?? 0}`,
+      enabled: false
+    },
+    { label: '打开任务中心', click: openTaskCenter },
+    {
+      label: automationPaused ? '恢复自动任务' : '暂停新的自动任务',
+      click: (): void => {
+        const next = !(pluginAutomationService?.isPaused() ?? false)
+        pluginAutomationService?.setPaused(next)
+        database?.setSetting('automation.paused', next)
+        refreshTrayMenu()
+      }
+    },
+    ...((taskSummary?.needsAttentionCount ?? 0) > 0
+      ? [{
+          label: `需要处理 · ${taskSummary!.needsAttentionCount} 项`,
+          click: openTaskCenter
+        }]
+      : []),
+    { type: 'separator' as const },
     ...(!state.unsupportedReason
       ? [{
           label: updateLabel,
@@ -212,6 +263,13 @@ function refreshTrayMenu(): void {
     { type: 'separator' as const },
     { label: '退出', click: () => app.quit() }
   ]))
+}
+
+function openTaskCenter(): void {
+  showMainWindow()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('navigation:requested', 'tasks')
+  }
 }
 
 function updateTrayIcon(): void {
@@ -317,6 +375,7 @@ function createWindow(): void {
     riskNote: platform.riskNote
   })))
   const jobService = new JobService(database)
+  const accountCoordinator = new AccountExecutionCoordinator()
   const xiaohongshuApiService = new XiaohongshuApiService({
     repository: database,
     browser: browserManager,
@@ -356,6 +415,7 @@ function createWindow(): void {
   )
   const platformSyncService = new PlatformSyncService({
     repository: database,
+    coordinator: accountCoordinator,
     adapters: {
       xiaohongshu: xiaohongshuApiService,
       zhihu: zhihuApiService,
@@ -373,6 +433,8 @@ function createWindow(): void {
     platformJsonProxy
   )
   adapterRegistry.reconcile()
+  syncBatchService = new SyncBatchService(database, platformSyncService, jobService)
+  taskQueryService = new TaskQueryService(database)
   const pluginLifecycle = new PluginLifecycleService({
     repository: database,
     host: pluginHostService,
@@ -393,7 +455,18 @@ function createWindow(): void {
   })
   void pluginLifecycle.initialize()
   pluginAutomationService = new PluginAutomationService(database, pluginHostService, runtimeExecutor)
+  pluginAutomationService.setAccountCoordinator(accountCoordinator)
+  pluginAutomationService.setPaused(database.getSetting<boolean>('automation.paused', false) === true)
   pluginAutomationService.start()
+  syncBatchService.start()
+  removeTrayTaskListener?.()
+  const removeTrayJobListener = jobService.onChanged(refreshTrayMenu)
+  const removeTrayPluginListener = pluginAutomationService.onChanged(refreshTrayMenu)
+  removeTrayTaskListener = () => {
+    removeTrayJobListener()
+    removeTrayPluginListener()
+  }
+  refreshTrayMenu()
   const settingsService = new SettingsService({
     getStorageCounts: () => database!.getStorageCounts(),
     getSetting: (key) => database!.getSetting<string>(key),
@@ -414,6 +487,7 @@ function createWindow(): void {
     repository: database,
     beforeRestore: () => {
       pluginAutomationService?.stop()
+      syncBatchService?.stop()
       restorePartitions = database!.listAccounts().map((account) => account.sessionPartition)
       browserManager?.closeAll()
       platformSyncService.invalidatePreviews()
@@ -432,7 +506,9 @@ function createWindow(): void {
         riskNote: platform.riskNote
       })))
       adapterRegistry.reconcile()
+      pluginAutomationService?.setPaused(database!.getSetting<boolean>('automation.paused', false) === true)
       pluginAutomationService?.start()
+      syncBatchService?.start()
     },
     afterCommit: async () => {
       try {
@@ -456,6 +532,9 @@ function createWindow(): void {
     exporter: exportService,
     backup: backupService,
     platformSync: platformSyncService,
+    jobs: jobService,
+    syncBatches: syncBatchService,
+    tasks: taskQueryService,
     updates: updateService
   })
 
@@ -478,6 +557,8 @@ function createWindow(): void {
         const appearance = hasApi ? await window.socialVault.appearance.get() : null
         const updates = hasApi ? await window.socialVault.updates.getState() : null
         const catalog = hasApi ? await window.socialVault.plugins.getCatalog() : null
+        const tasks = hasApi ? await window.socialVault.tasks.list({ limit: 1 }) : null
+        const taskSummary = hasApi ? await window.socialVault.tasks.summary() : null
         return {
           title: document.title,
           hasApi,
@@ -486,16 +567,20 @@ function createWindow(): void {
           accountCount: accounts.length,
           pluginCount: plugins.length,
           contentCount: contents.length,
-          jobCount: 0,
+          jobCount: tasks?.total ?? 0,
           dashboardReady: Boolean(dashboard),
           settingsReady: Boolean(settings?.appVersion),
           appearanceReady: appearance?.resolved === 'light' || appearance?.resolved === 'dark',
           updatesReady: Boolean(updates?.currentVersion) && typeof window.socialVault.updates.check === 'function',
           catalogReady: typeof catalog?.configured === 'boolean',
+          tasksReady: typeof taskSummary?.queuedCount === 'number' &&
+            typeof window.socialVault.accounts.enqueueSyncBatch === 'function' &&
+            typeof window.socialVault.tasks.cancel === 'function',
           pluginV2ApiReady: typeof window.socialVault.accounts.verifyIdentity === 'function' &&
             typeof window.socialVault.accounts.confirmIdentity === 'function' &&
             typeof window.socialVault.accounts.sync === 'function' &&
             typeof window.socialVault.accounts.bulkUpdate === 'function' &&
+            typeof window.socialVault.accounts.previewSyncBatch === 'function' &&
             typeof window.socialVault.groups.update === 'function' &&
             typeof window.socialVault.settings.createBackup === 'function' &&
             typeof window.socialVault.settings.restoreBackup === 'function' &&
@@ -600,6 +685,7 @@ function createWindow(): void {
         appearanceReady?: boolean
         updatesReady?: boolean
         catalogReady?: boolean
+        tasksReady?: boolean
         pluginV2ApiReady?: boolean
       } | null
       const workspace = workspaceResult as {
@@ -615,7 +701,8 @@ function createWindow(): void {
       const sandbox = sandboxResult as { quickjs?: boolean } | null
       if (
         !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady ||
-        !shell.appearanceReady || !shell.updatesReady || !shell.catalogReady || !shell.pluginV2ApiReady ||
+        !shell.appearanceReady || !shell.updatesReady || !shell.catalogReady || !shell.tasksReady ||
+        !shell.pluginV2ApiReady ||
         !workspace?.hasApi || !workspace.accountId || !workspace.appearanceReady ||
         !zhihuWorkspace?.hasApi || !zhihuWorkspace.accountId ||
         !zhihuWorkspace.remoteUserAgent?.includes(`Chrome/${process.versions.chrome}`) ||

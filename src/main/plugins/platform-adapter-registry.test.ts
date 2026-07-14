@@ -73,7 +73,18 @@ describe('PlatformAdapterRegistryService', () => {
     const service = registryFixture(repository, invoke, vi.fn(() => vi.fn()), true)
     service.reconcile()
 
-    await expect(service.switchAdapter(account.id, 'example.adapter.v2')).rejects.toThrow('正在同步或核验')
+    await expect(service.switchAdapter(account.id, 'example.adapter.v2')).rejects.toThrow('正在同步')
+    expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('does not switch while the account is waiting in the durable queue', async () => {
+    const account = createAccount()
+    const invoke = vi.fn(async () => ({ remoteId: 'stable-owner', remoteName: '本人账号' }))
+    const repository = repositoryFixture(account, vi.fn())
+    const service = registryFixture(repository, invoke, vi.fn(() => vi.fn()), false, true)
+    service.reconcile()
+
+    await expect(service.switchAdapter(account.id, 'example.adapter.v2')).rejects.toThrow('等待队列')
     expect(invoke).not.toHaveBeenCalled()
   })
 
@@ -105,13 +116,14 @@ function registryFixture(
   repository: ReturnType<typeof repositoryFixture>,
   invoke: ReturnType<typeof vi.fn>,
   registerAdapter: ReturnType<typeof vi.fn>,
-  active = false
+  active = false,
+  pending = false
 ): PlatformAdapterRegistryService {
   return new PlatformAdapterRegistryService(
     repository as unknown as ConstructorParameters<typeof PlatformAdapterRegistryService>[0],
     { listContributions: () => [adapterContribution()] } as unknown as PluginHostService,
     { invoke } as unknown as PluginRuntimeExecutor,
-    {} as JobService,
+    { hasPendingForAccount: vi.fn(async () => pending) } as unknown as JobService,
     {
       registerAdapter,
       isAccountActive: vi.fn(() => active)

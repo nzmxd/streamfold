@@ -33,4 +33,46 @@ describe('social vault renderer facade', () => {
     expect(() => api.settings.update({ rawRetentionDays: (() => 30) as never })).toThrow()
     expect(invoke).not.toHaveBeenCalled()
   })
+
+  it('exposes batch sync and task channels through the plain-data bridge', async () => {
+    const invoke = vi.fn(async (_channel: string, _serializedArgs: string) => ({ items: [], total: 0 }))
+    const bridge: SocialVaultBridge = {
+      runtime: { platform: 'win32' },
+      invoke,
+      on: vi.fn(() => () => undefined)
+    }
+    const api = createSocialVaultApi(bridge)
+
+    await api.accounts.previewSyncBatch({
+      accountIds: ['account-1'],
+      groupIds: [],
+      requestedScope: 'recent_20'
+    })
+    await api.tasks.list({ statuses: ['queued'], limit: 50 })
+
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
+      'accounts:preview-sync-batch',
+      '[{"accountIds":["account-1"],"groupIds":[],"requestedScope":"recent_20"}]'
+    )
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      'tasks:list',
+      '[{"statuses":["queued"],"limit":50}]'
+    )
+  })
+
+  it('subscribes to task changes through the fixed event channel', () => {
+    const listener = vi.fn()
+    const on = vi.fn(() => () => undefined)
+    const bridge: SocialVaultBridge = {
+      runtime: { platform: 'win32' },
+      invoke: vi.fn(async () => undefined),
+      on
+    }
+
+    createSocialVaultApi(bridge).tasks.onChanged(listener)
+
+    expect(on).toHaveBeenCalledWith('tasks:changed', expect.any(Function))
+  })
 })

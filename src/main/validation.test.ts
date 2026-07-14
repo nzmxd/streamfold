@@ -3,12 +3,14 @@ import {
   parseAnalyticsQuery,
   parseBulkUpdateAccounts,
   parseConfirmApiIdentity,
+  parseEnqueueSyncBatch,
   parseContentQuery,
   parseCreateAccount,
   parseCreateEncryptedBackup,
   parseExportData,
   parseMoveGroup,
   parseRestoreEncryptedBackup,
+  parseTaskQuery,
   parseUpdateAccount,
   parseUpdateContent,
   parseUpdateGroup,
@@ -78,6 +80,36 @@ describe('IPC validation', () => {
     expect(() => parseMoveGroup({ id: 'group', direction: 'first' })).toThrow('移动方向无效')
     expect(() => parseBulkUpdateAccounts({ accountIds: [] })).toThrow('至少选择一个账号')
     expect(() => parseBulkUpdateAccounts({ accountIds: ['a'] })).toThrow('没有需要执行')
+  })
+
+  it('validates batch sync selection and task query filters', () => {
+    expect(parseEnqueueSyncBatch({
+      accountIds: ['account-a', 'account-a'],
+      groupIds: ['group-a'],
+      requestedScope: 'recent_20'
+    })).toEqual({
+      accountIds: ['account-a'],
+      groupIds: ['group-a'],
+      requestedScope: 'recent_20',
+      trigger: 'manual'
+    })
+    expect(parseTaskQuery({
+      statuses: ['queued', 'paused'],
+      triggers: ['manual'],
+      platformId: 'xiaohongshu',
+      limit: 50,
+      offset: 100
+    })).toEqual({
+      statuses: ['queued', 'paused'],
+      triggers: ['manual'],
+      platformId: 'xiaohongshu',
+      limit: 50,
+      offset: 100
+    })
+    expect(() => parseEnqueueSyncBatch({ accountIds: [], groupIds: [] })).toThrow('至少选择一个账号或分组')
+    expect(() => parseEnqueueSyncBatch({ accountIds: ['a'], trigger: 'scheduled' })).toThrow('触发来源无效')
+    expect(() => parseTaskQuery({ statuses: ['unknown'] })).toThrow('任务状态无效')
+    expect(() => parseTaskQuery({ limit: 201 })).toThrow('返回数量无效')
   })
 
   it('validates settings and export requests', () => {

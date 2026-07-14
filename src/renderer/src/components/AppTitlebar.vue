@@ -21,6 +21,7 @@ const sectionLabels: Record<AppSection, string> = {
   accounts: '账号',
   content: '内容',
   analytics: '数据分析',
+  tasks: '任务中心',
   plugins: '插件',
   settings: '设置'
 }

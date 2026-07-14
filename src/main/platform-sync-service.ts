@@ -4,9 +4,12 @@ import type {
   SessionApiIdentityCheckResult,
   SessionApiSyncResult
 } from '../shared/session-api-contracts'
+import type { AccountExecutionCoordinator } from './services/account-execution-coordinator'
 
 /** Minimal adapter surface implemented by each managed platform integration. */
 export interface SessionApiPlatformService {
+  readonly pluginId: string
+  readonly contributionId: string
   verifyIdentity(accountId: string): Promise<SessionApiIdentityCheckResult>
   confirmIdentity(input: ConfirmSessionApiIdentityInput): Promise<SessionApiIdentityCheckResult>
   sync(accountId: string): Promise<SessionApiSyncResult>
@@ -23,6 +26,21 @@ export type PlatformSyncAdapters = Record<string, SessionApiPlatformService | un
 export interface PlatformSyncServiceOptions {
   repository: PlatformSyncAccountRepository
   adapters: PlatformSyncAdapters
+  coordinator?: AccountExecutionCoordinator
+}
+
+export interface SyncAdapterDescriptor {
+  accountId: string
+  platformId: PlatformId
+  pluginId: string
+  contributionId: string
+}
+
+export class PlatformSyncBusyError extends Error {
+  constructor(readonly code: 'ACCOUNT_BUSY' | 'ADAPTER_BUSY', message: string) {
+    super(message)
+    this.name = 'PlatformSyncBusyError'
+  }
 }
 
 /**
@@ -32,9 +50,10 @@ export interface PlatformSyncServiceOptions {
  * rules. This service only resolves the account platform and delegates to the
  * matching adapter, keeping IPC independent from any one platform.
  */
-export class PlatformSyncService implements SessionApiPlatformService {
+export class PlatformSyncService {
   private readonly adapters: PlatformSyncAdapters
-  private readonly activePlatforms = new Set<PlatformId>()
+  private readonly activeAdapters = new Set<string>()
+  private readonly activeAccounts = new Set<string>()
 
   constructor(private readonly options: PlatformSyncServiceOptions) {
     this.adapters = { ...options.adapters }
@@ -50,29 +69,63 @@ export class PlatformSyncService implements SessionApiPlatformService {
   }
 
   async verifyIdentity(accountId: string): Promise<SessionApiIdentityCheckResult> {
-    return await this.adapterForAccount(accountId).verifyIdentity(accountId)
+    const action = () => this.adapterForAccount(accountId).verifyIdentity(accountId)
+    return this.options.coordinator
+      ? await this.options.coordinator.run(accountId, action)
+      : await action()
   }
 
   async confirmIdentity(input: ConfirmSessionApiIdentityInput): Promise<SessionApiIdentityCheckResult> {
-    return await this.adapterForAccount(input.accountId).confirmIdentity(input)
+    const action = () => this.adapterForAccount(input.accountId).confirmIdentity(input)
+    return this.options.coordinator
+      ? await this.options.coordinator.run(input.accountId, action)
+      : await action()
   }
 
   async sync(accountId: string): Promise<SessionApiSyncResult> {
-    const account = this.options.repository.getAccount(accountId)
-    if (!account) throw new Error('账号不存在')
-    if (this.activePlatforms.has(account.platformId)) throw new Error('该平台已有同步任务正在运行')
-    this.activePlatforms.add(account.platformId)
+    const action = () => this.syncWithAdapterLock(accountId)
+    return this.options.coordinator
+      ? await this.options.coordinator.run(accountId, action)
+      : await action()
+  }
+
+  private async syncWithAdapterLock(accountId: string): Promise<SessionApiSyncResult> {
+    const descriptor = this.descriptorForAccount(accountId)
+    if (this.activeAccounts.has(accountId)) {
+      throw new PlatformSyncBusyError('ACCOUNT_BUSY', '该账号已有同步任务正在运行')
+    }
+    if (this.activeAdapters.has(descriptor.contributionId)) {
+      throw new PlatformSyncBusyError('ADAPTER_BUSY', '该平台适配器已有同步任务正在运行')
+    }
+    this.activeAccounts.add(accountId)
+    this.activeAdapters.add(descriptor.contributionId)
     try {
       return await this.adapterForAccount(accountId).sync(accountId)
     } finally {
-      this.activePlatforms.delete(account.platformId)
+      this.activeAccounts.delete(accountId)
+      this.activeAdapters.delete(descriptor.contributionId)
+    }
+  }
+
+  descriptorForAccount(accountId: string): SyncAdapterDescriptor {
+    const account = this.options.repository.getAccount(accountId)
+    if (!account) throw new Error('账号不存在')
+    const adapter = this.resolveAdapter(account)
+    if (!adapter) throw new Error('该平台的数据同步功能尚未开放')
+    return {
+      accountId,
+      platformId: account.platformId,
+      pluginId: adapter.pluginId,
+      contributionId: adapter.contributionId
     }
   }
 
   isAccountActive(accountId: string): boolean {
     const account = this.options.repository.getAccount(accountId)
     if (!account) return false
-    return this.resolveAdapter(account)?.isAccountActive(accountId) ?? false
+    return this.activeAccounts.has(accountId) ||
+      (this.options.coordinator?.isActive(accountId) ?? false) ||
+      (this.resolveAdapter(account)?.isAccountActive(accountId) ?? false)
   }
 
   invalidatePreviews(): void {

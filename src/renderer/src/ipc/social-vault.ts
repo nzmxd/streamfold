@@ -1,5 +1,6 @@
 import type {
   AppearanceState,
+  AppNavigationTarget,
   BrowserState,
   SocialVaultApi,
   SocialVaultBridge,
@@ -32,6 +33,12 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
       restartAndInstall: () => invoke('updates:restart-and-install'),
       onChanged: (callback) => subscribe('updates:changed', (state) => callback(state as UpdateState))
     },
+    navigation: {
+      onRequested: (callback) => subscribe(
+        'navigation:requested',
+        (target) => callback(target as AppNavigationTarget)
+      )
+    },
     platforms: {
       list: () => invoke('platforms:list')
     },
@@ -46,6 +53,8 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
       verifyIdentity: (id) => invoke('accounts:verify-identity', id),
       confirmIdentity: (input) => invoke('accounts:confirm-identity', input),
       sync: (id) => invoke('accounts:sync', id),
+      previewSyncBatch: (input) => invoke('accounts:preview-sync-batch', input),
+      enqueueSyncBatch: (input) => invoke('accounts:enqueue-sync-batch', input),
       listAdapters: (id) => invoke('accounts:list-adapters', id),
       switchAdapter: (id, contributionId) => invoke('accounts:switch-adapter', id, contributionId)
     },
@@ -71,6 +80,16 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
     analytics: {
       overview: (query) => invoke('analytics:overview', query),
       dashboard: () => invoke('analytics:dashboard')
+    },
+    tasks: {
+      summary: (query) => invoke('tasks:summary', query),
+      list: (query) => invoke('tasks:list', query),
+      get: (id) => invoke('tasks:get', id),
+      cancel: (id) => invoke('tasks:cancel', id),
+      retry: (id) => invoke('tasks:retry', id),
+      listBatch: (batchId) => invoke('tasks:list-batch', batchId),
+      listBatches: () => invoke('tasks:list-batches'),
+      onChanged: (callback) => subscribe('tasks:changed', () => callback())
     },
     plugins: {
       listPackages: () => invoke('plugins:packages'),

@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { Account } from '../../shared/contracts'
+import {
+  AccountExecutionBusyError,
+  type AccountExecutionCoordinator
+} from '../services/account-execution-coordinator'
+import { PlatformSyncBusyError } from '../platform-sync-service'
 import type {
   PluginContributionState,
   PluginEventDelivery,
@@ -52,7 +57,12 @@ const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000, 6 * 60 * 
 export class PluginAutomationService {
   private timer: ReturnType<typeof setTimeout> | null = null
   private running = false
+  private paused = false
+  private started = false
+  private activeRuns = 0
   private readonly activeAccounts = new Set<string>()
+  private readonly listeners = new Set<() => void>()
+  private accountCoordinator: AccountExecutionCoordinator | null = null
 
   constructor(
     private readonly repository: AutomationRepository,
@@ -63,18 +73,29 @@ export class PluginAutomationService {
   ) {}
 
   start(): void {
-    if (this.timer || this.running) return
+    if (this.started) return
+    this.started = true
     this.repository.recoverInterruptedPluginRuns?.(this.now())
     this.schedule(1_000)
   }
 
   stop(): void {
+    this.started = false
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
   }
 
+  onChanged(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  setAccountCoordinator(coordinator: AccountExecutionCoordinator): void {
+    this.accountCoordinator = coordinator
+  }
+
   async tick(): Promise<void> {
-    if (this.running) return
+    if (this.running || this.paused) return
     this.running = true
     try {
       this.materializeEventDeliveries()
@@ -85,12 +106,35 @@ export class PluginAutomationService {
     }
   }
 
-  async runManual(pluginId: string, contributionId: string, accountId: string | null): Promise<PluginRunRecord> {
+  async runManual(
+    pluginId: string,
+    contributionId: string,
+    accountId: string | null,
+    attempt = 1
+  ): Promise<PluginRunRecord> {
     const contribution = this.requireEnabledContribution(pluginId, contributionId)
     const grant = this.requireGrant(pluginId, contributionId)
     if (accountId && !this.accountAllowed(accountId, grant)) throw new Error('该插件未获准访问此账号')
     if (contribution.contribution.kind === 'platform.adapter' && !accountId) throw new Error('平台同步需要选择账号')
-    return await this.executeRun({ pluginId, contributionId, trigger: 'manual', accountId, event: null, deliveryId: null })
+    return await this.executeRun(
+      { pluginId, contributionId, trigger: 'manual', accountId, event: null, deliveryId: null },
+      Math.max(1, Math.trunc(attempt))
+    )
+  }
+
+  isPaused(): boolean {
+    return this.paused
+  }
+
+  setPaused(paused: boolean): boolean {
+    this.paused = paused
+    if (!paused && this.started && !this.running) this.schedule(0)
+    this.emitChanged()
+    return this.paused
+  }
+
+  hasRunningTasks(): boolean {
+    return this.running || this.activeRuns > 0
   }
 
   private materializeEventDeliveries(): void {
@@ -248,6 +292,15 @@ export class PluginAutomationService {
   }
 
   private async executeRun(request: PluginExecutionRequest, attempt = 1): Promise<PluginRunRecord> {
+    this.activeRuns += 1
+    try {
+      return await this.executeRunActive(request, attempt)
+    } finally {
+      this.activeRuns -= 1
+    }
+  }
+
+  private async executeRunActive(request: PluginExecutionRequest, attempt: number): Promise<PluginRunRecord> {
     const now = this.now()
     let run = this.repository.createPluginRun({
       id: randomUUID(),
@@ -265,6 +318,7 @@ export class PluginAutomationService {
       errorMessage: '',
       createdAt: now
     })
+    this.emitChanged()
     if (request.accountId && this.activeAccounts.has(request.accountId)) {
       this.repository.updateExtensionRun(run.id, {
         status: 'failed',
@@ -272,26 +326,40 @@ export class PluginAutomationService {
         errorCode: 'ACCOUNT_BUSY',
         errorMessage: '该账号已有插件任务正在运行'
       })
+      this.emitChanged()
       throw new RetryablePluginError('ACCOUNT_BUSY', '该账号已有插件任务正在运行')
     }
     if (request.accountId) this.activeAccounts.add(request.accountId)
     try {
-      await this.executor.execute(request)
+      const execute = () => this.executor.execute(request)
+      if (request.accountId && this.accountCoordinator) {
+        await this.accountCoordinator.run(request.accountId, execute)
+      } else {
+        await execute()
+      }
       run = this.repository.updateExtensionRun(run.id, {
         status: 'succeeded',
         finishedAt: this.now(),
         errorCode: '',
         errorMessage: ''
       })
+      this.emitChanged()
       return run
     } catch (error) {
+      const failure = error instanceof AccountExecutionBusyError || error instanceof PlatformSyncBusyError
+        ? new RetryablePluginError(
+            error instanceof PlatformSyncBusyError ? error.code : 'ACCOUNT_BUSY',
+            error.message
+          )
+        : error
       this.repository.updateExtensionRun(run.id, {
         status: 'failed',
         finishedAt: this.now(),
-        errorCode: safeErrorCode(error),
-        errorMessage: safeErrorMessage(error)
+        errorCode: safeErrorCode(failure),
+        errorMessage: safeErrorMessage(failure)
       })
-      throw error
+      this.emitChanged()
+      throw failure
     } finally {
       if (request.accountId) this.activeAccounts.delete(request.accountId)
     }
@@ -332,11 +400,20 @@ export class PluginAutomationService {
   }
 
   private schedule(delay: number): void {
+    if (!this.started || this.timer) return
     this.timer = setTimeout(() => {
       this.timer = null
-      void this.tick().finally(() => this.schedule(this.pollIntervalMs))
+      void this.tick().finally(() => {
+        if (this.started) this.schedule(this.pollIntervalMs)
+      })
     }, delay)
     this.timer.unref?.()
+  }
+
+  private emitChanged(): void {
+    for (const listener of this.listeners) {
+      try { listener() } catch {}
+    }
   }
 }
 

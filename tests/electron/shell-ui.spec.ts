@@ -42,7 +42,7 @@ test.afterAll(async () => {
   if (reviewUserData) await rm(reviewUserData, { recursive: true, force: true })
 })
 
-async function openSection(section: 'settings' | 'plugins'): Promise<void> {
+async function openSection(section: 'accounts' | 'tasks' | 'settings' | 'plugins'): Promise<void> {
   const navigation = page.locator(`[data-section="${section}"]`)
   await navigation.click()
   await expect(navigation).toHaveAttribute('aria-current', 'page')
@@ -85,6 +85,50 @@ test('设置页在最小高度下不会裁切或重叠软件更新卡片', async
   expect(layout?.contentFits).toBe(true)
   expect(layout?.gap).toBeGreaterThanOrEqual(-1)
   expect(layout?.pageScrollable).toBe(true)
+})
+
+test('任务中心在最小窗口下完整展示摘要与筛选', async () => {
+  await openSection('settings')
+  await application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0]?.webContents.send('navigation:requested', 'tasks')
+  })
+  await expect(page.locator('[data-section="tasks"]')).toHaveAttribute('aria-current', 'page')
+  const taskPage = page.locator('.task-page')
+  await expect(taskPage).toBeVisible()
+  await expect(taskPage.locator('.task-summary-grid article')).toHaveCount(4)
+  await expect(taskPage.locator('.task-filter-card')).toBeVisible()
+  await expect(taskPage.getByText('没有符合条件的任务')).toBeVisible()
+
+  const layout = await taskPage.evaluate((element) => ({
+    horizontalOverflow: element.scrollWidth - element.clientWidth,
+    pageScrollable: element.scrollHeight >= element.clientHeight
+  }))
+  expect(layout.horizontalOverflow).toBeLessThanOrEqual(1)
+  expect(layout.pageScrollable).toBe(true)
+})
+
+test('账号批量同步会在入队前预览并跳过未登录账号', async () => {
+  await openSection('accounts')
+  await page.getByRole('button', { name: '＋ 添加账号' }).click()
+  const addDialog = page.getByRole('dialog', { name: '添加账号' })
+  await expect(addDialog).toBeVisible()
+  await addDialog.getByLabel('本地备注名（可选）').fill('待同步测试号')
+  await addDialog.getByRole('button', { name: '创建账号' }).click()
+  await expect(addDialog).toBeHidden()
+
+  await page.getByRole('checkbox', { name: '选择待同步测试号' }).check()
+  await page.getByRole('button', { name: '立即同步已选账号' }).click()
+  const batchDialog = page.getByRole('dialog', { name: '创建同步批次' })
+  await expect(batchDialog).toBeVisible()
+  await expect(batchDialog.getByText('0 个可同步，1 个将跳过')).toBeVisible()
+  await expect(batchDialog.getByText('请先通过官方入口完成登录并重新核验')).toBeVisible()
+  await expect(batchDialog.getByRole('button', { name: '同步 0 个账号' })).toBeDisabled()
+
+  const bounds = await batchDialog.boundingBox()
+  expect(bounds).not.toBeNull()
+  expect(bounds?.height).toBeLessThanOrEqual(590)
+  await page.keyboard.press('Escape')
+  await expect(batchDialog).toBeHidden()
 })
 
 test('Webhook 权限与配置弹窗可打开且不再出现克隆错误', async () => {

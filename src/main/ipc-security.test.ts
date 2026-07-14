@@ -87,6 +87,8 @@ function ipcFixture() {
   const services = {
     pluginHost,
     pluginLifecycle,
+    pluginAutomation: { onChanged: vi.fn(() => vi.fn()) },
+    jobs: { onChanged: vi.fn(() => vi.fn()) },
     updates: { subscribe: vi.fn(() => vi.fn()) }
   } as unknown as IpcServices
   return {

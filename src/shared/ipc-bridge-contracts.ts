@@ -17,6 +17,8 @@ export const socialVaultInvokeChannels = [
   'accounts:verify-identity',
   'accounts:confirm-identity',
   'accounts:sync',
+  'accounts:preview-sync-batch',
+  'accounts:enqueue-sync-batch',
   'accounts:list-adapters',
   'accounts:switch-adapter',
   'groups:list',
@@ -32,6 +34,13 @@ export const socialVaultInvokeChannels = [
   'content:clear-account',
   'analytics:overview',
   'analytics:dashboard',
+  'tasks:summary',
+  'tasks:list',
+  'tasks:get',
+  'tasks:cancel',
+  'tasks:retry',
+  'tasks:list-batch',
+  'tasks:list-batches',
   'plugins:packages',
   'plugins:contributions',
   'plugins:set-package-enabled',
@@ -69,7 +78,9 @@ export const socialVaultEventChannels = [
   'updates:changed',
   'accounts:changed',
   'browser:state',
-  'content:changed'
+  'content:changed',
+  'tasks:changed',
+  'navigation:requested'
 ] as const
 
 export type SocialVaultEventChannel = (typeof socialVaultEventChannels)[number]

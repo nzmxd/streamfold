@@ -12,6 +12,7 @@ import type { XiaohongshuApiTransportLease } from './browser-manager'
 import type { CachedProfileAvatar } from './profile-media'
 import type { StandardDataset } from './plugins/types'
 import type { SessionApiPluginGate } from './plugins/session-api-plugin-gate'
+import { XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID } from './plugins/builtin-manifests'
 import type { JobService } from './services/job-service'
 import {
   XiaohongshuApi,
@@ -83,6 +84,8 @@ export interface XiaohongshuApiServiceOptions {
 
 /** Coordinates the only live platform integration: fixed, read-only JSON APIs. */
 export class XiaohongshuApiService {
+  readonly pluginId = XIAOHONGSHU_API_PLUGIN_ID
+  readonly contributionId = XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID
   private readonly previews = new Map<string, IdentityPreview>()
   private readonly activeAccounts = new Set<string>()
   private platformSyncActive = false
@@ -156,16 +159,23 @@ export class XiaohongshuApiService {
       let lease: XiaohongshuApiTransportLease | null = null
       try {
         const account = this.requireSyncableAccount(accountId)
+        const requestedMode = this.options.jobs.requestedSyncMode(
+          account.syncMode as Exclude<SyncMode, 'disabled'>
+        )
         const installation = this.options.plugins.requireEnabledSessionApi(XIAOHONGSHU_API_PLUGIN_ID, account.id)
         this.enforceInterval(account.id, 'sync', installation.manifest.minimumIntervalSeconds)
         const startedAt = this.now()
-        job = await this.options.jobs.createManagedSync(account.id, XIAOHONGSHU_API_PLUGIN_ID)
+        job = await this.options.jobs.createManagedSync(
+          account.id,
+          XIAOHONGSHU_API_PLUGIN_ID,
+          XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID
+        )
         this.options.repository.markManagedSyncStarted(account.id, startedAt)
 
         lease = await this.options.browser.acquireXiaohongshuApiTransport(account.id)
         const api = new XiaohongshuApi(lease.transport, { wait: this.options.detailWait })
         const capturedAt = this.now()
-        const limit = account.syncMode === 'recent_20' ? 20 : account.syncMode === 'recent_100' ? 100 : 0
+        const limit = requestedMode === 'recent_20' ? 20 : requestedMode === 'recent_100' ? 100 : 0
         const existingExcerpts = limit > 0
           ? new Map(this.options.repository.listContents({ accountId: account.id, limit: 5_000 }).map((content) => [
               content.remoteId,
@@ -187,13 +197,13 @@ export class XiaohongshuApiService {
           pluginId: XIAOHONGSHU_API_PLUGIN_ID,
           jobId: job.id,
           authorizedMode: account.syncMode as Exclude<SyncMode, 'disabled'>,
-          payloadMode: account.syncMode as Exclude<SyncMode, 'disabled'>,
+          payloadMode: requestedMode,
           finishedAt
         })
         committed = true
         await this.pruneAvatarCache(account.id, cachedAvatar)
         job = this.options.jobs.publishPersisted(committedResult.job)
-        return syncResult(account, snapshot, capturedAt, committedResult, job)
+        return syncResult(account, requestedMode, snapshot, capturedAt, committedResult, job)
       } catch (error) {
         if (!committed) {
           const failedAt = this.now()
@@ -481,6 +491,7 @@ function toPayload(
 
 function syncResult(
   account: Account,
+  mode: Exclude<SyncMode, 'disabled'>,
   snapshot: XiaohongshuApiSnapshot,
   capturedAt: string,
   committed: ManagedSyncCommitResult,
@@ -498,7 +509,7 @@ function syncResult(
     : ''
   return {
     accountId: account.id,
-    mode: account.syncMode as XiaohongshuSyncResult['mode'],
+    mode,
     capturedAt,
     profile: {
       remoteId: snapshot.profile.remoteId,

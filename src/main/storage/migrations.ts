@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 10
+export const CURRENT_SCHEMA_VERSION = 11
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -49,6 +49,10 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 10) {
     inTransaction(db, () => migrateV9ToV10(db))
+    version = 10
+  }
+  if (version < 11) {
+    inTransaction(db, () => migrateV10ToV11(db))
   }
 }
 
@@ -517,6 +521,63 @@ function migrateV9ToV10(db: DatabaseSync): void {
   db.exec(`
     DROP TABLE IF EXISTS import_batches;
     PRAGMA user_version = 10;
+  `)
+}
+
+/** Adds durable sync batches and retry metadata without rewriting existing job history. */
+function migrateV10ToV11(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS job_batches (
+      id TEXT PRIMARY KEY,
+      trigger_kind TEXT NOT NULL CHECK (
+        trigger_kind IN ('manual', 'scheduled', 'event', 'retry')
+      ),
+      requested_scope TEXT NOT NULL CHECK (
+        requested_scope IN ('account_default', 'profile_only', 'recent_20', 'recent_100')
+      ),
+      created_at TEXT NOT NULL
+    ) STRICT;
+  `)
+
+  addColumn(db, 'jobs', 'batch_id TEXT REFERENCES job_batches(id) ON DELETE SET NULL')
+  addColumn(db, 'jobs', "contribution_id TEXT NOT NULL DEFAULT ''")
+  addColumn(db, 'jobs', `trigger_kind TEXT NOT NULL DEFAULT 'manual' CHECK (
+    trigger_kind IN ('manual', 'scheduled', 'event', 'retry')
+  )`)
+  addColumn(db, 'jobs', 'attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1)')
+  addColumn(db, 'jobs', 'retry_of_job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL')
+  addColumn(db, 'jobs', `requested_sync_mode TEXT CHECK (
+    requested_sync_mode IS NULL OR
+    requested_sync_mode IN ('profile_only', 'recent_20', 'recent_100')
+  )`)
+
+  db.exec(`
+    UPDATE jobs
+    SET contribution_id = COALESCE(
+      (SELECT adapter_contribution_id FROM accounts WHERE accounts.id = jobs.account_id),
+      plugin_id || '.platform'
+    )
+    WHERE contribution_id = '';
+
+    UPDATE jobs
+    SET requested_sync_mode = (
+      SELECT CASE accounts.sync_mode
+        WHEN 'profile_only' THEN 'profile_only'
+        WHEN 'recent_20' THEN 'recent_20'
+        WHEN 'recent_100' THEN 'recent_100'
+        ELSE NULL
+      END
+      FROM accounts WHERE accounts.id = jobs.account_id
+    )
+    WHERE requested_sync_mode IS NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_job_batches_created
+      ON job_batches(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_jobs_batch_status_created
+      ON jobs(batch_id, status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_jobs_retry_of
+      ON jobs(retry_of_job_id, created_at DESC);
+    PRAGMA user_version = 11;
   `)
 }
 

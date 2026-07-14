@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type { Group, PlatformId, PluginContributionState, SyncMode } from '../../../../shared/contracts'
+import type { SyncBatchPreview, SyncBatchScope } from '../../../../shared/job-contracts'
 import AccountDetailPane from './AccountDetailPane.vue'
 import AccountListPane from './AccountListPane.vue'
 import { useAccounts } from './useAccounts'
 import { confirmDialog } from '../../ui/dialog'
+import { messageOf } from '../shared/format'
 
 const store = useAccounts()
 const addDialog = ref(false)
@@ -14,7 +16,15 @@ const toast = ref('')
 const addBusy = ref(false)
 const groupBusy = ref(false)
 const batchBusy = ref(false)
+const syncBatchDialog = ref(false)
+const syncBatchBusy = ref(false)
+const syncBatchPreviewBusy = ref(false)
+const syncBatchPreview = ref<SyncBatchPreview | null>(null)
+const syncBatchPreviewError = ref('')
+const syncBatchScope = ref<SyncBatchScope>('account_default')
+const syncBatchTarget = ref<{ accountIds: string[]; groupIds: string[]; label: string; kind: 'selection' | 'group' } | null>(null)
 const selectedAccountIds = ref<string[]>([])
+let syncBatchPreviewSequence = 0
 const addForm = reactive<{ platformId: PlatformId; adapterContributionId: string; alias: string; syncMode: SyncMode }>({
   platformId: 'xiaohongshu',
   adapterContributionId: '',
@@ -37,8 +47,14 @@ const selectedBrowserState = computed(() => {
   return id ? store.browserStates.get(id) : undefined
 })
 
-onMounted(() => store.initialize())
-onBeforeUnmount(() => store.dispose())
+onMounted(() => {
+  document.addEventListener('keydown', onDialogKeydown)
+  void store.initialize()
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onDialogKeydown)
+  store.dispose()
+})
 watch(store.selectedId, () => {
   toast.value = ''
 })
@@ -46,6 +62,16 @@ watch(store.accounts, (accounts) => {
   const existingIds = new Set(accounts.map((account) => account.id))
   selectedAccountIds.value = selectedAccountIds.value.filter((id) => existingIds.has(id))
 })
+watch(syncBatchScope, () => {
+  if (syncBatchDialog.value) void previewSyncBatch()
+})
+
+const syncScopeOptions: Array<{ value: SyncBatchScope; label: string; description: string }> = [
+  { value: 'account_default', label: '按账号默认范围', description: '每个账号使用自己的同步设置' },
+  { value: 'profile_only', label: '仅账号资料', description: '更新头像、简介和账号指标' },
+  { value: 'recent_20', label: '最近 20 条', description: '同步资料与最近 20 条内容' },
+  { value: 'recent_100', label: '最近 100 条', description: '同步资料与最近 100 条内容' }
+]
 
 async function createAccount(): Promise<void> {
   if (addBusy.value) return
@@ -195,6 +221,80 @@ async function bulkSync(enabled: boolean): Promise<void> {
   }
 }
 
+function openSelectedSyncBatch(): void {
+  if (selectedAccountIds.value.length === 0) return
+  openSyncBatch({
+    accountIds: [...selectedAccountIds.value],
+    groupIds: [],
+    label: `已选择的 ${selectedAccountIds.value.length} 个账号`,
+    kind: 'selection'
+  })
+}
+
+function openGroupSyncBatch(group: Group): void {
+  openSyncBatch({
+    accountIds: [],
+    groupIds: [group.id],
+    label: `分组“${group.name}”中的账号`,
+    kind: 'group'
+  })
+}
+
+function openSyncBatch(target: { accountIds: string[]; groupIds: string[]; label: string; kind: 'selection' | 'group' }): void {
+  syncBatchTarget.value = target
+  syncBatchScope.value = 'account_default'
+  syncBatchPreview.value = null
+  syncBatchPreviewError.value = ''
+  syncBatchDialog.value = true
+  void previewSyncBatch()
+}
+
+async function previewSyncBatch(): Promise<void> {
+  const target = syncBatchTarget.value
+  if (!target) return
+  const sequence = ++syncBatchPreviewSequence
+  syncBatchPreviewBusy.value = true
+  syncBatchPreviewError.value = ''
+  try {
+    const preview = await window.socialVault.accounts.previewSyncBatch({
+      accountIds: target.accountIds,
+      groupIds: target.groupIds,
+      requestedScope: syncBatchScope.value
+    })
+    if (sequence === syncBatchPreviewSequence) syncBatchPreview.value = preview
+  } catch (cause) {
+    if (sequence !== syncBatchPreviewSequence) return
+    syncBatchPreview.value = null
+    syncBatchPreviewError.value = messageOf(cause)
+  } finally {
+    if (sequence === syncBatchPreviewSequence) syncBatchPreviewBusy.value = false
+  }
+}
+
+async function enqueueSyncBatch(): Promise<void> {
+  const target = syncBatchTarget.value
+  if (!target || syncBatchBusy.value) return
+  syncBatchBusy.value = true
+  try {
+    const result = await window.socialVault.accounts.enqueueSyncBatch({
+      accountIds: target.accountIds,
+      groupIds: target.groupIds,
+      requestedScope: syncBatchScope.value
+    })
+    syncBatchDialog.value = false
+    if (target.kind === 'selection') selectedAccountIds.value = []
+    const queued = result.jobs.length
+    showToast(result.skipped.length > 0
+      ? `已加入 ${queued} 个同步任务，跳过 ${result.skipped.length} 个账号。`
+      : `已加入 ${queued} 个同步任务。`)
+    await store.reload()
+  } catch (cause) {
+    store.error.value = messageOf(cause)
+  } finally {
+    syncBatchBusy.value = false
+  }
+}
+
 function showToast(value: string): void {
   toast.value = value
   window.setTimeout(() => {
@@ -212,6 +312,23 @@ function closeGroupDialog(): void {
 
 function closeEditGroupDialog(): void {
   if (!groupBusy.value) editGroupDialog.value = false
+}
+
+function closeSyncBatchDialog(): void {
+  if (syncBatchBusy.value) return
+  syncBatchPreviewSequence += 1
+  syncBatchDialog.value = false
+  syncBatchTarget.value = null
+  syncBatchPreview.value = null
+  syncBatchPreviewError.value = ''
+}
+
+function onDialogKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape') return
+  if (syncBatchDialog.value) closeSyncBatchDialog()
+  else if (editGroupDialog.value) closeEditGroupDialog()
+  else if (groupDialog.value) closeGroupDialog()
+  else if (addDialog.value) closeAddDialog()
 }
 </script>
 
@@ -255,6 +372,8 @@ function closeEditGroupDialog(): void {
         @clear-selection="selectedAccountIds = []"
         @bulk-group="bulkGroup"
         @bulk-sync="bulkSync"
+        @sync-now="openSelectedSyncBatch"
+        @sync-group="openGroupSyncBatch"
       />
       <AccountDetailPane
         :account="store.selectedAccount.value"
@@ -303,6 +422,78 @@ function closeEditGroupDialog(): void {
       </form>
     </div>
 
+    <div v-if="syncBatchDialog" class="modal-backdrop" @click.self="closeSyncBatchDialog">
+      <section class="modal sync-batch-modal" role="dialog" aria-modal="true" aria-labelledby="sync-batch-title" @keydown.esc="closeSyncBatchDialog">
+        <div class="modal-head">
+          <div><span class="page-eyebrow">立即同步</span><h2 id="sync-batch-title">创建同步批次</h2><p>{{ syncBatchTarget?.label }}将依次加入任务队列。</p></div>
+          <button type="button" aria-label="关闭同步批次窗口" :disabled="syncBatchBusy" @click="closeSyncBatchDialog">×</button>
+        </div>
+
+        <fieldset class="sync-scope-options">
+          <legend>本次同步范围</legend>
+          <label v-for="option in syncScopeOptions" :key="option.value" :class="{ active: syncBatchScope === option.value }">
+            <input v-model="syncBatchScope" type="radio" :value="option.value" :disabled="syncBatchBusy" />
+            <span><strong>{{ option.label }}</strong><small>{{ option.description }}</small></span>
+          </label>
+        </fieldset>
+
+        <section class="sync-preview-panel" aria-live="polite">
+          <div class="sync-preview-head">
+            <div><strong>执行预览</strong><span v-if="syncBatchPreview">{{ syncBatchPreview.eligibleAccountIds.length }} 个可同步，{{ syncBatchPreview.skippedAccountIds.length }} 个将跳过</span><span v-else-if="syncBatchPreviewBusy">正在检查账号状态…</span><span v-else>暂时无法完成预检</span></div>
+            <button type="button" :disabled="syncBatchPreviewBusy || syncBatchBusy" @click="previewSyncBatch">重新检查</button>
+          </div>
+          <div v-if="syncBatchPreviewBusy" class="sync-preview-loading"><i /><span>正在核对账号、登录状态和适配器…</span></div>
+          <div v-else-if="syncBatchPreview" class="sync-preview-list">
+            <article v-for="account in syncBatchPreview.accounts" :key="account.accountId" :class="{ skipped: account.status !== 'ready' }">
+              <i>{{ account.status === 'ready' ? '✓' : '!' }}</i>
+              <span><strong>{{ account.accountAlias || store.accounts.value.find((item) => item.id === account.accountId)?.alias || account.accountId }}</strong><small>{{ account.message }}</small></span>
+              <b>{{ account.status === 'ready' ? '可同步' : '将跳过' }}</b>
+            </article>
+          </div>
+          <div v-else-if="syncBatchPreviewError" class="sync-preview-unavailable"><strong>预检暂时不可用</strong><p>{{ syncBatchPreviewError }}</p><small>仍可创建任务，加入队列时会再次检查账号状态。</small></div>
+        </section>
+
+        <div class="modal-actions"><button class="button" type="button" :disabled="syncBatchBusy" @click="closeSyncBatchDialog">取消</button><button class="button primary" type="button" :disabled="syncBatchBusy || syncBatchPreviewBusy || Boolean(syncBatchPreview && syncBatchPreview.eligibleAccountIds.length === 0)" @click="enqueueSyncBatch">{{ syncBatchBusy ? '正在加入队列…' : syncBatchPreview ? `同步 ${syncBatchPreview.eligibleAccountIds.length} 个账号` : '仍然加入队列' }}</button></div>
+      </section>
+    </div>
+
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
 </template>
+
+<style scoped>
+.sync-batch-modal { width: min(700px, 100%); max-height: min(850px, 92vh); grid-template-rows: auto auto minmax(180px, 1fr) auto; }
+.sync-scope-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; border-color: var(--border); }
+.sync-scope-options legend { color: var(--text-secondary); }
+.sync-scope-options label { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start; gap: 8px; padding: 10px; color: var(--text-secondary); background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 9px; cursor: pointer; }
+.sync-scope-options label.active { color: var(--text); background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 35%, var(--border)); }
+.sync-scope-options input { margin-top: 3px; }
+.sync-scope-options label > span { display: grid; min-width: 0; gap: 2px; }
+.sync-scope-options strong { font-size: var(--font-body); line-height: var(--line-body); }
+.sync-scope-options small { color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.sync-preview-panel { display: flex; min-height: 0; flex-direction: column; overflow: hidden; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 11px; }
+.sync-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px; border-bottom: 1px solid var(--border); }
+.sync-preview-head > div { display: grid; gap: 2px; }
+.sync-preview-head strong { font-size: var(--font-body); line-height: var(--line-body); }
+.sync-preview-head span { color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.sync-preview-head button { min-height: 30px; padding: 4px 8px; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; font-size: var(--font-caption); line-height: var(--line-caption); }
+.sync-preview-list { min-height: 0; overflow: auto; }
+.sync-preview-list article { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 9px 11px; border-bottom: 1px solid var(--border); }
+.sync-preview-list article:last-child { border-bottom: 0; }
+.sync-preview-list article > i { display: grid; width: 24px; height: 24px; place-items: center; color: var(--success); background: var(--success-soft); border-radius: 7px; font-size: var(--font-caption); line-height: 1; font-style: normal; font-weight: 700; }
+.sync-preview-list article.skipped > i { color: var(--warning); background: var(--warning-soft); }
+.sync-preview-list article > span { display: grid; min-width: 0; gap: 1px; }
+.sync-preview-list article strong, .sync-preview-list article small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync-preview-list article strong { font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.sync-preview-list article small { color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.sync-preview-list article > b { padding: 3px 7px; color: var(--success); background: var(--success-soft); border-radius: 99px; font-size: var(--font-caption); line-height: var(--line-caption); font-weight: 620; }
+.sync-preview-list article.skipped > b { color: var(--warning); background: var(--warning-soft); }
+.sync-preview-loading, .sync-preview-unavailable { display: grid; min-height: 150px; place-content: center; justify-items: center; gap: 6px; padding: 20px; color: var(--text-tertiary); text-align: center; }
+.sync-preview-loading i { width: 22px; height: 22px; border: 2px solid var(--border-strong); border-top-color: var(--brand); border-radius: 50%; animation: sync-preview-spin .8s linear infinite; }
+.sync-preview-loading span, .sync-preview-unavailable p, .sync-preview-unavailable small { max-width: 500px; font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.sync-preview-unavailable strong { color: var(--text); }
+.sync-preview-unavailable p { color: var(--warning); }
+.sync-preview-unavailable small { color: var(--text-tertiary); }
+@keyframes sync-preview-spin { to { transform: rotate(360deg); } }
+@media (max-width: 720px) { .sync-scope-options { grid-template-columns: 1fr; } }
+</style>

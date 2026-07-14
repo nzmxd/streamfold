@@ -11,6 +11,7 @@ import type { SessionApiPlatformService } from './platform-sync-service'
 import type { CachedProfileAvatar } from './profile-media'
 import type { StandardDataset } from './plugins/types'
 import type { SessionApiPluginGate } from './plugins/session-api-plugin-gate'
+import { ZHIHU_PLATFORM_CONTRIBUTION_ID } from './plugins/builtin-manifests'
 import type { JobService } from './services/job-service'
 import {
   ZhihuApi,
@@ -89,6 +90,8 @@ export interface ZhihuApiServiceOptions {
 
 /** Coordinates the fixed, read-only Zhihu JSON integration for an isolated account session. */
 export class ZhihuApiService implements SessionApiPlatformService {
+  readonly pluginId = ZHIHU_API_PLUGIN_ID
+  readonly contributionId = ZHIHU_PLATFORM_CONTRIBUTION_ID
   private readonly previews = new Map<string, IdentityPreview>()
   private readonly activeAccounts = new Set<string>()
   private platformSyncActive = false
@@ -168,22 +171,28 @@ export class ZhihuApiService implements SessionApiPlatformService {
       let lease: ZhihuApiTransportLease | null = null
       try {
         const account = this.requireSyncableAccount(accountId)
+        const requestedMode = this.options.jobs.requestedSyncMode(
+          account.syncMode as Exclude<SyncMode, 'disabled'>
+        )
         const installation = this.options.plugins.requireEnabledSessionApi(ZHIHU_API_PLUGIN_ID, account.id)
         this.enforceInterval(account.id, 'sync', installation.manifest.minimumIntervalSeconds)
         const startedAt = this.now()
-        job = await this.options.jobs.createManagedSync(account.id, ZHIHU_API_PLUGIN_ID)
+        job = await this.options.jobs.createManagedSync(
+          account.id,
+          ZHIHU_API_PLUGIN_ID,
+          ZHIHU_PLATFORM_CONTRIBUTION_ID
+        )
         this.options.repository.markManagedSyncStarted(account.id, startedAt)
 
         lease = await this.options.browser.acquireZhihuApiTransport(account.id)
         const api = new ZhihuApi(lease.transport)
         const capturedAt = this.now()
-        const limit = account.syncMode === 'recent_20' ? 20 : account.syncMode === 'recent_100' ? 100 : 0
+        const limit = requestedMode === 'recent_20' ? 20 : requestedMode === 'recent_100' ? 100 : 0
         const snapshot = limit === 0
           ? await collectProfileOnly(api, account.remoteId!)
           : await api.collect(account.remoteId!, limit)
         const cachedAvatar = await this.cacheAvatar(account.id, snapshot.profile)
-        const mode = account.syncMode as Exclude<SyncMode, 'disabled'>
-        const payload = toPayload(snapshot, capturedAt, cachedAvatar, mode)
+        const payload = toPayload(snapshot, capturedAt, cachedAvatar, requestedMode)
         job = await this.options.jobs.transition(job, 'committing', {
           progress: 85,
           stage: '保存同步数据'
@@ -194,13 +203,13 @@ export class ZhihuApiService implements SessionApiPlatformService {
           pluginId: ZHIHU_API_PLUGIN_ID,
           jobId: job.id,
           authorizedMode: account.syncMode as Exclude<SyncMode, 'disabled'>,
-          payloadMode: account.syncMode as Exclude<SyncMode, 'disabled'>,
+          payloadMode: requestedMode,
           finishedAt
         })
         committed = true
         await this.pruneAvatarCache(account.id, cachedAvatar)
         job = this.options.jobs.publishPersisted(committedResult.job)
-        return syncResult(account, snapshot, capturedAt, committedResult, job)
+        return syncResult(account, requestedMode, snapshot, capturedAt, committedResult, job)
       } catch (error) {
         if (!committed) {
           const failedAt = this.now()
@@ -481,6 +490,7 @@ function toPayload(
 
 function syncResult(
   account: Account,
+  mode: Exclude<SyncMode, 'disabled'>,
   snapshot: ZhihuApiSnapshot,
   capturedAt: string,
   committed: ManagedSyncCommitResult,
@@ -488,7 +498,7 @@ function syncResult(
 ): SessionApiSyncResult {
   return {
     accountId: account.id,
-    mode: account.syncMode as Exclude<SyncMode, 'disabled'>,
+    mode,
     capturedAt,
     profile: {
       remoteId: snapshot.profile.remoteId,
@@ -506,7 +516,7 @@ function syncResult(
     contentCount: snapshot.contents.length,
     stats: committed.stats,
     job,
-    message: syncMessage(snapshot, account.syncMode as Exclude<SyncMode, 'disabled'>)
+    message: syncMessage(snapshot, mode)
   }
 }
 

@@ -38,7 +38,15 @@ import type {
   MetricValues,
   UpdateContentInput
 } from '../shared/content-contracts'
-import type { JobKind, JobRecord, JobStatus } from '../shared/job-contracts'
+import type {
+  JobBatchRecord,
+  JobKind,
+  JobRecord,
+  JobStatus,
+  RequestedSyncMode,
+  SyncBatchScope,
+  TaskTrigger
+} from '../shared/job-contracts'
 import type {
   InstalledPluginPackage,
   PluginEventDelivery,
@@ -60,12 +68,18 @@ import { CURRENT_SCHEMA_VERSION, migrateDatabase, readUserVersion } from './stor
 
 export interface CreateJobInput {
   id?: string
+  batchId?: string | null
   kind: JobKind
   accountId: string
   pluginId: string
+  contributionId?: string
+  trigger?: TaskTrigger
   status?: JobStatus
   progress?: number
   stage?: string
+  attempt?: number
+  retryOfJobId?: string | null
+  requestedSyncMode?: RequestedSyncMode | null
   result?: Record<string, unknown> | null
   errorCode?: string
   errorMessage?: string
@@ -75,6 +89,18 @@ export interface CreateJobInput {
 }
 
 export type UpdateJobInput = Partial<Omit<JobRecord, 'id'>>
+
+export interface CreateJobBatchInput {
+  id?: string
+  trigger: TaskTrigger
+  requestedScope: SyncBatchScope
+  createdAt?: string
+}
+
+export interface CreateSyncBatchResult {
+  batch: JobBatchRecord
+  jobs: JobRecord[]
+}
 
 export interface ManagedSyncCommitMetadata {
   accountId: string
@@ -202,18 +228,31 @@ interface AccountSnapshotRow extends SnapshotRow {
 
 interface JobRow {
   id: string
+  batch_id: string | null
   kind: JobKind
   account_id: string
   plugin_id: string
+  contribution_id: string
+  trigger_kind: TaskTrigger
   status: JobStatus
   progress: number
   stage: string
+  attempt: number
+  retry_of_job_id: string | null
+  requested_sync_mode: RequestedSyncMode | null
   result_json: string | null
   error_code: string
   error_message: string
   created_at: string
   started_at: string | null
   finished_at: string | null
+}
+
+interface JobBatchRow {
+  id: string
+  trigger_kind: TaskTrigger
+  requested_scope: SyncBatchScope
+  created_at: string
 }
 
 interface PluginRow {
@@ -376,6 +415,11 @@ export class SocialDatabase {
         UPDATE accounts SET connection_status = 'pending', status = 'pending', sync_enabled = 0,
           sync_status = 'idle', cooldown_until = NULL, avatar_cache_key = NULL, avatar_mime = NULL,
           last_sync_error = '备份已恢复，请重新打开官方页面并核验登录身份', updated_at = ?
+      `).run(now)
+      this.db.prepare(`
+        UPDATE jobs SET status = 'interrupted', progress = 100, stage = '恢复后需要重新核验',
+          error_code = 'BACKUP_RESTORED', error_message = '备份恢复后登录会话不可用，请重新登录并核验',
+          finished_at = ? WHERE status = 'queued'
       `).run(now)
       this.recoverInterruptedJobs()
       afterReplace?.()
@@ -1190,24 +1234,111 @@ export class SocialDatabase {
     return { newContentCount, updatedContentCount, snapshotCount, skippedSnapshotCount }
   }
 
+  createJobBatch(input: CreateJobBatchInput): JobBatchRecord {
+    const id = input.id ?? randomUUID()
+    const createdAt = input.createdAt ?? new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO job_batches (id, trigger_kind, requested_scope, created_at)
+      VALUES (?, ?, ?, ?)
+    `).run(id, input.trigger, input.requestedScope, createdAt)
+    return requireJobBatch(this.getJobBatch(id))
+  }
+
+  getJobBatch(id: string): JobBatchRecord | null {
+    const row = this.db.prepare('SELECT * FROM job_batches WHERE id = ?').get(id) as
+      unknown as JobBatchRow | undefined
+    return row ? mapJobBatch(row) : null
+  }
+
+  listJobBatches(): JobBatchRecord[] {
+    const rows = this.db.prepare('SELECT * FROM job_batches ORDER BY created_at DESC').all() as
+      unknown as JobBatchRow[]
+    return rows.map(mapJobBatch)
+  }
+
+  createSyncBatch(
+    batchInput: CreateJobBatchInput,
+    jobInputs: readonly CreateJobInput[]
+  ): CreateSyncBatchResult {
+    if (jobInputs.length === 0) throw new Error('同步批次至少需要一个账号任务')
+    return this.transaction(() => {
+      const batch = this.createJobBatch(batchInput)
+      const requestedSyncMode = batch.requestedScope === 'account_default'
+        ? undefined
+        : batch.requestedScope
+      const jobs = jobInputs.map((input) => this.createJob({
+        ...input,
+        batchId: batch.id,
+        trigger: batch.trigger,
+        requestedSyncMode: input.requestedSyncMode ?? requestedSyncMode
+      }))
+      for (const accountId of new Set(jobs.map((job) => job.accountId))) {
+        const account = requireAccount(this.getAccount(accountId))
+        if (!canEnableManagedSync(account, account.syncMode)) continue
+        const status = deriveAccountStatus({
+          connectionStatus: account.connectionStatus,
+          syncEnabled: account.syncEnabled,
+          syncStatus: 'queued',
+          syncMode: account.syncMode
+        })
+        this.db.prepare(`
+          UPDATE accounts SET sync_status = 'queued', cooldown_until = NULL,
+            last_sync_error = '', status = ?, updated_at = ? WHERE id = ?
+        `).run(status, batch.createdAt, accountId)
+      }
+      return { batch, jobs }
+    })
+  }
+
+  clearManagedSyncQueueState(accountId: string, clearedAt = new Date().toISOString()): Account {
+    if (!isIsoDate(clearedAt)) throw new Error('任务状态更新时间无效')
+    const account = requireAccount(this.getAccount(accountId))
+    const active = this.db.prepare(`
+      SELECT 1 FROM jobs
+      WHERE account_id = ? AND status IN ('queued', 'validating', 'committing')
+      LIMIT 1
+    `).get(accountId)
+    if (active || account.syncStatus !== 'queued') return account
+    const status = deriveAccountStatus({
+      connectionStatus: account.connectionStatus,
+      syncEnabled: account.syncEnabled,
+      syncStatus: 'idle',
+      syncMode: account.syncMode
+    })
+    this.db.prepare(`
+      UPDATE accounts SET sync_status = 'idle', status = ?, updated_at = ? WHERE id = ?
+    `).run(status, clearedAt, accountId)
+    return requireAccount(this.getAccount(accountId))
+  }
+
   createJob(input: CreateJobInput): JobRecord {
-    requireAccount(this.getAccount(input.accountId))
+    const account = requireAccount(this.getAccount(input.accountId))
     const id = input.id ?? randomUUID()
     const now = input.createdAt ?? new Date().toISOString()
     const status = input.status ?? 'queued'
+    const requestedSyncMode = input.requestedSyncMode === undefined
+      ? (account.syncMode === 'disabled' ? null : account.syncMode)
+      : input.requestedSyncMode
     this.db.prepare(`
       INSERT INTO jobs (
-        id, kind, account_id, plugin_id, status, progress, stage, result_json,
-        error_code, error_message, created_at, started_at, finished_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, batch_id, kind, account_id, plugin_id, contribution_id, trigger_kind,
+        status, progress, stage, attempt, retry_of_job_id, requested_sync_mode,
+        result_json, error_code, error_message, created_at, started_at, finished_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
+      input.batchId ?? null,
       input.kind,
       input.accountId,
       input.pluginId,
+      input.contributionId?.trim() || account.adapterContributionId || `${input.pluginId}.platform`,
+      input.trigger ?? 'manual',
       status,
       clampInteger(input.progress ?? 0, 0, 100),
       input.stage ?? '',
+      clampInteger(input.attempt ?? 1, 1, Number.MAX_SAFE_INTEGER),
+      input.retryOfJobId ?? null,
+      requestedSyncMode,
       input.result === undefined || input.result === null ? null : JSON.stringify(input.result),
       input.errorCode ?? '',
       input.errorMessage ?? '',
@@ -1244,16 +1375,24 @@ export class SocialDatabase {
       ? ''
       : ` AND status IN (${expectedStatuses.map(() => '?').join(', ')})`
     const result = this.db.prepare(`
-      UPDATE jobs SET kind = ?, account_id = ?, plugin_id = ?, status = ?, progress = ?,
-        stage = ?, result_json = ?, error_code = ?, error_message = ?, started_at = ?,
-        finished_at = ? WHERE id = ?${expectedClause}
+      UPDATE jobs SET batch_id = ?, kind = ?, account_id = ?, plugin_id = ?,
+        contribution_id = ?, trigger_kind = ?, status = ?, progress = ?, stage = ?,
+        attempt = ?, retry_of_job_id = ?, requested_sync_mode = ?, result_json = ?,
+        error_code = ?, error_message = ?, started_at = ?, finished_at = ?
+      WHERE id = ?${expectedClause}
     `).run(
+      patch.batchId === undefined ? current.batchId : patch.batchId,
       patch.kind ?? current.kind,
       patch.accountId ?? current.accountId,
       patch.pluginId ?? current.pluginId,
+      patch.contributionId ?? current.contributionId,
+      patch.trigger ?? current.trigger,
       status,
       clampInteger(patch.progress ?? current.progress, 0, 100),
       patch.stage ?? current.stage,
+      clampInteger(patch.attempt ?? current.attempt, 1, Number.MAX_SAFE_INTEGER),
+      patch.retryOfJobId === undefined ? current.retryOfJobId : patch.retryOfJobId,
+      patch.requestedSyncMode === undefined ? current.requestedSyncMode : patch.requestedSyncMode,
       patch.result === undefined
         ? (current.result === null ? null : JSON.stringify(current.result))
         : (patch.result === null ? null : JSON.stringify(patch.result)),
@@ -1270,15 +1409,38 @@ export class SocialDatabase {
 
   recoverInterruptedJobs(): JobRecord[] {
     const rows = this.db.prepare(`
-      SELECT id FROM jobs WHERE status IN ('queued', 'validating', 'committing')
-    `).all() as unknown as Array<{ id: string }>
+      SELECT id, account_id FROM jobs WHERE status IN ('validating', 'committing')
+    `).all() as unknown as Array<{ id: string; account_id: string }>
     if (rows.length === 0) return []
     const now = new Date().toISOString()
     this.db.prepare(`
       UPDATE jobs SET status = 'interrupted', error_code = 'APP_RESTARTED',
         error_message = '应用退出时任务尚未完成', finished_at = ?
-      WHERE status IN ('queued', 'validating', 'committing')
+      WHERE status IN ('validating', 'committing')
     `).run(now)
+    for (const accountId of new Set(rows.map((row) => row.account_id))) {
+      try {
+        const hasQueued = this.db.prepare(`
+          SELECT 1 FROM jobs WHERE account_id = ? AND status = 'queued' LIMIT 1
+        `).get(accountId)
+        if (hasQueued) {
+          const account = requireAccount(this.getAccount(accountId))
+          const status = deriveAccountStatus({
+            connectionStatus: account.connectionStatus,
+            syncEnabled: account.syncEnabled,
+            syncStatus: 'queued',
+            syncMode: account.syncMode
+          })
+          this.db.prepare(`
+            UPDATE accounts SET sync_status = 'queued', status = ?, updated_at = ? WHERE id = ?
+          `).run(status, now, accountId)
+        } else {
+          this.markManagedSyncFailed(accountId, '应用退出时同步尚未完成', now)
+        }
+      } catch {
+        // A removed or otherwise unavailable account must not block job recovery.
+      }
+    }
     return rows.map(({ id }) => requireJob(this.getJob(id)))
   }
 
@@ -2197,18 +2359,33 @@ function mapSnapshot(row: SnapshotRow): ContentSnapshot {
 function mapJob(row: JobRow): JobRecord {
   return {
     id: row.id,
+    batchId: row.batch_id,
     kind: row.kind,
     accountId: row.account_id,
     pluginId: row.plugin_id,
+    contributionId: row.contribution_id,
+    trigger: row.trigger_kind,
     status: row.status,
     progress: Number(row.progress),
     stage: row.stage,
+    attempt: Number(row.attempt),
+    retryOfJobId: row.retry_of_job_id,
+    requestedSyncMode: row.requested_sync_mode,
     result: safeObject(row.result_json),
     errorCode: row.error_code,
     errorMessage: row.error_message,
     createdAt: row.created_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at
+  }
+}
+
+function mapJobBatch(row: JobBatchRow): JobBatchRecord {
+  return {
+    id: row.id,
+    trigger: row.trigger_kind,
+    requestedScope: row.requested_scope,
+    createdAt: row.created_at
   }
 }
 
@@ -2455,6 +2632,11 @@ function requireManagedSyncAccount(account: Account | null): Account {
 function requireJob(job: JobRecord | null): JobRecord {
   if (!job) throw new Error('任务不存在')
   return job
+}
+
+function requireJobBatch(batch: JobBatchRecord | null): JobBatchRecord {
+  if (!batch) throw new Error('任务批次不存在')
+  return batch
 }
 
 function isActiveJob(status: JobStatus): boolean {

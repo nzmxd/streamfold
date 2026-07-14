@@ -55,9 +55,9 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
   private syncing = false
 
   constructor(
-    private readonly pluginId: string,
-    private readonly contributionId: string,
-    private readonly platformId: string,
+    readonly pluginId: string,
+    readonly contributionId: string,
+    readonly platformId: string,
     private readonly repository: SandboxAdapterRepository,
     private readonly host: PluginHostService,
     private readonly runtime: PluginRuntimeExecutor,
@@ -138,8 +138,11 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
       let committed = false
       try {
         const account = this.requireSyncableAccount(accountId)
+        const requestedMode = this.jobs.requestedSyncMode(
+          account.syncMode as Exclude<SyncMode, 'disabled'>
+        )
         this.enforceMinimumInterval(account)
-        job = await this.jobs.createManagedSync(account.id, this.pluginId)
+        job = await this.jobs.createManagedSync(account.id, this.pluginId, this.contributionId)
         this.repository.markManagedSyncStarted(account.id, this.now())
         const before = await this.readIdentity(account.id)
         if (before.remoteId !== account.remoteId) throw new Error('当前登录身份与已绑定账号不一致')
@@ -148,7 +151,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
           this.contributionId,
           'collect',
           account.id,
-          { scope: account.syncMode }
+          { scope: requestedMode }
         )
         const dataset = parseDataset(raw, this.platformId)
         const after = await this.readIdentity(account.id)
@@ -177,12 +180,12 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
           pluginId: this.pluginId,
           jobId: job.id,
           authorizedMode: account.syncMode as Exclude<SyncMode, 'disabled'>,
-          payloadMode: account.syncMode as Exclude<SyncMode, 'disabled'>,
+          payloadMode: requestedMode,
           finishedAt
         })
         committed = true
         job = this.jobs.publishPersisted(result.job)
-        return toSyncResult(account, dataset, result, job)
+        return toSyncResult(account, requestedMode, dataset, result, job)
       } catch (error) {
         if (!committed) {
           const message = safeMessage(error)
@@ -435,6 +438,7 @@ function identityResult(
 
 function toSyncResult(
   account: Account,
+  mode: Exclude<SyncMode, 'disabled'>,
   dataset: StandardDataset,
   committed: ManagedSyncCommitResult,
   job: JobRecord
@@ -442,7 +446,7 @@ function toSyncResult(
   const profile = dataset.profile!
   return {
     accountId: account.id,
-    mode: account.syncMode as Exclude<SyncMode, 'disabled'>,
+    mode,
     capturedAt: dataset.capturedAt,
     profile: {
       remoteId: profile.remoteId,

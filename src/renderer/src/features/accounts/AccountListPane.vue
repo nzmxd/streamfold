@@ -30,6 +30,8 @@ const emit = defineEmits<{
   clearSelection: []
   bulkGroup: [value: { groupId: string; action: 'add' | 'remove' }]
   bulkSync: [enabled: boolean]
+  syncNow: []
+  syncGroup: [group: Group]
 }>()
 
 const batchGroupId = ref('')
@@ -101,6 +103,10 @@ function countFor(value: string): number {
       <button :disabled="batchBusy" title="编辑名称与颜色" @click="emit('editGroup', selectedGroupDefinition)">✎</button>
       <button class="danger" :disabled="batchBusy" title="删除当前分组" @click="emit('removeGroup', selectedGroupDefinition)">×</button>
     </div>
+    <div v-if="selectedGroupDefinition" class="group-sync-strip">
+      <span>同步此分组的 {{ selectedGroupDefinition.accountCount }} 个账号</span>
+      <button :disabled="batchBusy || selectedGroupDefinition.accountCount === 0" @click="emit('syncGroup', selectedGroupDefinition)">立即同步</button>
+    </div>
 
     <section v-if="selectedAccountIds.length > 0" class="batch-toolbar" aria-label="批量管理账号">
       <div class="batch-summary">
@@ -116,6 +122,7 @@ function countFor(value: string): number {
         <button :disabled="batchBusy || !batchGroupId" @click="emit('bulkGroup', { groupId: batchGroupId, action: 'remove' })">移出</button>
       </div>
       <div class="batch-sync-controls">
+        <button class="sync-now-action" :disabled="batchBusy" @click="emit('syncNow')">立即同步已选账号</button>
         <button :disabled="batchBusy" @click="emit('bulkSync', false)">暂停同步</button>
         <button :disabled="batchBusy" @click="emit('bulkSync', true)">恢复同步</button>
       </div>
@@ -170,3 +177,14 @@ function countFor(value: string): number {
     </div>
   </aside>
 </template>
+
+<style scoped>
+.group-sync-strip { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -3px 14px 10px; padding: 7px 8px 7px 10px; color: var(--text-secondary); background: color-mix(in srgb, var(--brand-soft) 50%, var(--surface)); border: 1px solid color-mix(in srgb, var(--brand) 18%, var(--border)); border-radius: 8px; }
+.group-sync-strip span { overflow: hidden; font-size: var(--font-caption); line-height: var(--line-caption); text-overflow: ellipsis; white-space: nowrap; }
+.group-sync-strip button { min-height: 30px; flex: 0 0 auto; padding: 4px 8px; color: var(--brand); background: var(--surface); border: 1px solid color-mix(in srgb, var(--brand) 28%, var(--border)); border-radius: 6px; cursor: pointer; font-size: var(--font-caption); line-height: var(--line-caption); font-weight: 620; }
+.group-sync-strip button:hover:not(:disabled) { background: var(--brand-soft); }
+.group-sync-strip button:disabled { opacity: .5; cursor: not-allowed; }
+.batch-sync-controls { grid-template-columns: 1fr 1fr; }
+.batch-sync-controls .sync-now-action { grid-column: 1 / -1; min-height: 34px; color: var(--brand-contrast); background: var(--brand); border-color: var(--brand); font-weight: 620; }
+.batch-sync-controls .sync-now-action:hover:not(:disabled) { background: var(--brand-hover); border-color: var(--brand-hover); }
+</style>

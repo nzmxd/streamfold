@@ -133,6 +133,7 @@ export interface BrowserState {
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
 export type RuntimePlatform = 'win32' | 'darwin' | 'linux'
+export type AppNavigationTarget = 'dashboard' | 'accounts' | 'content' | 'analytics' | 'tasks' | 'plugins' | 'settings'
 
 export interface AppearanceState {
   preference: ThemePreference
@@ -149,6 +150,9 @@ export interface SocialVaultApi {
   runtime: { platform: RuntimePlatform }
   appearance: AppearanceApi
   updates: import('./update-contracts').UpdateApi
+  navigation: {
+    onRequested(callback: (target: AppNavigationTarget) => void): () => void
+  }
   platforms: {
     list(): Promise<PlatformDefinition[]>
   }
@@ -163,6 +167,8 @@ export interface SocialVaultApi {
     verifyIdentity(id: string): Promise<import('./session-api-contracts').SessionApiIdentityCheckResult>
     confirmIdentity(input: import('./session-api-contracts').ConfirmSessionApiIdentityInput): Promise<import('./session-api-contracts').SessionApiIdentityCheckResult>
     sync(id: string): Promise<import('./session-api-contracts').SessionApiSyncResult>
+    previewSyncBatch(input: import('./job-contracts').EnqueueSyncBatchInput): Promise<import('./job-contracts').SyncBatchPreview>
+    enqueueSyncBatch(input: import('./job-contracts').EnqueueSyncBatchInput): Promise<import('./job-contracts').EnqueueSyncBatchResult>
     listAdapters(id: string): Promise<import('./plugin-host-contracts').AccountAdapterOption[]>
     switchAdapter(id: string, contributionId: string): Promise<Account>
   }
@@ -188,6 +194,16 @@ export interface SocialVaultApi {
   analytics: {
     overview(query?: import('./content-contracts').AnalyticsQuery): Promise<import('./content-contracts').AnalyticsOverview>
     dashboard(): Promise<import('./content-contracts').DashboardOverview>
+  }
+  tasks: {
+    summary(query?: import('./job-contracts').TaskQuery): Promise<import('./job-contracts').TaskSummary>
+    list(query?: import('./job-contracts').TaskQuery): Promise<import('./job-contracts').TaskListResult>
+    get(id: string): Promise<import('./job-contracts').TaskView | null>
+    cancel(id: string): Promise<import('./job-contracts').TaskView>
+    retry(id: string): Promise<import('./job-contracts').TaskView>
+    listBatch(batchId: string): Promise<import('./job-contracts').TaskBatchView | null>
+    listBatches(): Promise<import('./job-contracts').TaskBatchView[]>
+    onChanged(callback: () => void): () => void
   }
   plugins: {
     listPackages(): Promise<import('./plugin-host-contracts').InstalledPluginPackage[]>

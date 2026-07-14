@@ -9,6 +9,7 @@ import ContentCenter from './features/content/ContentCenter.vue'
 import DashboardCenter from './features/dashboard/DashboardCenter.vue'
 import PluginCenter from './features/plugins/PluginCenter.vue'
 import SettingsCenter from './features/settings/SettingsCenter.vue'
+import TaskCenter from './features/tasks/TaskCenter.vue'
 import { disposeUpdater, initializeUpdater, useUpdater } from './features/updater/useUpdater'
 import { confirmDialog } from './ui/dialog'
 import { createSidebarState } from './ui/sidebar-state'
@@ -22,6 +23,7 @@ const updateState = updater.state
 const updaterReady = updater.ready
 const promptedUpdateStorageKey = 'streamfold:update-prompted-version'
 let promptedUpdateVersion = readPromptedUpdateVersion()
+let removeNavigationListener: (() => void) | null = null
 
 watch(updateState, (state) => {
   const version = state.availableVersion
@@ -63,8 +65,16 @@ async function promptDownloadedUpdate(version: string): Promise<void> {
   }
 }
 
-onMounted(() => void initializeUpdater())
-onBeforeUnmount(disposeUpdater)
+onMounted(() => {
+  removeNavigationListener = window.socialVault.navigation.onRequested((target) => {
+    section.value = target
+  })
+  void initializeUpdater()
+})
+onBeforeUnmount(() => {
+  removeNavigationListener?.()
+  disposeUpdater()
+})
 </script>
 
 <template>
@@ -84,6 +94,7 @@ onBeforeUnmount(disposeUpdater)
         <AccountCenter v-else-if="section === 'accounts'" />
         <ContentCenter v-else-if="section === 'content'" />
         <AnalyticsCenter v-else-if="section === 'analytics'" />
+        <TaskCenter v-else-if="section === 'tasks'" @navigate="section = $event" />
         <PluginCenter v-else-if="section === 'plugins'" />
         <SettingsCenter v-else />
       </main>

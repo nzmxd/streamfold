@@ -187,6 +187,7 @@ function jobsFixture() {
   }))
   return {
     createManagedSync: vi.fn(async () => jobRecord()),
+    requestedSyncMode: vi.fn((fallback: 'profile_only' | 'recent_20' | 'recent_100') => fallback),
     transition,
     publishPersisted: vi.fn((job: JobRecord) => job)
   }
@@ -313,12 +314,18 @@ function createAccount(): Account {
 function jobRecord(): JobRecord {
   return {
     id: 'job-1',
+    batchId: null,
     kind: 'managed_sync',
     accountId: 'account-1',
     pluginId: 'example.plugin',
+    contributionId: 'example.platform',
+    trigger: 'manual',
     status: 'validating',
     progress: 20,
     stage: '读取平台数据',
+    attempt: 1,
+    retryOfJobId: null,
+    requestedSyncMode: 'profile_only',
     result: null,
     errorCode: '',
     errorMessage: '',

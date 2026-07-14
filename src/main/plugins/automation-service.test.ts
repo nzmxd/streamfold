@@ -8,6 +8,7 @@ import type {
   PluginRunRecord,
   PluginSchedule
 } from '../../shared/plugin-host-contracts'
+import { AccountExecutionCoordinator } from '../services/account-execution-coordinator'
 import {
   PluginAutomationService,
   RetryablePluginError,
@@ -118,6 +119,19 @@ describe('PluginAutomationService', () => {
     })
   })
 
+  it('pauses new automatic work without blocking a later manual run', async () => {
+    const account = createAccount('account-1')
+    const repository = new FakeAutomationRepository([account], createGrant({ accountIds: [account.id], permissions: [] }))
+    const executor = { execute: vi.fn(async () => null) }
+    const service = createService(repository, actionContribution(), executor)
+
+    service.setPaused(true)
+    await service.tick()
+    expect(executor.execute).not.toHaveBeenCalled()
+    await service.runManual('example.plugin', 'example.action', account.id)
+    expect(executor.execute).toHaveBeenCalledOnce()
+  })
+
   it('serializes manual runs for the same account while leaving the first run intact', async () => {
     const account = createAccount('account-1')
     const repository = new FakeAutomationRepository([account], createGrant({ accountIds: [account.id], permissions: [] }))
@@ -143,6 +157,26 @@ describe('PluginAutomationService', () => {
 
     expect(repository.runs.map((run) => run.status)).toEqual(['succeeded', 'failed'])
     expect(repository.runs[1]).toMatchObject({ errorCode: 'ACCOUNT_BUSY' })
+  })
+
+  it('shares the account lock with platform synchronization', async () => {
+    const account = createAccount('account-1')
+    const repository = new FakeAutomationRepository([account], createGrant({ accountIds: [account.id], permissions: [] }))
+    const executor = { execute: vi.fn(async () => null) }
+    const service = createService(repository, actionContribution(), executor)
+    const coordinator = new AccountExecutionCoordinator()
+    service.setAccountCoordinator(coordinator)
+    let release!: () => void
+    const platformSync = coordinator.run(account.id, async () => {
+      await new Promise<void>((resolve) => { release = resolve })
+    })
+
+    await expect(service.runManual('example.plugin', 'example.action', account.id))
+      .rejects.toMatchObject({ code: 'ACCOUNT_BUSY' })
+    expect(executor.execute).not.toHaveBeenCalled()
+    expect(repository.runs[0]).toMatchObject({ status: 'failed', errorCode: 'ACCOUNT_BUSY' })
+    release()
+    await platformSync
   })
 })
 

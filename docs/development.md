@@ -1,6 +1,6 @@
 # 开发与发布
 
-> 适用版本：归页 Streamfold 0.5.0
+> 适用版本：归页 Streamfold 0.6.0
 
 ## 1. 环境
 
@@ -24,7 +24,7 @@ pnpm dev
 | `pnpm dev` | 启动开发版桌面应用 |
 | `pnpm test` | 运行全部 Vitest 单元/服务测试 |
 | `pnpm test:watch` | 监听模式运行 Vitest |
-| `pnpm test:ui` | 构建后使用 Playwright Electron API 在隔离数据目录中运行界面回归（矮窗口、插件弹窗、控件和主题） |
+| `pnpm test:ui` | 构建后使用 Playwright Electron API 在隔离数据目录中运行界面回归（任务中心、批量预览、矮窗口、插件弹窗、控件和主题） |
 | `pnpm typecheck` | 检查 Vue/Renderer 与 Node/Electron TypeScript |
 | `pnpm build` | 类型检查并构建到 `out/` |
 | `pnpm test:smoke` | 生成当前平台安装目录并执行资源检查、真实 Electron 与 QuickJS 冒烟 |
@@ -51,12 +51,13 @@ pnpm dev
 | `src/main/storage/migrations.ts` | SQLite schema 与逐版迁移 |
 | `src/main/*-api.ts` | 平台固定端点、严格解析和标准化 |
 | `src/main/*-api-service.ts` | 平台锁、限频、任务、头像和提交编排 |
+| `src/main/services/` | 账号级执行锁、任务状态机、批量同步队列与统一任务查询 |
 | `src/main/plugins/` | Manifest、注册中心、包/目录验证、QuickJS 宿主、权限、事件与生命周期 |
 | `packages/plugin-sdk/` | 插件合同、Manifest 构建器、测试宿主和打包签名 CLI |
 | `tooling/plugin-catalog-template/` | 可复制到独立目录仓库的 Schema、签名脚本和 CI 工作流 |
 | `src/preload/` | 两个本地窗口的最小能力桥接 |
 | `src/shared/` | 主进程、preload、Renderer 共用合同 |
-| `src/renderer/src/features/` | 六个业务页面和在线更新 UI |
+| `src/renderer/src/features/` | 工作台、账号、内容、数据、任务、插件、设置和在线更新 UI |
 | `resources/icons/`、`build/` | 运行时和安装包图标 |
 | `.github/workflows/` | CI 与标签发布流程 |
 
@@ -110,10 +111,11 @@ pnpm dev
 - 纯解析：平台端点、字段、分页、原帖 URL、异常响应和大小限制。
 - 浏览器传输：CDP 事件、请求匹配、响应正文、后台 workspace lease 与 Session 隔离。
 - 服务：插件启用、身份预览、互斥、限频、错误状态、任务和头像缓存。
+- 任务：批次原子创建、分组解析、临时范围、同适配器串行、跨适配器并行、取消、重试和重启恢复。
 - 数据库：迁移、约束、事务、快照去重、分析、备份恢复和账号隔离。
 - Renderer：展示映射、筛选、图表、排版、侧栏和弹窗行为。
 - Electron smoke：`app://` 页面、preload API、主题、更新 API、两个账号 Partition 隔离、浏览器 User-Agent 和图标。
-- Electron UI 回归：矮窗口设置卡片不裁切或重叠、Webhook 权限与配置弹窗、复选框/开关状态、弹窗滚动和 `Esc` 关闭、浅色/深色主题。
+- Electron UI 回归：任务中心最小窗口、批量同步预览、矮窗口设置卡片、Webhook 权限与配置弹窗、复选框/开关状态、弹窗滚动和 `Esc` 关闭、浅色/深色主题。
 
 提交前建议至少执行：
 
@@ -134,7 +136,7 @@ git diff --check
 `.github/workflows/release.yml` 支持手动打包和版本标签发布：
 
 - 手动触发只生成保留 14 天的 Actions 构件，不创建 Release。
-- 标签必须是严格的稳定 SemVer，例如 `v0.5.0`，并与 `package.json` 版本一致。
+- 标签必须是严格的稳定 SemVer，例如 `v0.6.0`，并与 `package.json` 版本一致。
 - Windows、macOS、Linux 在各自原生 runner 上打包；三个任务都成功后才汇总 Release。
 - 每个平台打包后都会检查 `plugin-sandbox.js`、QuickJS 运行资源和官方签名 Webhook 包。
 - 已存在同名 Release 时拒绝覆盖；发布先创建 draft，完整上传后再标记为 latest。
@@ -175,7 +177,8 @@ Release 仓库必须配置 Actions Variable `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`
 - 多账号隔离 Session、独立账号浏览器、后台 workspace lease 与登录失效提升窗口。
 - 小红书、知乎本人身份、资料、内容、指标与官方原帖链接同步。
 - 账号整理、内容检索、趋势分析、JSON/CSV 导出和加密数据库备份恢复。
-- v0 → v10 数据库迁移、自动化测试、生产构建与 Electron smoke。
+- v0 → v11 数据库迁移、自动化测试、生产构建与 Electron smoke。
+- 账号/分组批量同步、持久排队与重试链、账号和适配器互斥、统一任务中心与托盘任务摘要。
 - Manifest v2、签名包/目录、QuickJS Utility Process、权限代理、事件 Outbox、计划队列、真实签名 Webhook 资源和 SDK/CLI。
 - 三平台构建配置、GitHub CI/Release 工作流和客户端在线更新状态机。
 
@@ -187,4 +190,4 @@ Release 仓库必须配置 Actions Variable `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`
 - Windows/macOS 正式签名、公证，以及公开 GitHub 仓库的首次 Release/在线更新验收。
 - 媒体文件备份、XLSX 导出、分组拖拽和浏览器窗口位置恢复。
 
-优先顺序是先补足现有平台异常场景，再实现串行批量同步，最后通过签名目录逐个平台开放新适配器。
+优先顺序是先继续收口 0.6.0 的真实多账号长时间运行场景，再基于连续快照增强分析，最后通过签名目录逐个平台开放新适配器。详细版本范围、技术改造和验收门槛见[产品路线图](roadmap.md)。

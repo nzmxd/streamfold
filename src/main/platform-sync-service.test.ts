@@ -117,6 +117,8 @@ function createAdapter(name: string, active = false): SessionApiPlatformService 
   invalidatePreviews: ReturnType<typeof vi.fn<() => void>>
 } {
   return {
+    pluginId: `${name}-plugin`,
+    contributionId: `${name}-adapter`,
     verifyIdentity: vi.fn(async (accountId) => identityResult(accountId, name)),
     confirmIdentity: vi.fn(async (input) => identityResult(input.accountId, name)),
     sync: vi.fn(async (accountId) => syncResult(accountId, name)),
@@ -160,12 +162,18 @@ function syncResult(accountId: string, remoteName: string): SessionApiSyncResult
     },
     job: {
       id: 'job-1',
+      batchId: null,
       accountId,
       pluginId: 'test-session-api',
+      contributionId: 'test-session-api.platform',
       kind: 'managed_sync',
+      trigger: 'manual',
       status: 'succeeded',
       progress: 100,
       stage: '同步完成',
+      attempt: 1,
+      retryOfJobId: null,
+      requestedSyncMode: 'profile_only',
       result: null,
       errorCode: '',
       errorMessage: '',

@@ -467,7 +467,7 @@ describe('SocialDatabase', () => {
     })
   })
 
-  it('recovers in-flight jobs as interrupted while leaving completed jobs unchanged', () => {
+  it('recovers active jobs as interrupted while preserving queued and completed jobs', () => {
     const account = createAccount(database, '账号 A')
     const queued = database.createJob({
       id: 'job-queued',
@@ -475,6 +475,20 @@ describe('SocialDatabase', () => {
       accountId: account.id,
       pluginId: 'xiaohongshu-session-api',
       status: 'queued'
+    })
+    const validating = database.createJob({
+      id: 'job-validating',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'xiaohongshu-session-api',
+      status: 'validating'
+    })
+    const committing = database.createJob({
+      id: 'job-committing',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'xiaohongshu-session-api',
+      status: 'committing'
     })
     const completed = database.createJob({
       id: 'job-done',
@@ -485,12 +499,128 @@ describe('SocialDatabase', () => {
       progress: 100
     })
 
-    expect(database.recoverInterruptedJobs().map((job) => job.id)).toEqual([queued.id])
+    expect(database.recoverInterruptedJobs().map((job) => job.id).sort()).toEqual([
+      validating.id,
+      committing.id
+    ].sort())
     expect(database.getJob(queued.id)).toMatchObject({
+      status: 'queued',
+      errorCode: '',
+      finishedAt: null
+    })
+    expect(database.getJob(validating.id)).toMatchObject({
+      status: 'interrupted',
+      errorCode: 'APP_RESTARTED'
+    })
+    expect(database.getJob(committing.id)).toMatchObject({
       status: 'interrupted',
       errorCode: 'APP_RESTARTED'
     })
     expect(database.getJob(completed.id)?.status).toBe('succeeded')
+  })
+
+  it('clears a stale running account state when an active job is interrupted', () => {
+    const account = createManagedAccount(database, 'restart-owner', '重启恢复账号')
+    database.markManagedSyncStarted(account.id, '2026-07-15T00:00:00.000Z')
+    database.createJob({
+      id: 'job-before-restart',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'xiaohongshu-session-api',
+      status: 'validating'
+    })
+
+    database.recoverInterruptedJobs()
+
+    expect(database.getAccount(account.id)).toMatchObject({
+      syncStatus: 'failed',
+      lastSyncError: '应用退出时同步尚未完成'
+    })
+  })
+
+  it('round-trips sync batch and retry metadata', () => {
+    const account = createAccount(database, '账号 A')
+    const firstAttempt = database.createJob({
+      id: 'job-first-attempt',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'example-plugin',
+      contributionId: 'example-plugin.platform',
+      trigger: 'manual',
+      status: 'failed',
+      requestedSyncMode: 'profile_only',
+      errorCode: 'NETWORK_ERROR'
+    })
+    const result = database.createSyncBatch({
+      id: 'batch-retry',
+      trigger: 'retry',
+      requestedScope: 'recent_20',
+      createdAt: '2026-07-15T01:00:00.000Z'
+    }, [{
+      id: 'job-retry',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'example-plugin',
+      contributionId: 'example-plugin.platform',
+      trigger: 'retry',
+      attempt: 2,
+      retryOfJobId: firstAttempt.id,
+      requestedSyncMode: 'recent_20',
+      status: 'queued',
+      stage: '等待重试',
+      createdAt: '2026-07-15T01:00:01.000Z'
+    }])
+
+    expect(result.batch).toEqual({
+      id: 'batch-retry',
+      trigger: 'retry',
+      requestedScope: 'recent_20',
+      createdAt: '2026-07-15T01:00:00.000Z'
+    })
+    expect(result.jobs[0]).toMatchObject({
+      id: 'job-retry',
+      batchId: 'batch-retry',
+      contributionId: 'example-plugin.platform',
+      trigger: 'retry',
+      attempt: 2,
+      retryOfJobId: firstAttempt.id,
+      requestedSyncMode: 'recent_20'
+    })
+    expect(database.listJobBatches()).toEqual([result.batch])
+    expect(database.getJob('job-retry')).toEqual(result.jobs[0])
+
+    expect(database.updateJob('job-retry', {
+      requestedSyncMode: null,
+      retryOfJobId: null,
+      result: { recovered: true }
+    })).toMatchObject({
+      requestedSyncMode: null,
+      retryOfJobId: null,
+      result: { recovered: true }
+    })
+  })
+
+  it('creates a sync batch and all account jobs atomically', () => {
+    const account = createAccount(database, '账号 A')
+
+    expect(() => database.createSyncBatch({
+      id: 'batch-rollback',
+      trigger: 'manual',
+      requestedScope: 'account_default'
+    }, [{
+      id: 'job-before-rollback',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'example-plugin'
+    }, {
+      id: 'job-invalid-account',
+      kind: 'managed_sync',
+      accountId: 'missing-account',
+      pluginId: 'example-plugin'
+    }])).toThrow('账号不存在')
+
+    expect(database.getJobBatch('batch-rollback')).toBeNull()
+    expect(database.getJob('job-before-rollback')).toBeNull()
   })
 
   it('updates jobs with an atomic expected-status guard', () => {
@@ -828,6 +958,71 @@ describe('SocialDatabase migrations', () => {
     `).get()).toBeUndefined()
     inspected.close()
   })
+
+  it('migrates v10 jobs to durable v11 batch and retry metadata', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v10.sqlite')
+    database = new SocialDatabase(path)
+    const account = database.createAccount({
+      platformId: 'xiaohongshu', alias: '历史任务账号', syncMode: 'recent_20'
+    })
+    database.createJob({
+      id: 'legacy-v10-job',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'xiaohongshu-session-api',
+      status: 'queued',
+      createdAt: '2026-07-14T08:00:00.000Z'
+    })
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    previous.exec(`
+      DROP INDEX idx_jobs_batch_status_created;
+      DROP INDEX idx_jobs_retry_of;
+      DROP INDEX idx_job_batches_created;
+      ALTER TABLE jobs DROP COLUMN requested_sync_mode;
+      ALTER TABLE jobs DROP COLUMN retry_of_job_id;
+      ALTER TABLE jobs DROP COLUMN attempt;
+      ALTER TABLE jobs DROP COLUMN trigger_kind;
+      ALTER TABLE jobs DROP COLUMN contribution_id;
+      ALTER TABLE jobs DROP COLUMN batch_id;
+      DROP TABLE job_batches;
+      PRAGMA user_version = 10;
+    `)
+    previous.close()
+
+    database = new SocialDatabase(path)
+
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
+    expect(database.getJob('legacy-v10-job')).toMatchObject({
+      batchId: null,
+      contributionId: XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID,
+      trigger: 'manual',
+      status: 'queued',
+      attempt: 1,
+      retryOfJobId: null,
+      requestedSyncMode: 'recent_20'
+    })
+    expect(database.listJobBatches()).toEqual([])
+
+    database.close()
+    database = null
+    const inspected = new DatabaseSync(path, { readOnly: true })
+    const indexes = inspected.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'index' AND name IN (
+        'idx_job_batches_created', 'idx_jobs_batch_status_created', 'idx_jobs_retry_of'
+      ) ORDER BY name
+    `).all() as unknown as Array<{ name: string }>
+    expect(indexes.map(({ name }) => name)).toEqual([
+      'idx_job_batches_created',
+      'idx_jobs_batch_status_created',
+      'idx_jobs_retry_of'
+    ])
+    inspected.close()
+  })
 })
 
 describe('SocialDatabase backup images', () => {
@@ -851,6 +1046,13 @@ describe('SocialDatabase backup images', () => {
     }, '2026-07-13T07:00:01.000Z')
     database.updateAccount({ id: account.id, groupIds: [group.id] })
     commitManagedDataset(database, account.id, standardDataset('remote-backup', 'content-backup'))
+    const queuedBeforeBackup = database.createJob({
+      id: 'queued-before-backup',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'xiaohongshu-session-api',
+      status: 'queued'
+    })
     const externalManifest: PluginManifestV2 = {
       schemaVersion: 2,
       id: 'backup.example',
@@ -922,6 +1124,10 @@ describe('SocialDatabase backup images', () => {
     })
     expect(database.listContents({ accountId: account.id })).toHaveLength(1)
     expect(database.getAccount(account.id)?.lastSyncError).toContain('重新打开官方页面')
+    expect(database.getJob(queuedBeforeBackup.id)).toMatchObject({
+      status: 'interrupted',
+      errorCode: 'BACKUP_RESTORED'
+    })
 
     expect(() => database?.restoreBackupImage(Buffer.from('not a sqlite database')))
       .toThrow('数据库格式无效')

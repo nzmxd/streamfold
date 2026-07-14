@@ -20,6 +20,14 @@ import {
   type UpdateSettingsInput,
   type UpdateAccountInput
 } from '../shared/contracts'
+import {
+  syncBatchScopes,
+  taskKinds,
+  taskStatuses,
+  taskTriggers,
+  type EnqueueSyncBatchInput,
+  type TaskQuery
+} from '../shared/job-contracts'
 
 const syncModes = ['profile_only', 'recent_20', 'recent_100', 'disabled'] as const
 
@@ -101,6 +109,57 @@ export function parseBulkUpdateAccounts(value: unknown): BulkUpdateAccountsInput
   if (result.groupChange === undefined && result.syncEnabled === undefined) {
     throw new Error('没有需要执行的批量操作')
   }
+  return result
+}
+
+export function parseEnqueueSyncBatch(value: unknown): EnqueueSyncBatchInput {
+  const record = asRecord(value)
+  const accountIds = record.accountIds === undefined
+    ? undefined
+    : asStringArray(record.accountIds, '账号', 200, 80)
+  const groupIds = record.groupIds === undefined
+    ? undefined
+    : asStringArray(record.groupIds, '分组', 200, 80)
+  if ((accountIds?.length ?? 0) === 0 && (groupIds?.length ?? 0) === 0) {
+    throw new Error('请至少选择一个账号或分组')
+  }
+  if (record.trigger !== undefined && record.trigger !== 'manual') throw new Error('批量同步触发来源无效')
+  return {
+    ...(accountIds ? { accountIds } : {}),
+    ...(groupIds ? { groupIds } : {}),
+    ...(record.requestedScope === undefined ? {} : {
+      requestedScope: asEnum(record.requestedScope, syncBatchScopes, '同步范围')
+    }),
+    trigger: 'manual'
+  }
+}
+
+export function parseTaskQuery(value: unknown): TaskQuery {
+  if (value === undefined || value === null) return {}
+  const record = asRecord(value)
+  const result: TaskQuery = {}
+  if (record.batchId !== undefined) result.batchId = asId(record.batchId)
+  if (record.kinds !== undefined) {
+    result.kinds = asStringArray(record.kinds, '任务类型', taskKinds.length, 40)
+      .map((kind) => asEnum(kind, taskKinds, '任务类型'))
+  }
+  if (record.statuses !== undefined) {
+    result.statuses = asStringArray(record.statuses, '任务状态', taskStatuses.length, 40)
+      .map((status) => asEnum(status, taskStatuses, '任务状态'))
+  }
+  if (record.triggers !== undefined) {
+    result.triggers = asStringArray(record.triggers, '触发来源', taskTriggers.length, 40)
+      .map((trigger) => asEnum(trigger, taskTriggers, '触发来源'))
+  }
+  if (record.platformId !== undefined) result.platformId = asPlatformId(record.platformId)
+  if (record.accountId !== undefined) result.accountId = asId(record.accountId)
+  if (record.pluginId !== undefined) result.pluginId = asId(record.pluginId)
+  if (record.contributionId !== undefined) result.contributionId = asText(record.contributionId, '贡献点 ID', 1, 160)
+  if (record.createdFrom !== undefined) result.createdFrom = asDate(record.createdFrom, '开始时间')
+  if (record.createdTo !== undefined) result.createdTo = asDate(record.createdTo, '结束时间')
+  if (record.search !== undefined) result.search = asText(record.search, '搜索词', 0, 200)
+  if (record.offset !== undefined) result.offset = asInteger(record.offset, '分页位置', 0, 1_000_000)
+  if (record.limit !== undefined) result.limit = asInteger(record.limit, '返回数量', 1, 200)
   return result
 }
 

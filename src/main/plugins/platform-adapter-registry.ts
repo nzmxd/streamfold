@@ -104,7 +104,9 @@ export class PlatformAdapterRegistryService {
 
   async switchAdapter(accountId: string, contributionId: string): Promise<Account> {
     const account = this.requireAccount(accountId)
-    if (this.router.isAccountActive(accountId)) throw new Error('账号正在同步或核验，请稍候')
+    if (this.router.isAccountActive(accountId) || await this.jobs.hasPendingForAccount(accountId)) {
+      throw new Error('账号正在同步、核验或等待队列，请稍候')
+    }
     if (!account.remoteId || account.ownershipStatus !== 'plugin_verified') throw new Error('请先核验当前账号身份')
     if (account.adapterContributionId === contributionId) return account
     const target = this.adapters.get(contributionId)

@@ -9,6 +9,9 @@ import type { PluginAutomationService } from './plugins/automation-service'
 import type { PluginLifecycleService } from './plugins/plugin-lifecycle-service'
 import type { PlatformAdapterRegistryService } from './plugins/platform-adapter-registry'
 import type { PlatformSyncService } from './platform-sync-service'
+import type { JobService } from './services/job-service'
+import type { SyncBatchService } from './services/sync-batch-service'
+import type { TaskQueryService } from './services/task-query-service'
 import { isOfficialContentUrl, listPlatforms, registerManifestPlatforms } from './platforms'
 import type { SettingsService } from './settings-service'
 import type { UpdateService } from './update-service'
@@ -18,6 +21,7 @@ import {
   parseBoolean,
   parseBulkUpdateAccounts,
   parseConfirmApiIdentity,
+  parseEnqueueSyncBatch,
   parseCreatePluginSchedule,
   parseCreateEncryptedBackup,
   parseContentQuery,
@@ -29,6 +33,7 @@ import {
   parsePluginConfig,
   parsePluginGrant,
   parseRestoreEncryptedBackup,
+  parseTaskQuery,
   parseUpdateContent,
   parseUpdateSettings,
   parseUpdateGroup,
@@ -44,11 +49,15 @@ export interface IpcServices {
   exporter: ExportService
   backup: BackupService
   platformSync: PlatformSyncService
+  jobs: JobService
+  syncBatches: SyncBatchService
+  tasks: TaskQueryService
   updates: UpdateService
 }
 
 let removeNativeThemeListener: (() => void) | null = null
 let removeUpdateListener: (() => void) | null = null
+let removeTaskListener: (() => void) | null = null
 
 export function registerIpc(
   window: BrowserWindow,
@@ -65,6 +74,9 @@ export function registerIpc(
   }
   const notifyContentChanged = (): void => {
     if (!window.isDestroyed()) window.webContents.send('content:changed')
+  }
+  const notifyTasksChanged = (): void => {
+    if (!window.isDestroyed()) window.webContents.send('tasks:changed')
   }
   const runTracked = async <T>(handler: () => T | Promise<T>): Promise<T> => {
     if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
@@ -114,6 +126,15 @@ export function registerIpc(
   removeUpdateListener = services.updates.subscribe((state) => {
     if (!window.isDestroyed()) window.webContents.send('updates:changed', state)
   })
+  const removeJobTaskListener = services.jobs.onChanged(() => {
+    notifyTasksChanged()
+    notifyAccountsChanged()
+  })
+  const removePluginTaskListener = services.pluginAutomation.onChanged(notifyTasksChanged)
+  removeTaskListener = () => {
+    removeJobTaskListener()
+    removePluginTaskListener()
+  }
 
   ipcMain.handle('appearance:get', trusted(() => currentAppearance()))
   ipcMain.handle('appearance:set', trusted((_event, value) => {
@@ -188,6 +209,10 @@ export function registerIpc(
   ipcMain.handle('accounts:sync', trusted(async (_event, value) => {
     const id = parseId(value)
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理，请稍候')
+    if (database.listJobs().some((job) => job.accountId === id &&
+      ['queued', 'validating', 'committing'].includes(job.status))) {
+      throw new Error('该账号已有同步任务')
+    }
     try {
       const result = await services.platformSync.sync(id)
       notifyContentChanged()
@@ -195,6 +220,15 @@ export function registerIpc(
     } finally {
       notifyAccountsChanged()
     }
+  }))
+  ipcMain.handle('accounts:preview-sync-batch', trusted((_event, value) => (
+    services.syncBatches.preview(parseEnqueueSyncBatch(value))
+  )))
+  ipcMain.handle('accounts:enqueue-sync-batch', trusted(async (_event, value) => {
+    const result = await services.syncBatches.enqueue(parseEnqueueSyncBatch(value))
+    notifyTasksChanged()
+    notifyAccountsChanged()
+    return result
   }))
   ipcMain.handle('accounts:list-adapters', trusted((_event, value) => (
     services.adapterRegistry.listForAccount(parseId(value))
@@ -236,6 +270,53 @@ export function registerIpc(
   }))
   ipcMain.handle('analytics:overview', trusted((_event, value) => database.getAnalytics(parseAnalyticsQuery(value))))
   ipcMain.handle('analytics:dashboard', trusted(() => database.getDashboard()))
+  ipcMain.handle('tasks:summary', trusted((_event, value) => (
+    services.tasks.summary(parseTaskQuery(value))
+  )))
+  ipcMain.handle('tasks:list', trusted((_event, value) => (
+    services.tasks.list(parseTaskQuery(value))
+  )))
+  ipcMain.handle('tasks:get', trusted((_event, value) => services.tasks.get(parseId(value))))
+  ipcMain.handle('tasks:list-batch', trusted((_event, value) => services.tasks.getBatch(parseId(value))))
+  ipcMain.handle('tasks:list-batches', trusted(() => services.tasks.listBatches()))
+  ipcMain.handle('tasks:cancel', trusted(async (_event, value) => {
+    const id = parseId(value)
+    const source = await services.tasks.getSource(id)
+    if (!source) throw new Error('任务不存在')
+    if (source.source !== 'job') throw new Error('该插件运行已开始，不能强制取消')
+    await services.syncBatches.cancel(id)
+    notifyTasksChanged()
+    notifyAccountsChanged()
+    const task = await services.tasks.get(id)
+    if (!task) throw new Error('任务不存在')
+    return task
+  }))
+  ipcMain.handle('tasks:retry', trusted(async (_event, value) => {
+    const id = parseId(value)
+    const source = await services.tasks.getSource(id)
+    if (!source) throw new Error('任务不存在')
+    let nextId = ''
+    if (source.source === 'job') {
+      const result = await services.syncBatches.retry(id)
+      nextId = result.jobs[0]!.id
+    } else {
+      if (source.record.status !== 'failed' && source.record.status !== 'interrupted') {
+        throw new Error('该运行记录不能重试')
+      }
+      const run = await services.pluginAutomation.runManual(
+        source.record.pluginId,
+        source.record.contributionId,
+        source.record.accountId,
+        source.record.attempt + 1
+      )
+      nextId = run.id
+    }
+    notifyTasksChanged()
+    notifyAccountsChanged()
+    const task = await services.tasks.get(nextId)
+    if (!task) throw new Error('重试任务未创建')
+    return task
+  }))
   ipcMain.handle('plugins:packages', trusted(() => services.pluginHost.listPackages()))
   ipcMain.handle('plugins:contributions', trusted(() => services.pluginHost.listContributions()))
   ipcMain.handle('plugins:set-package-enabled', trusted((_event, id, enabled) => {
@@ -327,7 +408,7 @@ export function registerIpc(
   ipcMain.handle('plugins:retry-run', trusted((_event, value) => {
     const run = database.getPluginRun(parseId(value))
     if (!run || (run.status !== 'failed' && run.status !== 'interrupted')) throw new Error('该运行记录不能重试')
-    return services.pluginAutomation.runManual(run.pluginId, run.contributionId, run.accountId)
+    return services.pluginAutomation.runManual(run.pluginId, run.contributionId, run.accountId, run.attempt + 1)
   }))
   ipcMain.handle('updates:get-state', trusted(() => services.updates.getState()))
   ipcMain.handle('updates:check', trusted(() => services.updates.check()))
@@ -335,7 +416,10 @@ export function registerIpc(
   ipcMain.handle('updates:restart-and-install', async (event) => {
     assertTrustedSender(window, event)
     if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
-    if (activeOperations > 0) throw new Error('当前仍有任务正在运行，请稍候再安装更新')
+    if (activeOperations > 0 || services.syncBatches.hasRunningTasks() ||
+      services.pluginAutomation.hasRunningTasks()) {
+      throw new Error('当前仍有任务正在运行，请稍候再安装更新')
+    }
     if (services.updates.getState().phase !== 'downloaded') throw new Error('更新尚未下载完成')
     setImmediate(() => services.updates.restartAndInstall())
   })
@@ -354,14 +438,23 @@ export function registerIpc(
     if (!result.cancelled) services.settings.markExportCompleted()
     return result
   }))
-  ipcMain.handle('settings:backup-create', trusted((_event, value) => (
-    services.backup.create(parseCreateEncryptedBackup(value))
-  )))
+  ipcMain.handle('settings:backup-create', trusted((_event, value) => {
+    if (services.syncBatches.hasRunningTasks() || services.pluginAutomation.hasRunningTasks()) {
+      throw new Error('后台任务正在运行，请完成后再创建备份')
+    }
+    return services.backup.create(parseCreateEncryptedBackup(value))
+  }))
   ipcMain.handle('settings:backup-restore', async (event, value) => {
     assertTrustedSender(window, event)
     const input = parseRestoreEncryptedBackup(value)
-    await beginMaintenance()
+    if (maintenance) throw new Error('本地数据库正在恢复')
+    if (services.syncBatches.hasRunningTasks() || services.pluginAutomation.hasRunningTasks()) {
+      throw new Error('后台任务正在运行，请完成后再恢复备份')
+    }
+    services.syncBatches.stop()
+    services.pluginAutomation.stop()
     try {
+      await beginMaintenance()
       const result = await services.backup.restore(input)
       const restoredSettings = await services.settings.overview()
       services.updates.setAutomaticChecks(restoredSettings.autoCheckUpdates)
@@ -370,6 +463,8 @@ export function registerIpc(
       return result
     } finally {
       maintenance = false
+      services.pluginAutomation.start()
+      services.syncBatches.start()
     }
   })
 
@@ -398,6 +493,8 @@ export function unregisterIpc(): void {
   removeNativeThemeListener = null
   removeUpdateListener?.()
   removeUpdateListener = null
+  removeTaskListener?.()
+  removeTaskListener = null
   for (const channel of [
     'appearance:get',
     'appearance:set',
@@ -411,6 +508,8 @@ export function unregisterIpc(): void {
     'accounts:verify-identity',
     'accounts:confirm-identity',
     'accounts:sync',
+    'accounts:preview-sync-batch',
+    'accounts:enqueue-sync-batch',
     'accounts:list-adapters',
     'accounts:switch-adapter',
     'groups:list',
@@ -426,6 +525,13 @@ export function unregisterIpc(): void {
     'content:clear-account',
     'analytics:overview',
     'analytics:dashboard',
+    'tasks:summary',
+    'tasks:list',
+    'tasks:get',
+    'tasks:cancel',
+    'tasks:retry',
+    'tasks:list-batch',
+    'tasks:list-batches',
     'plugins:packages',
     'plugins:contributions',
     'plugins:set-package-enabled',
