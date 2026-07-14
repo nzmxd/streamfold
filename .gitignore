@@ -1,11 +1,54 @@
+# Dependencies and generated output
 node_modules/
+.pnpm-store/
 out/
 dist/
 release/
 coverage/
+artifacts/
+prototypes/
+.vite/
+.electron-vite/
+*.tsbuildinfo
+.eslintcache
+
+# Logs and temporary files
 *.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.npmrc.local
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+*.keystore
+*.jks
+
+# Local databases, exports and encrypted backups
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
+*.svbackup
+
+# Editor and operating-system metadata
+.idea/
+.vscode/
 .DS_Store
 Thumbs.db
+Desktop.ini

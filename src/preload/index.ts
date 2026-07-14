@@ -2,7 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AppearanceState,
   BrowserState,
-  SocialVaultApi
+  SocialVaultApi,
+  UpdateState
 } from '../shared/contracts'
 
 const api: SocialVaultApi = {
@@ -14,6 +15,17 @@ const api: SocialVaultApi = {
       const listener = (_event: Electron.IpcRendererEvent, state: AppearanceState): void => callback(state)
       ipcRenderer.on('appearance:changed', listener)
       return () => ipcRenderer.removeListener('appearance:changed', listener)
+    }
+  },
+  updates: {
+    getState: () => ipcRenderer.invoke('updates:get-state'),
+    check: () => ipcRenderer.invoke('updates:check'),
+    download: () => ipcRenderer.invoke('updates:download'),
+    restartAndInstall: () => ipcRenderer.invoke('updates:restart-and-install'),
+    onChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: UpdateState): void => callback(state)
+      ipcRenderer.on('updates:changed', listener)
+      return () => ipcRenderer.removeListener('updates:changed', listener)
     }
   },
   platforms: {

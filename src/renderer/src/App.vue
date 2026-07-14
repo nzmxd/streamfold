@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppDialogHost from './components/AppDialogHost.vue'
 import AppSidebar, { type AppSection } from './components/AppSidebar.vue'
 import AppTitlebar from './components/AppTitlebar.vue'
@@ -9,12 +9,62 @@ import ContentCenter from './features/content/ContentCenter.vue'
 import DashboardCenter from './features/dashboard/DashboardCenter.vue'
 import PluginCenter from './features/plugins/PluginCenter.vue'
 import SettingsCenter from './features/settings/SettingsCenter.vue'
+import { disposeUpdater, initializeUpdater, useUpdater } from './features/updater/useUpdater'
+import { confirmDialog } from './ui/dialog'
 import { createSidebarState } from './ui/sidebar-state'
 
 const section = ref<AppSection>('dashboard')
 const sidebar = createSidebarState()
 const sidebarCollapsed = sidebar.collapsed
 const toggleSidebar = sidebar.toggle
+const updater = useUpdater()
+const updateState = updater.state
+const updaterReady = updater.ready
+const promptedUpdateStorageKey = 'streamfold:update-prompted-version'
+let promptedUpdateVersion = readPromptedUpdateVersion()
+
+watch(updateState, (state) => {
+  const version = state.availableVersion
+  if (state.phase !== 'downloaded' || !version || promptedUpdateVersion === version) return
+  promptedUpdateVersion = version
+  rememberPromptedUpdateVersion(version)
+  void promptDownloadedUpdate(version)
+})
+
+function readPromptedUpdateVersion(): string | null {
+  try {
+    return window.localStorage.getItem(promptedUpdateStorageKey)
+  } catch {
+    return null
+  }
+}
+
+function rememberPromptedUpdateVersion(version: string): void {
+  try {
+    window.localStorage.setItem(promptedUpdateStorageKey, version)
+  } catch {
+    // The in-memory guard still prevents duplicate prompts for this window.
+  }
+}
+
+async function promptDownloadedUpdate(version: string): Promise<void> {
+  const confirmed = await confirmDialog({
+    title: `归页 v${version} 已准备好`,
+    description: '更新包已经下载完成，可以立即重启应用并完成安装。',
+    details: ['应用会关闭，并在安装完成后重新打开'],
+    confirmLabel: '立即重启并安装',
+    cancelLabel: '稍后'
+  })
+  if (!confirmed) return
+  try {
+    await updater.restartAndInstall()
+  } catch {
+    section.value = 'settings'
+  }
+}
+
+onMounted(() => void initializeUpdater())
+onBeforeUnmount(disposeUpdater)
 </script>
 
 <template>
@@ -22,7 +72,10 @@ const toggleSidebar = sidebar.toggle
     <AppTitlebar
       :section="section"
       :sidebar-collapsed="sidebarCollapsed"
+      :update-state="updateState"
+      :update-ready="updaterReady"
       @toggle-sidebar="toggleSidebar"
+      @open-updates="section = 'settings'"
     />
     <div class="app-shell">
       <AppSidebar v-model="section" :collapsed="sidebarCollapsed" />

@@ -1,72 +1,88 @@
 # 归页 / Streamfold
 
-账号归位，内容成册。归页是一款面向个人社媒账号的数据管理与统计桌面客户端，使用内置 Chromium 管理本人账号的登录会话，通过平台 JSON API 同步本人资料、本人内容和可见统计指标。
+账号归位，内容成册。
 
-当前版本为 `0.4.0`。小红书创作中心和知乎本人账号的身份核验、资料、内容与可见指标已经接入；微博和抖音保留平台插件入口，尚未开放数据同步。
+归页是一个本地优先的个人社媒账号、内容与统计桌面工作台。它使用 Electron 内置 Chromium 为每个本人账号保存独立登录 Session，通过内置平台适配器读取官方站点返回的 JSON API 数据，再把资料、本人内容和可见指标标准化到本地 SQLite。
 
-## 已实现功能
+当前版本：`0.4.0`。
 
-- 管理小红书、微博、抖音和知乎的多个本人账号空间，每个账号使用独立持久 Chromium Session。
-- 本地备注名、备注、标签、自定义分组、排序、批量分组与暂停、默认账号和同步范围管理；添加账号时备注名可留空，首次身份绑定后自动采用平台昵称，清空备注名可恢复自动跟随。
-- 每个账号使用独立的大尺寸浏览器窗口完成官方入口登录，关闭窗口后保留该账号会话。
-- 主动同步会在后台获取该账号的隐藏 Chromium workspace lease，无需预先打开浏览器窗口；仅在登录失效时显示同一个官方浏览器窗口供用户处理。
-- 小红书 `xiaohongshu-session-api`：同源请求固定的 `user/info`、`personal_info` 和账号指标 JSON API，捕获作品管理、数据分析及创作中心本人作品详情的精确 JSON 响应；缺失摘要来自详情 `data.desc`，只补空值并按安全节奏串行执行。
-- 知乎 `zhihu-session-api`：用 `/api/v4/me` 与本人资料校验身份，再从创作中心内容管理 JSON API 同步回答、文章、阅读/赞同/评论/收藏指标和原帖链接。
-- API 身份预览与本人确认、同步前后身份一致性检查、登录失效与身份不匹配阻断。
-- 展示平台账号 ID、头像、昵称、简介、关注、粉丝和累计获赞与收藏；头像经过来源、类型与大小校验后缓存到本地，并通过同源 `app://shell/media` 路由加载。
-- 资料、账号指标、作品和作品指标快照事务写入；支持 `profile_only`、`recent_20` 和 `recent_100` 三种同步范围。
-- 工作台、跨账号内容中心、7/30/90/365 天分析、账号排行和内容类型分布。
-- JSON 账号、内容与指标快照结构化导出、CSV 内容导出，以及按账号清空本地历史数据。
-- AES-256-GCM + scrypt 加密的完整 SQLite 备份与恢复；备份不包含 Chromium 登录 Session。
+## 平台状态
 
-平台采集链路只接受 JSON API 数据。项目不提供平台页面 DOM 解析路径，也不提供手动 JSON/CSV 数据导入插件；JSON/CSV 仅用于导出本地统计。
+| 平台 | 多账号与独立浏览器 | 本人资料/指标 | 本人内容/指标 | 插件状态 |
+|---|---|---|---|---|
+| 小红书 | 已实现 | 已实现 | 已实现，最近 20/100 条 | 可用，默认关闭 |
+| 知乎 | 已实现 | 已实现 | 已实现，最近 20/100 条 | 可用，默认关闭 |
+| 微博 | 已实现 | 未开放 | 未开放 | 计划中 |
+| 抖音 | 已实现 | 未开放 | 未开放 | 计划中 |
 
-## 设计文档
+“多账号与独立浏览器”表示可以创建隔离的本地账号空间并在官方入口登录，不代表该平台已经开放数据同步。
 
-- [调研与总体设计](docs/research-and-design.md)：GitHub 方案调研、API 接入策略、技术架构、插件边界与数据模型。
-- [界面与功能设计](docs/interface-and-feature-design.md)：账号分组与备注、独立浏览器窗口、内容中心、数据分析和插件中心。
-- [品牌与界面系统](docs/brand-and-ui-system.md)：归页品牌、浅深色主题、原生标题栏、应用弹窗和账号浏览器设计规范。
-- [可交互界面原型](prototypes/social-account-manager.html)：账号列表、账号详情、浏览器入口、内容数据和备注设置的交互演示。
-- [MVP 实现状态](docs/implementation-status.md)：当前实现范围、未完成项和验证范围。
-- [加密备份与恢复](docs/backup-and-restore.md)：备份范围、密码学参数、数据库回滚和登录会话边界。
-- [GitHub CI/CD](docs/ci-cd.md)：持续集成、跨平台打包、版本发布与代码签名边界。
-- [小红书 Session API 适配器](docs/xiaohongshu-identity-adapter.md)：接口白名单、网络响应采集、身份核验和停止条件。
-- [知乎 Session API 适配器](docs/zhihu-session-api-adapter.md)：身份与资料接口、创作中心本人内容、指标、分页和停止条件。
-- [文档索引](docs/README.md)：推荐阅读顺序。
+## 已实现
 
-## 当前核心决策
+- 多平台、多本人账号管理；每个账号绑定独立的 `persist:social:<uuid>` Chromium Session Partition。
+- 可选本地备注名、备注、标签、自定义分组、排序、默认账号、批量分组和批量暂停/恢复同步。
+- 独立大尺寸账号浏览器，支持官方入口登录、前进后退、刷新、主页、主题与窗口状态同步。
+- 后台 workspace lease：核验和主动同步无需预先打开窗口，登录失效时才显示同一个账号浏览器。
+- 小红书本人身份、头像、简介、关注、粉丝、累计获赞与收藏、作品、API 摘要及可见作品指标。
+- 知乎本人身份、头像、资料、关注、粉丝、累计指标，以及创作中心回答/文章与阅读、赞同、评论、收藏。
+- 同步前后身份复验、首次用户确认、插件启用检查、账号/平台互斥、最小间隔和事务提交。
+- 工作台、跨账号内容中心、官方原帖入口、7/30/90/365 天分析、账号排行和类型分布。
+- JSON/CSV 导出、按账号清空历史、AES-256-GCM + scrypt 加密的完整 SQLite 备份与恢复。
+- 浅色、深色、跟随系统主题，可折叠侧栏，原生标题栏、应用弹窗、桌面和托盘图标。
+- Windows、macOS、Linux 构建配置，GitHub CI/标签发布，以及标签工作流生成、包含 `app-update.yml` 的正式安装包在线更新。
 
-- 桌面端采用 Electron、Vue 3 和 TypeScript，本地数据使用 SQLite。
-- 使用 Electron 内置 Chromium，不要求用户安装外部浏览器或扩展。
-- 主窗口采用“账号列表 + 账号详情”双栏布局；平台页面在账号独立窗口中运行。
-- 每个账号绑定独立 `persist:social:<uuid>` Session Partition。
-- 平台插件统一采用 `session_api` 模式，只能访问清单声明的官方 HTTPS 主机与固定接口。
-- 普通接口由账号浏览器在创作中心同源发起固定 `GET` 请求；需要页面签名的接口通过 Chromium DevTools Protocol 读取对应 XHR/Fetch 的 JSON 响应。
-- 当前开放小红书和知乎适配器；其他平台必须完成单独的接口确认、字段校验和测试账号验收后才能启用。
-- 本地备注名、分组、标签和备注不写回社媒平台；备注名留空时使用并自动跟随平台昵称。
-- SQLite schema 当前为 v8，保存备注名自定义状态、资料字段、头像缓存元数据、官方原帖地址与去重后的指标快照；关注、粉丝及累计获赞与收藏仍按时间写入账号快照。
-- 不采用收费 API、收费代理或验证码服务。
+平台数据链路只接受固定 JSON API 或精确匹配的 Fetch/XHR JSON 响应。当前运行时没有页面 DOM/HTML 解析、手动 Cookie 导入或 JSON/CSV 平台数据导入入口；设置页的 JSON/CSV 只有导出方向。
+
+## 基本使用流程
+
+1. 在“插件”启用小红书或知乎数据同步。
+2. 在“账号”添加本地账号；备注名可以留空。
+3. 打开独立账号浏览器，在平台官方页面完成登录。
+4. 返回账号详情核验当前身份，首次使用时确认绑定。
+5. 在“设置与备注”选择同步范围并启用同步。
+6. 点击“立即同步”；完成后在内容、数据和工作台查看结果。
+
+更完整的操作、状态处理和清理差异见[使用指南](docs/user-guide.md)。
+
+## 运行架构
+
+```mermaid
+flowchart LR
+    UI["Vue 管理界面"] -->|受限 preload / IPC| MAIN["Electron 主进程"]
+    MAIN --> DB[("SQLite v8")]
+    MAIN --> ADAPTER["内置 session_api 适配器"]
+    ADAPTER --> BROWSER["每账号独立 Chromium Session"]
+    BROWSER --> JSON["平台官方 JSON API"]
+    MAIN --> MEDIA[("头像缓存")]
+    MAIN --> UPDATE["公开 GitHub Release 更新"]
+```
+
+- 主进程是数据库、文件、账号 Session 和更新客户端的唯一协调者。
+- 管理 Renderer 只获得固定业务方法；远程平台页面没有 preload、IPC、Node.js 或文件系统能力。
+- 平台适配器是内置、版本化的 TypeScript 实现，不动态执行任意第三方插件代码。
+- SQLite schema 当前为 v8；内容按账号和远端 ID 去重，指标按时间保存变化快照。
+
+进程、数据库与安全边界统一见[运行架构](docs/architecture.md)，平台端点和字段见[平台适配器](docs/platform-adapters.md)。
 
 ## 本地开发
 
-要求 Node.js 22.13+ 与 pnpm 10+。
+要求 Node.js 22.13+ 与 pnpm 10+；仓库锁定 pnpm 10.24.0。
 
 ```powershell
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-验证与生产构建：
+验证：
 
 ```powershell
 pnpm test
 pnpm typecheck
 pnpm build
 pnpm test:smoke
-pnpm preview
 ```
 
-本地桌面构件由 electron-builder 输出到 `release/`：
+构建桌面构件：
 
 ```powershell
 pnpm dist:dir
@@ -75,6 +91,31 @@ pnpm dist:mac
 pnpm dist:linux
 ```
 
-跨平台安装包应在对应操作系统上生成；GitHub Actions 的版本标签流程会在 Windows、macOS 和 Linux 原生 runner 上分别打包。
+输出目录为 `release/`。跨平台安装包应在对应操作系统上生成。开发、平台接入、CI/CD 和在线更新发布见[开发与发布](docs/development.md)。
 
-首次运行会在 Electron 用户数据目录创建 `social-vault.sqlite`。平台登录状态由账号对应的 Chromium Session Partition 保存，不写入该 SQLite 数据库。
+## 本地数据
+
+为兼容旧版本，应用继续使用 Electron 用户数据目录中的 `social-vault`：
+
+- `social-vault.sqlite`：账号、分组、内容、指标、任务、插件和设置。
+- `profile-media/`：经主进程校验、按内容哈希缓存的头像。
+- Chromium Partitions：各账号登录 Session，不写入 SQLite。
+
+SQLite 主文件当前不做静态加密；`.svbackup` 是加密数据库快照。备份不包含登录 Session 或头像文件，恢复流程会清理相关 Session，之后需要重新登录并核验账号。
+
+## 文档
+
+- [使用指南](docs/user-guide.md)
+- [运行架构](docs/architecture.md)
+- [平台适配器](docs/platform-adapters.md)
+- [开发与发布](docs/development.md)
+- [设计决策](docs/design-decisions.md)
+- [完整文档索引](docs/README.md)
+
+## 当前限制
+
+- 目前只有小红书和知乎开放同步；微博、抖音仍需逐平台接口与测试账号验收。
+- 同步由用户对单个账号主动触发，尚无定时同步、串行批量同步队列、Retry-After 调度和连续失败熔断。
+- 平台 JSON 接口可能变化；适配器在主机、路径、结构、身份或分页校验失败时会停止本次提交。
+- Windows/macOS 生产代码签名、Apple 公证和在线更新的真实公开仓库首次发布尚未完成。
+- 首个包含更新器的版本仍需手动安装一次；开发版、目录构建和不支持的便携格式不能应用内更新。

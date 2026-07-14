@@ -145,6 +145,7 @@ export interface AppearanceApi {
 export interface SocialVaultApi {
   runtime: { platform: RuntimePlatform }
   appearance: AppearanceApi
+  updates: import('./update-contracts').UpdateApi
   platforms: {
     list(): Promise<PlatformDefinition[]>
   }
@@ -215,3 +216,4 @@ export * from './settings-contracts'
 export * from './backup-contracts'
 export * from './session-api-contracts'
 export * from './xiaohongshu-api-contracts'
+export * from './update-contracts'

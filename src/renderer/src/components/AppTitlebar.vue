@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { ThemePreference } from '../../../shared/contracts'
+import type { ThemePreference, UpdateState } from '../../../shared/contracts'
+import { presentUpdate } from '../features/updater/update-presentation'
 import { useTheme } from '../ui/theme'
 import type { AppSection } from './AppSidebar.vue'
 import BrandGlyph from './BrandGlyph.vue'
 
-const props = defineProps<{ section: AppSection; sidebarCollapsed: boolean }>()
-const emit = defineEmits<{ 'toggle-sidebar': [] }>()
+const props = defineProps<{
+  section: AppSection
+  sidebarCollapsed: boolean
+  updateState: UpdateState
+  updateReady: boolean
+}>()
+const emit = defineEmits<{ 'toggle-sidebar': []; 'open-updates': [] }>()
 const theme = useTheme()
 const menuOpen = ref(false)
 
@@ -21,6 +27,15 @@ const sectionLabels: Record<AppSection, string> = {
 
 const sectionLabel = computed(() => sectionLabels[props.section])
 const themeLabel = computed(() => theme.resolved.value === 'dark' ? '深色外观' : '浅色外观')
+const updatePresentation = computed(() => presentUpdate(props.updateState))
+const updateTitlebarLabel = computed(() => props.updateReady
+  ? updatePresentation.value.titlebarLabel
+  : '正在读取软件更新状态')
+const showUpdateButton = computed(() => props.updateReady && (
+  props.updateState.phase === 'available' ||
+  props.updateState.phase === 'downloading' ||
+  props.updateState.phase === 'downloaded'
+))
 
 const options: Array<{ value: ThemePreference; label: string; icon: string }> = [
   { value: 'light', label: '浅色', icon: 'sun' },
@@ -80,6 +95,23 @@ onBeforeUnmount(() => {
       <strong>{{ sectionLabel }}</strong>
     </div>
     <div class="titlebar-actions">
+      <button
+        v-if="showUpdateButton"
+        class="titlebar-button update-titlebar-button"
+        :class="[`phase-${updateState.phase}`, { attention: updatePresentation.titlebarAttention }]"
+        type="button"
+        :aria-label="updateTitlebarLabel"
+        :title="updateTitlebarLabel"
+        @click="emit('open-updates')"
+      >
+        <svg class="update-titlebar-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M20 11a8 8 0 0 0-14.7-4.3L4 9" />
+          <path d="M4 4v5h5" />
+          <path d="M4 13a8 8 0 0 0 14.7 4.3L20 15" />
+          <path d="M20 20v-5h-5" />
+        </svg>
+        <span v-if="updatePresentation.titlebarAttention" class="update-titlebar-indicator" aria-hidden="true" />
+      </button>
       <div class="theme-picker">
         <button
           class="titlebar-button theme-trigger"

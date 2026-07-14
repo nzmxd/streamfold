@@ -148,6 +148,9 @@ export function parseUpdateSettings(value: unknown): UpdateSettingsInput {
   if (record.rawRetentionDays !== undefined) {
     result.rawRetentionDays = asInteger(record.rawRetentionDays, '原始响应保留天数', 0, 365)
   }
+  if (record.autoCheckUpdates !== undefined) {
+    result.autoCheckUpdates = asBoolean(record.autoCheckUpdates, '自动检查更新')
+  }
   return result
 }
 

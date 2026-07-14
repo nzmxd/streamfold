@@ -1,0 +1,26 @@
+* text=auto eol=lf
+
+# Windows command scripts require CRLF when they are introduced.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary source and packaging assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.gz binary
+*.dmg binary
+*.exe binary
+*.AppImage binary
+*.sqlite binary
+*.sqlite3 binary
+*.db binary
+*.svbackup binary

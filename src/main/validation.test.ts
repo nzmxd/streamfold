@@ -79,11 +79,15 @@ describe('IPC validation', () => {
   })
 
   it('validates settings and export requests', () => {
-    expect(parseUpdateSettings({ rawRetentionDays: 7 })).toEqual({ rawRetentionDays: 7 })
+    expect(parseUpdateSettings({ rawRetentionDays: 7, autoCheckUpdates: false })).toEqual({
+      rawRetentionDays: 7,
+      autoCheckUpdates: false
+    })
     expect(parseExportData({ format: 'csv', accountId: 'account' })).toEqual({
       format: 'csv', accountId: 'account'
     })
     expect(() => parseUpdateSettings({ rawRetentionDays: 366 })).toThrow('原始响应保留天数无效')
+    expect(() => parseUpdateSettings({ autoCheckUpdates: 'true' })).toThrow('自动检查更新无效')
     expect(() => parseExportData({ format: 'xlsx' })).toThrow('导出格式无效')
   })
 

@@ -1,7 +1,7 @@
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import {
   app,
   BrowserWindow,
@@ -14,6 +14,8 @@ import {
   Tray,
   type NativeImage
 } from 'electron'
+import electronUpdater from 'electron-updater'
+import type { UpdateUnsupportedReason } from '../shared/contracts'
 import { BrowserManager } from './browser-manager'
 import { BackupService } from './backup-service'
 import { SocialDatabase } from './database'
@@ -28,6 +30,8 @@ import { JobService } from './services/job-service'
 import { XiaohongshuApiService } from './xiaohongshu-api-service'
 import { ZhihuApiService } from './zhihu-api-service'
 import { isTrustedShellUrl } from './shell-security'
+import { ElectronUpdateClient } from './electron-update-client'
+import { UpdateService } from './update-service'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const smokeMode = process.env.SOCIAL_VAULT_SMOKE === '1'
@@ -66,6 +70,9 @@ let profileMediaStore: ProfileMediaStore | null = null
 let smokeVisualAccountId: string | null = null
 let applicationIcon: NativeImage | null = null
 let tray: Tray | null = null
+let updateService: UpdateService | null = null
+let removeTrayUpdateListener: (() => void) | null = null
+let trayMenuSignature = ''
 
 app.on('second-instance', () => {
   showMainWindow()
@@ -89,7 +96,10 @@ app.whenReady().then(async () => {
   applicationIcon = loadApplicationIcon()
   profileMediaStore = new ProfileMediaStore(join(app.getPath('userData'), 'profile-media'))
   await registerShellProtocol(profileMediaStore)
+  updateService = createUpdateService()
+  removeTrayUpdateListener = updateService.subscribe(refreshTrayMenu)
   createWindow()
+  updateService.start()
   if (!smokeMode) createTray()
   nativeTheme.on('updated', updateTrayIcon)
 
@@ -106,6 +116,10 @@ app.on('before-quit', () => {
   nativeTheme.off('updated', updateTrayIcon)
   tray?.destroy()
   tray = null
+  removeTrayUpdateListener?.()
+  removeTrayUpdateListener = null
+  updateService?.destroy()
+  updateService = null
   browserManager?.destroy()
   browserManager = null
   unregisterIpc()
@@ -131,12 +145,43 @@ function createTray(): void {
 
   tray = new Tray(icon)
   tray.setToolTip('归页 · Streamfold')
+  trayMenuSignature = ''
+  refreshTrayMenu()
+  tray.on('click', showMainWindow)
+}
+
+function refreshTrayMenu(): void {
+  if (!tray || !updateService) return
+  const state = updateService.getState()
+  const signature = `${state.phase}:${state.availableVersion ?? ''}:${state.unsupportedReason ?? ''}`
+  if (trayMenuSignature === signature) return
+  trayMenuSignature = signature
+
+  const updateBusy = state.phase === 'checking' || state.phase === 'downloading'
+  const updateReady = state.phase === 'downloaded'
+  const updateLabel = updateReady
+    ? `更新 v${state.availableVersion} 已准备好`
+    : state.phase === 'checking'
+      ? '正在检查更新…'
+      : state.phase === 'downloading'
+        ? `正在下载 v${state.availableVersion}…`
+        : '检查软件更新'
+
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示归页', click: showMainWindow },
-    { type: 'separator' },
+    ...(!state.unsupportedReason
+      ? [{
+          label: updateLabel,
+          enabled: !updateBusy,
+          click: (): void => {
+            showMainWindow()
+            if (!updateReady) void updateService?.check()
+          }
+        }]
+      : []),
+    { type: 'separator' as const },
     { label: '退出', click: () => app.quit() }
   ]))
-  tray.on('click', showMainWindow)
 }
 
 function updateTrayIcon(): void {
@@ -148,8 +193,10 @@ function updateTrayIcon(): void {
 function createWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) return
   if (!profileMediaStore) throw new Error('头像媒体缓存尚未初始化')
+  if (!updateService) throw new Error('更新服务尚未初始化')
 
   database = new SocialDatabase(join(app.getPath('userData'), 'social-vault.sqlite'))
+  updateService.setAutomaticChecks(readAutomaticUpdatePreference(database))
   database.recoverInterruptedJobs()
   const smokeTheme = process.env.SOCIAL_VAULT_SMOKE_THEME
   const savedTheme = database.getSetting<string>('appearance.theme', 'system')
@@ -288,7 +335,8 @@ function createWindow(): void {
     settings: settingsService,
     exporter: exportService,
     backup: backupService,
-    platformSync: platformSyncService
+    platformSync: platformSyncService,
+    updates: updateService
   })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -308,6 +356,7 @@ function createWindow(): void {
         const dashboard = hasApi ? await window.socialVault.analytics.dashboard() : null
         const settings = hasApi ? await window.socialVault.settings.overview() : null
         const appearance = hasApi ? await window.socialVault.appearance.get() : null
+        const updates = hasApi ? await window.socialVault.updates.getState() : null
         return {
           title: document.title,
           hasApi,
@@ -320,6 +369,7 @@ function createWindow(): void {
           dashboardReady: Boolean(dashboard),
           settingsReady: Boolean(settings?.appVersion),
           appearanceReady: appearance?.resolved === 'light' || appearance?.resolved === 'dark',
+          updatesReady: Boolean(updates?.currentVersion) && typeof window.socialVault.updates.check === 'function',
           v04ApiReady: typeof window.socialVault.accounts.verifyIdentity === 'function' &&
             typeof window.socialVault.accounts.confirmIdentity === 'function' &&
             typeof window.socialVault.accounts.sync === 'function' &&
@@ -412,6 +462,7 @@ function createWindow(): void {
         dashboardReady?: boolean
         settingsReady?: boolean
         appearanceReady?: boolean
+        updatesReady?: boolean
         v04ApiReady?: boolean
       } | null
       const workspace = workspaceResult as {
@@ -426,7 +477,7 @@ function createWindow(): void {
       } | null
       if (
         !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady ||
-        !shell.appearanceReady || !shell.v04ApiReady ||
+        !shell.appearanceReady || !shell.updatesReady || !shell.v04ApiReady ||
         !workspace?.hasApi || !workspace.accountId || !workspace.appearanceReady ||
         !zhihuWorkspace?.hasApi || !zhihuWorkspace.accountId ||
         !zhihuWorkspace.remoteUserAgent?.includes(`Chrome/${process.versions.chrome}`) ||
@@ -512,4 +563,27 @@ function readApplicationVersion(): string {
     // Packaged builds may provide version metadata without a readable package.json.
   }
   return app.getVersion()
+}
+
+function createUpdateService(): UpdateService {
+  const currentVersion = readApplicationVersion()
+  const unsupportedReason = updateUnsupportedReason()
+  return new UpdateService({
+    currentVersion,
+    automaticChecks: true,
+    unsupportedReason,
+    client: unsupportedReason ? null : new ElectronUpdateClient(electronUpdater.autoUpdater, currentVersion)
+  })
+}
+
+function updateUnsupportedReason(): UpdateUnsupportedReason | null {
+  if (!app.isPackaged || smokeMode || reviewMode) return 'development'
+  if (!existsSync(join(process.resourcesPath, 'app-update.yml'))) return 'missing-source'
+  if (process.platform === 'linux' && !process.env.APPIMAGE) return 'unsupported-package'
+  return null
+}
+
+function readAutomaticUpdatePreference(repository: SocialDatabase): boolean {
+  const stored = repository.getSetting<unknown>('updates.auto_check')
+  return stored !== false && stored !== 'false'
 }

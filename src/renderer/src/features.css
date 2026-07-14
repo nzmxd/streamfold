@@ -181,6 +181,42 @@
 .data-account-row > div { display: grid; gap: 4px; }
 .data-account-row strong { font-size: var(--font-body); line-height: var(--line-body); }
 .data-account-row small { color: #8a919a; font-size: var(--font-caption); line-height: var(--line-caption); }
+.update-card { margin-top: 11px; padding: 18px; overflow: hidden; }
+.update-card-head { display: grid; grid-template-columns: 42px minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.update-card-icon { display: grid; width: 42px; height: 42px; place-items: center; color: var(--brand); background: var(--brand-soft); border-radius: 12px; }
+.update-card-icon svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.update-card-head h2 { font-size: var(--font-section); line-height: var(--line-section); }
+.update-card-head p { margin-top: 3px; color: var(--text-tertiary); font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.update-status-badge { justify-self: end; padding: 5px 9px; color: var(--text-secondary); background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 99px; font-size: var(--font-caption); font-weight: 650; line-height: var(--line-caption); white-space: nowrap; }
+.update-card.tone-brand .update-status-badge { color: var(--brand); background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 24%, var(--border)); }
+.update-card.tone-success .update-card-icon, .update-card.tone-success .update-status-badge { color: var(--success); background: var(--success-soft); }
+.update-card.tone-success .update-status-badge { border-color: color-mix(in srgb, var(--success) 26%, var(--border)); }
+.update-card.tone-danger .update-card-icon, .update-card.tone-danger .update-status-badge { color: var(--danger); background: var(--danger-soft); }
+.update-card.tone-danger .update-status-badge { border-color: color-mix(in srgb, var(--danger) 26%, var(--border)); }
+.update-card-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; margin-top: 16px; padding: 15px 16px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 11px; }
+.update-status-copy { min-width: 0; }
+.update-status-copy > strong { display: block; font-size: var(--font-ui); line-height: var(--line-ui); }
+.update-status-copy > p { margin-top: 4px; color: var(--text-secondary); font-size: var(--font-body); line-height: var(--line-body); }
+.update-metadata { display: flex; flex-wrap: wrap; gap: 5px 13px; margin-top: 7px; color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.update-actions { display: flex; align-items: center; justify-content: flex-end; }
+.update-actions .button { min-width: 112px; white-space: nowrap; }
+.update-progress-group { display: grid; gap: 7px; margin-top: 12px; padding: 13px 15px; background: color-mix(in srgb, var(--brand-soft) 58%, var(--surface)); border: 1px solid color-mix(in srgb, var(--brand) 18%, var(--border)); border-radius: 10px; }
+.update-progress-group > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-secondary); font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.update-progress-group > div strong { color: var(--text); font-size: var(--font-body); line-height: var(--line-body); }
+.update-progress-group progress { width: 100%; height: 7px; overflow: hidden; appearance: none; background: var(--surface-hover); border: 0; border-radius: 99px; }
+.update-progress-group progress::-webkit-progress-bar { background: var(--surface-hover); border-radius: 99px; }
+.update-progress-group progress::-webkit-progress-value { background: var(--brand); border-radius: 99px; transition: width .2s ease; }
+.update-progress-group progress::-moz-progress-bar { background: var(--brand); border-radius: 99px; }
+.update-progress-group small { min-height: var(--line-caption); color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.update-inline-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 9px 11px; color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 28%, var(--border)); border-radius: 9px; font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.update-inline-error button { flex: 0 0 auto; padding: 3px 5px; color: inherit; background: transparent; border: 0; cursor: pointer; font-size: var(--font-caption); line-height: var(--line-caption); }
+.update-preference { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.update-preference > div { display: grid; min-width: 0; gap: 2px; }
+.update-preference strong { font-size: var(--font-body); line-height: var(--line-body); }
+.update-preference small { color: var(--text-tertiary); font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.switch-control.update-switch { width: 42px; height: 24px; flex: 0 0 42px; padding: 2px; }
+.switch-control.update-switch i { width: 20px; height: 20px; }
+.switch-control.update-switch.active i { transform: translateX(18px); }
 /* Account integration */
 .profile-summary-card { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(360px, 1fr); align-items: center; gap: 20px; margin-bottom: 15px; padding: 20px; border: 1px solid var(--border); border-radius: 13px; background: linear-gradient(120deg, var(--surface), var(--surface-subtle)); }
 .profile-summary-main { display: flex; min-width: 0; align-items: center; gap: 16px; }
@@ -239,4 +275,8 @@
   .snapshot-row { grid-template-columns: 85px minmax(60px, 1fr) 70px; }
   .snapshot-row small { display: none; }
   .retention-form, .export-form { grid-template-columns: 1fr; }
+  .update-card-head { grid-template-columns: 42px minmax(0, 1fr); }
+  .update-status-badge { grid-column: 2; justify-self: start; }
+  .update-card-body { grid-template-columns: 1fr; gap: 12px; }
+  .update-actions { justify-content: flex-start; }
 }

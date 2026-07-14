@@ -21,7 +21,10 @@ describe('SettingsService', () => {
     })
 
     expect((await service.overview()).rawRetentionDays).toBe(7)
-    expect((await service.update({ rawRetentionDays: 0 })).rawRetentionDays).toBe(0)
+    expect((await service.overview()).autoCheckUpdates).toBe(true)
+    const updated = await service.update({ rawRetentionDays: 0, autoCheckUpdates: false })
+    expect(updated.rawRetentionDays).toBe(0)
+    expect(updated.autoCheckUpdates).toBe(false)
     service.markExportCompleted()
     expect((await service.overview()).lastExportAt).toMatch(/^\d{4}-/)
   })

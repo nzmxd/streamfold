@@ -8,6 +8,7 @@ import type { PluginService } from './plugin-service'
 import type { PlatformSyncService } from './platform-sync-service'
 import { isOfficialContentUrl, listPlatforms } from './platforms'
 import type { SettingsService } from './settings-service'
+import type { UpdateService } from './update-service'
 import { isTrustedShellUrl } from './shell-security'
 import {
   parseAnalyticsQuery,
@@ -34,9 +35,11 @@ export interface IpcServices {
   exporter: ExportService
   backup: BackupService
   platformSync: PlatformSyncService
+  updates: UpdateService
 }
 
 let removeNativeThemeListener: (() => void) | null = null
+let removeUpdateListener: (() => void) | null = null
 
 export function registerIpc(
   window: BrowserWindow,
@@ -99,6 +102,9 @@ export function registerIpc(
   const onNativeThemeUpdated = (): void => { broadcastAppearance() }
   nativeTheme.on('updated', onNativeThemeUpdated)
   removeNativeThemeListener = () => nativeTheme.removeListener('updated', onNativeThemeUpdated)
+  removeUpdateListener = services.updates.subscribe((state) => {
+    if (!window.isDestroyed()) window.webContents.send('updates:changed', state)
+  })
 
   ipcMain.handle('appearance:get', trusted(() => currentAppearance()))
   ipcMain.handle('appearance:set', trusted((_event, value) => {
@@ -207,8 +213,25 @@ export function registerIpc(
   ipcMain.handle('plugins:set-enabled', trusted((_event, id, enabled) => (
     services.plugins.setEnabled(parseId(id), parseBoolean(enabled, '插件开关'))
   )))
+  ipcMain.handle('updates:get-state', trusted(() => services.updates.getState()))
+  ipcMain.handle('updates:check', trusted(() => services.updates.check()))
+  ipcMain.handle('updates:download', trusted(() => services.updates.download()))
+  ipcMain.handle('updates:restart-and-install', async (event) => {
+    assertTrustedSender(window, event)
+    if (maintenance) throw new Error('本地数据库正在恢复，请稍候')
+    if (activeOperations > 0) throw new Error('当前仍有任务正在运行，请稍候再安装更新')
+    if (services.updates.getState().phase !== 'downloaded') throw new Error('更新尚未下载完成')
+    setImmediate(() => services.updates.restartAndInstall())
+  })
   ipcMain.handle('settings:overview', trusted(() => services.settings.overview()))
-  ipcMain.handle('settings:update', trusted((_event, value) => services.settings.update(parseUpdateSettings(value))))
+  ipcMain.handle('settings:update', trusted(async (_event, value) => {
+    const input = parseUpdateSettings(value)
+    const result = await services.settings.update(input)
+    if (input.autoCheckUpdates !== undefined) {
+      services.updates.setAutomaticChecks(input.autoCheckUpdates)
+    }
+    return result
+  }))
   ipcMain.handle('settings:export', trusted(async (_event, value) => {
     const input = parseExportData(value)
     const result = await services.exporter.exportData(input)
@@ -224,6 +247,8 @@ export function registerIpc(
     await beginMaintenance()
     try {
       const result = await services.backup.restore(input)
+      const restoredSettings = await services.settings.overview()
+      services.updates.setAutomaticChecks(restoredSettings.autoCheckUpdates)
       notifyAccountsChanged()
       notifyContentChanged()
       return result
@@ -255,6 +280,8 @@ export function registerIpc(
 export function unregisterIpc(): void {
   removeNativeThemeListener?.()
   removeNativeThemeListener = null
+  removeUpdateListener?.()
+  removeUpdateListener = null
   for (const channel of [
     'appearance:get',
     'appearance:set',
@@ -283,6 +310,10 @@ export function unregisterIpc(): void {
     'analytics:dashboard',
     'plugins:list',
     'plugins:set-enabled',
+    'updates:get-state',
+    'updates:check',
+    'updates:download',
+    'updates:restart-and-install',
     'settings:overview',
     'settings:update',
     'settings:export',

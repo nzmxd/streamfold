@@ -9,6 +9,7 @@ import type {
 import { confirmDialog } from '../../ui/dialog'
 import { accountDisplayName } from '../accounts/presentation'
 import { formatBytes, formatDate, formatNumber, messageOf, platformLabel } from '../shared/format'
+import UpdateCard from './UpdateCard.vue'
 
 const overview = ref<StorageOverview | null>(null)
 const accounts = ref<Account[]>([])
@@ -36,6 +37,11 @@ function displayName(account: Account): string {
 function safeFileName(value: string | null): string {
   if (!value) return '—'
   return value.split(/[\\/]/).at(-1) || '—'
+}
+
+function setAutoCheckUpdates(value: boolean): void {
+  if (!overview.value) return
+  overview.value = { ...overview.value, autoCheckUpdates: value }
 }
 
 async function load(): Promise<void> {
@@ -171,7 +177,7 @@ onMounted(() => void load())
 <template>
   <div class="feature-page settings-page">
     <header class="page-header feature-header">
-      <div><span class="page-eyebrow">工作区设置</span><h1>应用设置</h1><p>管理数据、备份和保留策略</p></div>
+      <div><span class="page-eyebrow">工作区设置</span><h1>应用设置</h1><p>管理更新、数据、备份和保留策略</p></div>
       <button class="button" :disabled="loading" @click="load">刷新信息</button>
     </header>
 
@@ -186,6 +192,11 @@ onMounted(() => void load())
         <article><span>内容与快照</span><strong>{{ formatNumber(overview.contentCount) }}</strong><small>{{ formatNumber(overview.contentSnapshotCount) }} 条内容快照 · {{ formatNumber(overview.accountSnapshotCount) }} 条账号快照</small></article>
         <article><span>数据维护</span><strong>正常</strong><small>最近导出 {{ formatDate(overview.lastExportAt, true) }} · 最近备份 {{ formatDate(overview.lastBackupAt, true) }}</small></article>
       </section>
+
+      <UpdateCard
+        :auto-check-updates="overview.autoCheckUpdates"
+        @update:auto-check-updates="setAutoCheckUpdates"
+      />
 
       <div class="settings-columns">
         <section class="feature-card setting-card">

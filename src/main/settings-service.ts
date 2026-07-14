@@ -37,6 +37,7 @@ export class SettingsService {
       databaseBytes: await fileSize(this.databasePath),
       ...counts,
       rawRetentionDays: readIntegerSetting(this.database, 'raw_retention_days', 7),
+      autoCheckUpdates: readBooleanSetting(this.database, 'updates.auto_check', true),
       lastExportAt: this.database.getSetting('last_export_at'),
       lastBackupAt: this.database.getSetting('last_backup_at'),
       lastRestoreAt: this.database.getSetting('last_restore_at')
@@ -47,12 +48,22 @@ export class SettingsService {
     if (input.rawRetentionDays !== undefined) {
       this.database.setSetting('raw_retention_days', String(input.rawRetentionDays))
     }
+    if (input.autoCheckUpdates !== undefined) {
+      this.database.setSetting('updates.auto_check', String(input.autoCheckUpdates))
+    }
     return this.overview()
   }
 
   markExportCompleted(): void {
     this.database.setSetting('last_export_at', new Date().toISOString())
   }
+}
+
+function readBooleanSetting(database: SettingsDatabase, key: string, fallback: boolean): boolean {
+  const stored = database.getSetting(key)
+  if (stored === 'true') return true
+  if (stored === 'false') return false
+  return fallback
 }
 
 async function fileSize(path: string): Promise<number> {

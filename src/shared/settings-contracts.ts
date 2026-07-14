@@ -11,6 +11,7 @@ export interface StorageOverview {
   jobCount: number
   importCount: number
   rawRetentionDays: number
+  autoCheckUpdates: boolean
   lastExportAt: string | null
   lastBackupAt: string | null
   lastRestoreAt: string | null
@@ -18,6 +19,7 @@ export interface StorageOverview {
 
 export interface UpdateSettingsInput {
   rawRetentionDays?: number
+  autoCheckUpdates?: boolean
 }
 
 export interface ExportDataInput {

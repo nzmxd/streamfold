@@ -131,6 +131,15 @@ html[data-platform="darwin"] .app-titlebar { padding-left: 76px; }
 .titlebar-button { display: grid; width: 36px; height: 36px; place-items: center; padding: 0; color: var(--text-secondary); background: transparent; border: 0; border-radius: 9px; cursor: pointer; }
 .titlebar-button:hover { color: var(--text); background: var(--surface-subtle); }
 .titlebar-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.update-titlebar-button { position: relative; margin-right: 2px; }
+.update-titlebar-button.attention { color: var(--brand); background: var(--brand-soft); }
+.update-titlebar-button.phase-downloaded { color: var(--success); background: var(--success-soft); }
+.update-titlebar-button.phase-error { color: var(--danger); background: var(--danger-soft); }
+.update-titlebar-button.phase-checking .update-titlebar-icon { animation: update-titlebar-spin 1.1s linear infinite; }
+.update-titlebar-indicator { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; background: var(--brand); border: 2px solid var(--surface); border-radius: 50%; box-sizing: content-box; }
+.phase-downloaded .update-titlebar-indicator { background: var(--success); }
+.phase-error .update-titlebar-indicator { background: var(--danger); }
+@keyframes update-titlebar-spin { to { transform: rotate(360deg); } }
 .sidebar-collapse-toggle { position: relative; width: 44px; height: 44px; flex: 0 0 44px; margin-left: -8px; }
 .sidebar-collapse-toggle::after {
   position: absolute;

@@ -43,6 +43,12 @@ jobs:
         shell: pwsh
         run: |
           $packageVersion = node -p "require('./package.json').version"
+          if ($packageVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Only stable SemVer package versions can be published to the latest channel: $packageVersion"
+          }
+          if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Only stable SemVer tags can be published to the latest channel: $env:GITHUB_REF_NAME"
+          }
           if ($env:GITHUB_REF_NAME -ne "v$packageVersion") {
             throw "Tag $env:GITHUB_REF_NAME does not match package version v$packageVersion"
           }
@@ -61,25 +67,37 @@ jobs:
         include:
           - label: Windows
             os: windows-latest
-            command: dist:win
+            builder_args: --win
+            update_manifest: latest.yml
+            requires_external_blockmap: true
             artifact_name: streamfold-windows
             artifact_path: |
               release/*.exe
               release/*.zip
+              release/latest.yml
+              release/*.blockmap
           - label: macOS
             os: macos-latest
-            command: dist:mac
+            builder_args: --mac
+            update_manifest: latest-mac.yml
+            requires_external_blockmap: true
             artifact_name: streamfold-macos
             artifact_path: |
               release/*.dmg
               release/*.zip
+              release/latest-mac.yml
+              release/*.blockmap
           - label: Linux
             os: ubuntu-latest
-            command: dist:linux
+            builder_args: --linux
+            update_manifest: latest-linux.yml
+            requires_external_blockmap: false
             artifact_name: streamfold-linux
             artifact_path: |
               release/*.AppImage
               release/*.tar.gz
+              release/latest-linux.yml
+              release/*.blockmap
 
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -104,7 +122,18 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Package application
-        run: pnpm ${{ matrix.command }}
+        run: |
+          pnpm build
+          pnpm exec electron-builder ${{ matrix.builder_args }} --publish never --config.publish.provider=github --config.publish.owner="${{ github.repository_owner }}" --config.publish.repo="${{ github.event.repository.name }}"
+
+      - name: Verify update metadata
+        env:
+          UPDATE_MANIFEST: release/${{ matrix.update_manifest }}
+        run: node -e "require('node:fs').accessSync(process.env.UPDATE_MANIFEST)"
+
+      - name: Verify external blockmap
+        if: matrix.requires_external_blockmap
+        run: node -e "if (!require('node:fs').readdirSync('release').some((name) => name.endsWith('.blockmap'))) throw new Error('No external blockmap was generated')"
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v4
@@ -134,12 +163,21 @@ jobs:
         working-directory: release-assets
         run: find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
 
-      - name: Create or update GitHub release
+      - name: Refuse to replace an existing release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --generate-notes --title "Streamfold $GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+            echo "Release $GITHUB_REF_NAME already exists; published releases are immutable." >&2
+            exit 1
           fi
+
+      - name: Create draft GitHub release with all assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* --draft --verify-tag --generate-notes --title "Streamfold $GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest --repo "$GITHUB_REPOSITORY"
