@@ -47,15 +47,25 @@ for (const [index, value] of manifest.files.entries()) {
   if (actualSha512 !== expectedSha512) throw new Error(`更新资产 SHA-512 不匹配：${fileName}`)
   verifiedFiles.set(fileName, expectedSha512)
 
-  if (requireExternalBlockmap || entry.blockMapSize !== undefined) {
+  let declaredBlockmapSize
+  if (entry.blockMapSize !== undefined) {
+    declaredBlockmapSize = positiveInteger(entry.blockMapSize, `files[${index}].blockMapSize`)
+    if (declaredBlockmapSize >= artifactStat.size) {
+      throw new Error(`内嵌 blockmap 大小无效：${fileName}`)
+    }
+  }
+
+  // AppImage stores its blockmap inside the AppImage and reports that size in
+  // blockMapSize; NSIS ships a separate <artifact>.blockmap file. Only require
+  // the sibling file for targets whose workflow explicitly declares it.
+  if (requireExternalBlockmap) {
     const blockmapName = `${fileName}.blockmap`
     const blockmapStat = await stat(join(releaseDirectory, blockmapName))
     if (!blockmapStat.isFile() || blockmapStat.size <= 0) {
       throw new Error(`外部 blockmap 无效：${blockmapName}`)
     }
-    if (entry.blockMapSize !== undefined) {
-      const expectedBlockmapSize = positiveInteger(entry.blockMapSize, `files[${index}].blockMapSize`)
-      if (blockmapStat.size !== expectedBlockmapSize) {
+    if (declaredBlockmapSize !== undefined) {
+      if (blockmapStat.size !== declaredBlockmapSize) {
         throw new Error(`外部 blockmap 大小不匹配：${blockmapName}`)
       }
     }
