@@ -60,7 +60,13 @@ async function chooseExecutable(directory) {
 }
 
 function launchCommand(executable) {
-  if (process.platform === 'linux') return { command: 'xvfb-run', args: ['-a', executable] }
+  if (process.platform === 'linux') {
+    // GitHub-hosted runners cannot give the unpacked chrome-sandbox helper the
+    // root ownership and setuid mode Chromium requires. Disable Chromium's
+    // sandbox only for this isolated package smoke process; the packaged
+    // application and its normal launch arguments remain unchanged.
+    return { command: 'xvfb-run', args: ['-a', executable, '--no-sandbox'] }
+  }
   return { command: executable, args: [] }
 }
 
