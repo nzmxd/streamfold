@@ -35,8 +35,10 @@ describe('IPC validation', () => {
       .toEqual({ id: 'account', alias: '' })
   })
 
-  it('rejects unknown fields when their values are invalid', () => {
-    expect(() => parseCreateAccount({ platformId: 'unknown', alias: '账号', syncMode: 'profile_only' })).toThrow('平台无效')
+  it('accepts dynamic platform IDs and rejects malformed values', () => {
+    expect(parseCreateAccount({ platformId: 'publisher.custom-platform', alias: '账号', syncMode: 'profile_only' }))
+      .toEqual({ platformId: 'publisher.custom-platform', alias: '账号', syncMode: 'profile_only' })
+    expect(() => parseCreateAccount({ platformId: 'Invalid Platform', alias: '账号', syncMode: 'profile_only' })).toThrow('平台无效')
     expect(() => parseUpdateAccount({ id: 'a', tags: new Array(21).fill('tag') })).toThrow('标签无效')
   })
 

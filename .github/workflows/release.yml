@@ -38,6 +38,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build plugin SDK
+        run: pnpm sdk:build
+
+      - name: Test plugin SDK
+        run: pnpm sdk:test
+
+      - name: Verify official Webhook plugin resource
+        run: pnpm plugin:official-webhook:verify
+
       - name: Verify version tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
@@ -101,6 +110,8 @@ jobs:
 
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      STREAMFOLD_PLUGIN_CATALOG_URL: https://${{ github.repository_owner }}.github.io/streamfold-plugins/catalog.json
+      STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY: ${{ vars.STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY }}
 
     steps:
       - name: Check out repository
@@ -121,10 +132,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify plugin catalog trust configuration
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY)) {
+            throw "Repository variable STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY must contain the Ed25519 catalog root public key"
+          }
+
       - name: Package application
         run: |
           pnpm build
           pnpm exec electron-builder ${{ matrix.builder_args }} --publish never --config.publish.provider=github --config.publish.owner="${{ github.repository_owner }}" --config.publish.repo="${{ github.event.repository.name }}"
+
+      - name: Verify packaged plugin runtime
+        run: pnpm test:package-plugins -- release
+
+      - name: Run packaged QuickJS smoke
+        run: pnpm test:package-runtime -- release
 
       - name: Verify update metadata
         env:

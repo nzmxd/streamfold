@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 2,
+  "id": "community.hello-action",
+  "name": "账号问候示例",
+  "version": "0.1.0",
+  "description": "演示第三方动作插件如何读取授权范围内的账号摘要。",
+  "license": "MIT",
+  "publisher": {
+    "id": "streamfold.community",
+    "name": "Streamfold Community",
+    "keyId": "streamfold.community.example"
+  },
+  "minimumAppVersion": "0.5.0",
+  "sdkVersion": "1.0.0",
+  "contributions": [
+    {
+      "id": "community.hello-action.run",
+      "kind": "action",
+      "name": "生成账号问候",
+      "description": "读取授权账号摘要并返回本地问候结果。",
+      "entry": "entries/action.js",
+      "runtime": "quickjs",
+      "permissions": [
+        "accounts.read"
+      ],
+      "placements": [
+        "plugin-center"
+      ]
+    }
+  ]
+}

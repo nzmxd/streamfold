@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 8
+export const CURRENT_SCHEMA_VERSION = 10
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -41,6 +41,14 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 8) {
     inTransaction(db, () => migrateV7ToV8(db))
+    version = 8
+  }
+  if (version < 9) {
+    inTransaction(db, () => migrateV8ToV9(db))
+    version = 9
+  }
+  if (version < 10) {
+    inTransaction(db, () => migrateV9ToV10(db))
   }
 }
 
@@ -159,21 +167,6 @@ function migrateV0ToV1(db: DatabaseSync): void {
       UNIQUE (content_id, captured_at)
     ) STRICT;
 
-    CREATE TABLE IF NOT EXISTS import_batches (
-      id TEXT PRIMARY KEY,
-      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-      plugin_id TEXT NOT NULL,
-      file_name TEXT NOT NULL,
-      file_hash TEXT NOT NULL,
-      captured_at TEXT NOT NULL,
-      new_content_count INTEGER NOT NULL,
-      updated_content_count INTEGER NOT NULL,
-      snapshot_count INTEGER NOT NULL,
-      skipped_snapshot_count INTEGER NOT NULL,
-      warnings_json TEXT NOT NULL DEFAULT '[]',
-      created_at TEXT NOT NULL
-    ) STRICT;
-
     CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
     CREATE INDEX IF NOT EXISTS idx_accounts_connection_status ON accounts(connection_status);
@@ -183,20 +176,11 @@ function migrateV0ToV1(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_contents_account_updated ON contents(account_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_contents_platform_type ON contents(type, published_at DESC);
     CREATE INDEX IF NOT EXISTS idx_content_snapshots_content_time ON content_snapshots(content_id, captured_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_import_batches_account_time ON import_batches(account_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_import_batches_file_hash ON import_batches(file_hash);
     PRAGMA user_version = 1;
   `)
 }
 
 function migrateV1ToV2(db: DatabaseSync): void {
-  addColumn(db, 'import_batches', 'job_id TEXT')
-  addColumn(db, 'import_batches', "status TEXT NOT NULL DEFAULT 'succeeded'")
-  addColumn(db, 'import_batches', 'started_at TEXT')
-  addColumn(db, 'import_batches', 'finished_at TEXT')
-  addColumn(db, 'import_batches', 'result_json TEXT')
-  addColumn(db, 'import_batches', "error_code TEXT NOT NULL DEFAULT ''")
-  addColumn(db, 'import_batches', "error_message TEXT NOT NULL DEFAULT ''")
   db.exec(`
     CREATE TABLE IF NOT EXISTS plugin_installations (
       plugin_id TEXT PRIMARY KEY,
@@ -244,7 +228,6 @@ function migrateV1ToV2(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_plugin_installations_enabled ON plugin_installations(enabled, availability);
     CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_jobs_account_created ON jobs(account_id, created_at DESC);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_import_batches_job ON import_batches(job_id) WHERE job_id IS NOT NULL;
     PRAGMA user_version = 2;
   `)
 }
@@ -390,6 +373,150 @@ function migrateV7ToV8(db: DatabaseSync): void {
         AND favorites IS previous_favorites
     );
     PRAGMA user_version = 8;
+  `)
+}
+
+function migrateV8ToV9(db: DatabaseSync): void {
+  addColumn(db, 'accounts', 'adapter_contribution_id TEXT')
+  addColumn(db, 'plugin_installations', "source TEXT NOT NULL DEFAULT 'builtin'")
+  addColumn(db, 'plugin_installations', "package_status TEXT NOT NULL DEFAULT 'active'")
+  addColumn(db, 'plugin_installations', "package_hash TEXT NOT NULL DEFAULT ''")
+  addColumn(db, 'plugin_installations', "publisher_key_id TEXT NOT NULL DEFAULT ''")
+  addColumn(db, 'plugin_installations', "package_manifest_json TEXT NOT NULL DEFAULT '{}'")
+  addColumn(db, 'plugin_installations', 'update_available TEXT')
+  addColumn(db, 'plugin_installations', 'development INTEGER NOT NULL DEFAULT 0 CHECK (development IN (0, 1))')
+
+  db.exec(`
+    UPDATE accounts SET adapter_contribution_id = CASE platform_id
+      WHEN 'xiaohongshu' THEN 'xiaohongshu-session-api.platform'
+      WHEN 'zhihu' THEN 'zhihu-session-api.platform'
+      ELSE adapter_contribution_id
+    END
+    WHERE adapter_contribution_id IS NULL;
+
+    CREATE TABLE IF NOT EXISTS plugin_contributions (
+      plugin_id TEXT NOT NULL REFERENCES plugin_installations(plugin_id) ON DELETE CASCADE,
+      contribution_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      manifest_json TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+      runtime TEXT NOT NULL,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      suspended_reason TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (plugin_id, contribution_id)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS plugin_grants (
+      plugin_id TEXT NOT NULL,
+      contribution_id TEXT NOT NULL,
+      permissions_json TEXT NOT NULL DEFAULT '[]',
+      account_ids_json TEXT NOT NULL DEFAULT '[]',
+      group_ids_json TEXT NOT NULL DEFAULT '[]',
+      data_scopes_json TEXT NOT NULL DEFAULT '[]',
+      network_origins_json TEXT NOT NULL DEFAULT '[]',
+      granted_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (plugin_id, contribution_id),
+      FOREIGN KEY (plugin_id, contribution_id)
+        REFERENCES plugin_contributions(plugin_id, contribution_id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS plugin_configs (
+      plugin_id TEXT NOT NULL,
+      contribution_id TEXT NOT NULL,
+      public_json TEXT NOT NULL DEFAULT '{}',
+      encrypted_secrets_json TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (plugin_id, contribution_id),
+      FOREIGN KEY (plugin_id, contribution_id)
+        REFERENCES plugin_contributions(plugin_id, contribution_id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS plugin_schedules (
+      id TEXT PRIMARY KEY,
+      plugin_id TEXT NOT NULL,
+      contribution_id TEXT NOT NULL,
+      account_ids_json TEXT NOT NULL DEFAULT '[]',
+      group_ids_json TEXT NOT NULL DEFAULT '[]',
+      interval_minutes INTEGER NOT NULL CHECK (interval_minutes >= 5),
+      enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+      next_run_at TEXT,
+      last_run_at TEXT,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0,
+      suspended_reason TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (plugin_id, contribution_id)
+        REFERENCES plugin_contributions(plugin_id, contribution_id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS plugin_events (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      schema_version INTEGER NOT NULL DEFAULT 1,
+      source_plugin_id TEXT,
+      account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+      content_id TEXT REFERENCES contents(id) ON DELETE SET NULL,
+      payload_json TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS plugin_event_deliveries (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL REFERENCES plugin_events(id) ON DELETE CASCADE,
+      plugin_id TEXT NOT NULL,
+      contribution_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT,
+      error_code TEXT NOT NULL DEFAULT '',
+      error_message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (event_id, plugin_id, contribution_id),
+      FOREIGN KEY (plugin_id, contribution_id)
+        REFERENCES plugin_contributions(plugin_id, contribution_id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS plugin_runs (
+      id TEXT PRIMARY KEY,
+      plugin_id TEXT NOT NULL,
+      contribution_id TEXT NOT NULL,
+      trigger_kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+      event_id TEXT REFERENCES plugin_events(id) ON DELETE SET NULL,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      result_json TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      next_attempt_at TEXT,
+      error_code TEXT NOT NULL DEFAULT '',
+      error_message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (plugin_id, contribution_id)
+        REFERENCES plugin_contributions(plugin_id, contribution_id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_accounts_adapter ON accounts(adapter_contribution_id);
+    CREATE INDEX IF NOT EXISTS idx_plugin_contributions_kind ON plugin_contributions(kind, enabled);
+    CREATE INDEX IF NOT EXISTS idx_plugin_schedules_due ON plugin_schedules(enabled, next_run_at);
+    CREATE INDEX IF NOT EXISTS idx_plugin_events_time ON plugin_events(occurred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_plugin_deliveries_due
+      ON plugin_event_deliveries(status, next_attempt_at);
+    CREATE INDEX IF NOT EXISTS idx_plugin_runs_time ON plugin_runs(created_at DESC);
+
+    PRAGMA user_version = 9;
+  `)
+}
+
+/** Retires file-import bookkeeping while preserving accounts, contents and snapshots. */
+function migrateV9ToV10(db: DatabaseSync): void {
+  db.exec(`
+    DROP TABLE IF EXISTS import_batches;
+    PRAGMA user_version = 10;
   `)
 }
 

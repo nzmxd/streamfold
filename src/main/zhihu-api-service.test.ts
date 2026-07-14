@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SocialDatabase } from './database'
-import { PluginService } from './plugin-service'
+import { TestSessionApiPluginGate } from './plugins/session-api-plugin-gate.test-fixture'
 import { JobService } from './services/job-service'
 import {
   ZhihuApiService,
@@ -21,14 +21,13 @@ const cachedAvatar = { cacheKey: `${'b'.repeat(64)}.png`, mime: 'image/png' as c
 
 describe('ZhihuApiService', () => {
   let database: SocialDatabase
-  let plugins: PluginService
+  let plugins: TestSessionApiPluginGate
   let nowMs: number
   let jobSequence: number
 
   beforeEach(() => {
     database = new SocialDatabase(':memory:')
-    plugins = new PluginService(database)
-    plugins.initialize()
+    plugins = new TestSessionApiPluginGate(database, ZHIHU_API_PLUGIN_ID)
     nowMs = Date.parse('2026-07-13T09:00:00.000Z')
     jobSequence = 0
   })
@@ -312,7 +311,7 @@ describe('ZhihuApiService', () => {
   })
 
   function enablePlugin(): void {
-    plugins.setEnabled(ZHIHU_API_PLUGIN_ID, true)
+    plugins.enable()
   }
 
   function createAccount(syncMode: 'profile_only' | 'recent_20' | 'recent_100') {

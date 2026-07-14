@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import type { Group, PlatformId, SyncMode } from '../../../../shared/contracts'
+import type { Group, PlatformId, PluginContributionState, SyncMode } from '../../../../shared/contracts'
 import AccountDetailPane from './AccountDetailPane.vue'
 import AccountListPane from './AccountListPane.vue'
 import { useAccounts } from './useAccounts'
@@ -15,11 +15,16 @@ const addBusy = ref(false)
 const groupBusy = ref(false)
 const batchBusy = ref(false)
 const selectedAccountIds = ref<string[]>([])
-const addForm = reactive<{ platformId: PlatformId; alias: string; syncMode: SyncMode }>({
+const addForm = reactive<{ platformId: PlatformId; adapterContributionId: string; alias: string; syncMode: SyncMode }>({
   platformId: 'xiaohongshu',
+  adapterContributionId: '',
   alias: '',
   syncMode: 'profile_only'
 })
+const platformAdapters = ref<PluginContributionState[]>([])
+const addAdapterOptions = computed(() => platformAdapters.value.filter((item) => (
+  item.contribution.kind === 'platform.adapter' && item.contribution.platform.id === addForm.platformId
+)))
 const groupForm = reactive({ name: '', color: '#339cff' })
 const editGroupForm = reactive({ id: '', name: '', color: '#339cff' })
 
@@ -46,7 +51,12 @@ async function createAccount(): Promise<void> {
   if (addBusy.value) return
   addBusy.value = true
   try {
-    await store.createAccount({ ...addForm })
+    await store.createAccount({
+      platformId: addForm.platformId,
+      syncMode: addForm.syncMode,
+      alias: addForm.alias,
+      ...(addForm.adapterContributionId ? { adapterContributionId: addForm.adapterContributionId } : {})
+    })
     addDialog.value = false
     addForm.alias = ''
     showToast('账号已创建，可以打开浏览器登录。')
@@ -56,6 +66,20 @@ async function createAccount(): Promise<void> {
     addBusy.value = false
   }
 }
+
+async function openAddDialog(): Promise<void> {
+  platformAdapters.value = await window.socialVault.plugins.listContributions().catch(() => [])
+  const options = platformAdapters.value.filter((item) => item.contribution.kind === 'platform.adapter' &&
+    item.contribution.platform.id === addForm.platformId)
+  addForm.adapterContributionId = options.length === 1 ? options[0]!.contribution.id : ''
+  addDialog.value = true
+}
+
+watch(() => addForm.platformId, () => {
+  addForm.adapterContributionId = addAdapterOptions.value.length === 1
+    ? addAdapterOptions.value[0]!.contribution.id
+    : ''
+})
 
 async function createGroup(): Promise<void> {
   if (groupBusy.value) return
@@ -199,7 +223,7 @@ function closeEditGroupDialog(): void {
         <h1>账号中心</h1>
         <p>管理账号、分组、备注和数据同步</p>
       </div>
-      <button class="button primary add-account" @click="addDialog = true">＋ 添加账号</button>
+      <button class="button primary add-account" @click="openAddDialog">＋ 添加账号</button>
     </header>
 
     <div v-if="store.error.value" class="alert error">
@@ -254,6 +278,7 @@ function closeEditGroupDialog(): void {
           <button type="button" aria-label="关闭添加账号窗口" :disabled="addBusy" @click="closeAddDialog">×</button>
         </div>
         <label>平台<select v-model="addForm.platformId"><option v-for="platform in store.platforms.value" :key="platform.id" :value="platform.id">{{ platform.name }}</option></select></label>
+        <label v-if="addAdapterOptions.length > 1">数据适配器<select v-model="addForm.adapterContributionId" required><option value="" disabled>请选择适配器</option><option v-for="adapter in addAdapterOptions" :key="adapter.contribution.id" :value="adapter.contribution.id" :disabled="!adapter.enabled || !adapter.granted">{{ adapter.contribution.name }}{{ adapter.enabled && adapter.granted ? '' : '（需先启用并授权）' }}</option></select></label>
         <label>本地备注名（可选）<input v-model="addForm.alias" maxlength="40" placeholder="留空后，绑定成功时将使用平台昵称" /></label>
         <label>默认同步范围<select v-model="addForm.syncMode"><option value="profile_only">仅账号资料与指标（推荐）</option><option value="recent_20">最近 20 条作品</option><option value="recent_100">最近 100 条作品</option><option value="disabled">不启用同步</option></select></label>
         <div class="modal-actions"><button class="button" :disabled="addBusy" type="button" @click="closeAddDialog">取消</button><button class="button primary" :disabled="addBusy" type="submit">{{ addBusy ? '创建中…' : '创建账号' }}</button></div>

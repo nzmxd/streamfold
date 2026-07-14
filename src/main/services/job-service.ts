@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { JobRecord, JobStatus } from '../../shared/job-contracts'
-import { SafeImportError } from '../plugins/errors'
+import { SafeJobError } from '../plugins/errors'
 
 export type MaybePromise<T> = T | Promise<T>
 export type JobChangedListener = (job: JobRecord) => void
@@ -68,7 +68,7 @@ export class JobService {
 
   async refresh(id: string): Promise<JobRecord> {
     const job = await this.repository.getJob(id)
-    if (!job) throw new SafeImportError('JOB_NOT_FOUND', '任务不存在')
+    if (!job) throw new SafeJobError('JOB_NOT_FOUND', '任务不存在')
     this.emit(job)
     return cloneJob(job)
   }
@@ -81,9 +81,9 @@ export class JobService {
 
   async cancel(id: string): Promise<JobRecord> {
     const job = await this.repository.getJob(id)
-    if (!job) throw new SafeImportError('JOB_NOT_FOUND', '任务不存在')
+    if (!job) throw new SafeJobError('JOB_NOT_FOUND', '任务不存在')
     if (job.status !== 'queued' && job.status !== 'validating') {
-      throw new SafeImportError('JOB_NOT_CANCELLABLE', '只能取消等待或校验中的任务')
+      throw new SafeJobError('JOB_NOT_CANCELLABLE', '只能取消等待或校验中的任务')
     }
     return this.transition(job, 'cancelled', {
       stage: '已取消',
@@ -132,7 +132,7 @@ export class JobService {
     patch: Partial<Omit<JobRecord, 'id' | 'status'>> = {}
   ): Promise<JobRecord> {
     if (!allowedTransitions[job.status].includes(status)) {
-      throw new SafeImportError('INVALID_JOB_TRANSITION', '任务状态已变更，请刷新后重试')
+      throw new SafeJobError('INVALID_JOB_TRANSITION', '任务状态已变更，请刷新后重试')
     }
     const updated = await this.repository.updateJob(job.id, { ...patch, status }, [job.status])
     this.emit(updated)

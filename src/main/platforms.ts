@@ -1,55 +1,40 @@
 import type { PlatformDefinition, PlatformId } from '../shared/contracts'
 
-const definitions: Record<PlatformId, PlatformDefinition> = {
-  xiaohongshu: {
-    id: 'xiaohongshu',
-    name: '小红书',
-    shortName: '红',
-    loginUrl: 'https://creator.xiaohongshu.com/',
-    homeUrl: 'https://creator.xiaohongshu.com/',
-    officialHosts: ['creator.xiaohongshu.com', 'www.xiaohongshu.com'],
-    riskNote: '仅打开小红书官方创作服务平台；出现验证时由用户手动完成。'
-  },
-  weibo: {
-    id: 'weibo',
-    name: '微博',
-    shortName: '微',
-    loginUrl: 'https://weibo.com/',
-    homeUrl: 'https://weibo.com/',
-    officialHosts: ['weibo.com', 'www.weibo.com', 'passport.weibo.com', 'login.sina.com.cn'],
-    riskNote: '仅打开微博及新浪官方认证域名；当前版本不执行自动采集。'
-  },
-  douyin: {
-    id: 'douyin',
-    name: '抖音',
-    shortName: '抖',
-    loginUrl: 'https://creator.douyin.com/',
-    homeUrl: 'https://creator.douyin.com/',
-    officialHosts: ['creator.douyin.com', 'www.douyin.com'],
-    riskNote: '仅打开抖音官方创作者中心；不修改浏览器指纹或 User-Agent。'
-  },
-  zhihu: {
-    id: 'zhihu',
-    name: '知乎',
-    shortName: '知',
-    loginUrl: 'https://www.zhihu.com/signin?next=%2Fcreator',
-    homeUrl: 'https://www.zhihu.com/creator',
-    officialHosts: ['www.zhihu.com', 'zhuanlan.zhihu.com'],
-    riskNote: '仅打开知乎官方登录与创作页面；不自动填写登录信息。'
-  }
-}
+const definitions: Record<string, PlatformDefinition> = {}
 
 export function listPlatforms(): PlatformDefinition[] {
   return Object.values(definitions).map((platform) => ({
     ...platform,
-    officialHosts: [...platform.officialHosts]
+    officialHosts: [...platform.officialHosts],
+    ...(platform.contentUrls ? { contentUrls: structuredClone(platform.contentUrls) } : {})
   }))
+}
+
+export function registerPlatformDefinition(platform: PlatformDefinition): void {
+  if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(platform.id)) throw new Error('平台 ID 非法')
+  if (platform.officialHosts.length === 0) throw new Error('平台必须声明官方域名')
+  const normalized: PlatformDefinition = {
+    ...platform,
+    officialHosts: [...new Set(platform.officialHosts.map((host) => host.toLowerCase()))],
+    ...(platform.contentUrls ? { contentUrls: structuredClone(platform.contentUrls) } : {})
+  }
+  if (!normalized.officialHosts.every(isValidHost)) throw new Error('平台官方域名非法')
+  definitions[platform.id] = normalized
+}
+
+export function registerManifestPlatforms(platforms: readonly PlatformDefinition[]): void {
+  for (const id of Object.keys(definitions)) delete definitions[id]
+  for (const platform of platforms) registerPlatformDefinition(platform)
 }
 
 export function getPlatform(id: PlatformId): PlatformDefinition {
   const platform = definitions[id]
   if (!platform) throw new Error('不支持的平台')
-  return platform
+  return {
+    ...platform,
+    officialHosts: [...platform.officialHosts],
+    ...(platform.contentUrls ? { contentUrls: structuredClone(platform.contentUrls) } : {})
+  }
 }
 
 export function isOfficialUrl(platformId: PlatformId, value: string): boolean {
@@ -67,7 +52,7 @@ export function isOfficialUrl(platformId: PlatformId, value: string): boolean {
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
   if (!hostname || hostname === 'localhost' || isIpAddress(hostname)) return false
 
-  return definitions[platformId].officialHosts.includes(hostname)
+  return definitions[platformId]?.officialHosts.includes(hostname) ?? false
 }
 
 export function shouldBlockRemoteNavigation(
@@ -96,57 +81,44 @@ export function isOfficialContentUrl(
   remoteId: string
 ): boolean {
   if (!isOfficialUrl(platformId, value)) return false
+  return definitions[platformId]?.contentUrls?.some((template) => matchesContentTemplate(template, value, remoteId)) ?? false
+}
 
-  if (platformId === 'xiaohongshu') {
-    try {
-      const url = new URL(value)
-      if (url.hostname.toLowerCase() !== 'www.xiaohongshu.com' ||
-        url.pathname !== `/explore/${encodeURIComponent(remoteId)}` || url.hash) return false
-      const keys = [...url.searchParams.keys()]
-      if (keys.some((key) => key !== 'xsec_token' && key !== 'xsec_source')) return false
-      if (new Set(keys).size !== keys.length) return false
-      if (keys.length === 0) return true
-
-      const token = url.searchParams.get('xsec_token')
-      if (!token || token.length > 1_024 || /\s|[\u0000-\u001f\u007f]/u.test(token) ||
-        !/^[A-Za-z0-9._~+/_=-]+$/.test(token)) return false
-      const source = url.searchParams.get('xsec_source')
-      return source === null || /^[A-Za-z0-9_-]{1,64}$/.test(source)
-    } catch {
-      return false
-    }
+function matchesContentTemplate(
+  template: NonNullable<PlatformDefinition['contentUrls']>[number],
+  value: string,
+  remoteId: string
+): boolean {
+  const names: string[] = []
+  const pattern = template.remoteIdTemplate.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (_match, name: string) => {
+    names.push(name)
+    return '([A-Za-z0-9._~-]+)'
+  })
+  const match = new RegExp(`^${escapeTemplateLiterals(pattern)}$`).exec(remoteId)
+  if (!match) return false
+  let path = template.pathTemplate
+  names.forEach((name, index) => {
+    path = path.split(`{${name}}`).join(encodeURIComponent(match[index + 1]!))
+  })
+  try {
+    const actual = new URL(value)
+    const expected = new URL(path, template.origin)
+    if (actual.origin !== expected.origin || actual.pathname !== expected.pathname || actual.hash) return false
+    const keys = [...actual.searchParams.keys()]
+    const allowed = template.queryParameters ?? []
+    return keys.every((key) => allowed.includes(key)) && new Set(keys).size === keys.length &&
+      [...actual.searchParams.values()].every((item) => (
+        item.length > 0 && item.length <= 1_024 && /^[A-Za-z0-9._~+/_=-]+$/.test(item)
+      ))
+  } catch {
+    return false
   }
+}
 
-  if (platformId === 'zhihu') {
-    try {
-      const url = new URL(value)
-      if (url.search || url.hash) return false
-
-      const answer = /^answer:([1-9]\d{0,31}):([1-9]\d{0,31})$/.exec(remoteId)
-      if (answer) {
-        return url.hostname.toLowerCase() === 'www.zhihu.com' &&
-          url.pathname === `/question/${answer[1]}/answer/${answer[2]}`
-      }
-
-      const article = /^article:([1-9]\d{0,31})$/.exec(remoteId)
-      if (article) {
-        return url.hostname.toLowerCase() === 'zhuanlan.zhihu.com' &&
-          url.pathname === `/p/${article[1]}`
-      }
-
-      const pin = /^pin:([1-9]\d{0,31})$/.exec(remoteId)
-      if (pin) {
-        return url.hostname.toLowerCase() === 'www.zhihu.com' &&
-          url.pathname === `/pin/${pin[1]}`
-      }
-
-      return false
-    } catch {
-      return false
-    }
-  }
-
-  return true
+function escapeTemplateLiterals(value: string): string {
+  // Preserve the capture groups inserted above while escaping manifest literals.
+  return value.split('([A-Za-z0-9._~-]+)').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('([A-Za-z0-9._~-]+)')
 }
 
 function hasExplicitPort(value: string): boolean {
@@ -157,4 +129,10 @@ function hasExplicitPort(value: string): boolean {
 function isIpAddress(hostname: string): boolean {
   if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname)) return true
   return hostname.includes(':')
+}
+
+function isValidHost(hostname: string): boolean {
+  return hostname.length <= 253 && /^[a-z0-9.-]+$/.test(hostname) &&
+    !hostname.startsWith('.') && !hostname.endsWith('.') && !hostname.includes('..') &&
+    hostname !== 'localhost' && !isIpAddress(hostname)
 }

@@ -237,11 +237,11 @@ html[data-platform="darwin"] .app-titlebar { padding-left: 76px; }
 .icon-button, .group-actions button, .batch-toolbar button, .batch-summary button { color: var(--text-secondary); background: var(--surface); border-color: var(--border); }
 .icon-button { width: 36px; height: 36px; }
 .icon-button:hover { background: var(--surface-hover); }
-input, textarea, select { min-height: 40px; color: var(--text); background: var(--surface); border-color: var(--border); border-radius: 9px; font-size: var(--font-ui); line-height: var(--line-ui); }
+input:not([type="checkbox"]):not([type="radio"]), textarea, select { min-height: 40px; color: var(--text); background: var(--surface); border-color: var(--border); border-radius: 9px; font-size: var(--font-ui); line-height: var(--line-ui); }
 textarea { min-height: 84px; }
 input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
-input:focus, textarea:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 15%, transparent); }
-input[type="checkbox"] { accent-color: #5859de; }
+input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 15%, transparent); }
+input[type="checkbox"], input[type="radio"] { accent-color: #5859de; }
 fieldset { border-color: var(--border); }
 legend, .muted { color: var(--text-tertiary); }
 .alert.error { color: var(--danger); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 28%, var(--border)); }

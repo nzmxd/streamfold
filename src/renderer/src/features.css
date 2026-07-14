@@ -160,6 +160,7 @@
 .plugin-error { overflow: hidden; color: #984040; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Settings */
+.settings-page > * { flex-shrink: 0; }
 .settings-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-top: 11px; }
 .setting-card { padding: 18px; }
 .retention-form, .export-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-top: 14px; }

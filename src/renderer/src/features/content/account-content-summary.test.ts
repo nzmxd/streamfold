@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest'
 const widget = readFileSync(new URL('./AccountContentWidget.vue', import.meta.url), 'utf8')
 const contentCenter = readFileSync(new URL('./ContentCenter.vue', import.meta.url), 'utf8')
 const contracts = readFileSync(new URL('../../../../shared/contracts.ts', import.meta.url), 'utf8')
-const preload = readFileSync(new URL('../../../../preload/index.ts', import.meta.url), 'utf8')
+const rendererBridge = readFileSync(new URL('../../ipc/social-vault.ts', import.meta.url), 'utf8')
+const bridgeContracts = readFileSync(new URL('../../../../shared/ipc-bridge-contracts.ts', import.meta.url), 'utf8')
 const ipc = readFileSync(new URL('../../../../main/ipc.ts', import.meta.url), 'utf8')
 
 describe('content excerpt visibility and refresh', () => {
@@ -18,7 +19,8 @@ describe('content excerpt visibility and refresh', () => {
 
   it('invalidates mounted content views after main-process content changes', () => {
     expect(contracts).toContain('onChanged(callback: () => void): () => void')
-    expect(preload).toContain("ipcRenderer.on('content:changed', listener)")
+    expect(rendererBridge).toContain("subscribe('content:changed'")
+    expect(bridgeContracts).toContain("'content:changed'")
     expect(ipc).toContain("window.webContents.send('content:changed')")
     expect(widget).toContain('window.socialVault.content.onChanged')
     expect(contentCenter).toContain('window.socialVault.content.onChanged')

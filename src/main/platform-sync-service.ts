@@ -15,10 +15,10 @@ export interface SessionApiPlatformService {
 }
 
 export interface PlatformSyncAccountRepository {
-  getAccount(id: string): Pick<Account, 'id' | 'platformId'> | null
+  getAccount(id: string): Pick<Account, 'id' | 'platformId'> & Partial<Pick<Account, 'adapterContributionId'>> | null
 }
 
-export type PlatformSyncAdapters = Partial<Record<PlatformId, SessionApiPlatformService>>
+export type PlatformSyncAdapters = Record<string, SessionApiPlatformService | undefined>
 
 export interface PlatformSyncServiceOptions {
   repository: PlatformSyncAccountRepository
@@ -34,9 +34,19 @@ export interface PlatformSyncServiceOptions {
  */
 export class PlatformSyncService implements SessionApiPlatformService {
   private readonly adapters: PlatformSyncAdapters
+  private readonly activePlatforms = new Set<PlatformId>()
 
   constructor(private readonly options: PlatformSyncServiceOptions) {
     this.adapters = { ...options.adapters }
+  }
+
+  registerAdapter(contributionId: string, adapter: SessionApiPlatformService): () => void {
+    if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(contributionId)) throw new Error('适配器贡献点 ID 非法')
+    if (this.adapters[contributionId]) throw new Error('适配器贡献点已注册')
+    this.adapters[contributionId] = adapter
+    return () => {
+      if (this.adapters[contributionId] === adapter) delete this.adapters[contributionId]
+    }
   }
 
   async verifyIdentity(accountId: string): Promise<SessionApiIdentityCheckResult> {
@@ -48,13 +58,21 @@ export class PlatformSyncService implements SessionApiPlatformService {
   }
 
   async sync(accountId: string): Promise<SessionApiSyncResult> {
-    return await this.adapterForAccount(accountId).sync(accountId)
+    const account = this.options.repository.getAccount(accountId)
+    if (!account) throw new Error('账号不存在')
+    if (this.activePlatforms.has(account.platformId)) throw new Error('该平台已有同步任务正在运行')
+    this.activePlatforms.add(account.platformId)
+    try {
+      return await this.adapterForAccount(accountId).sync(accountId)
+    } finally {
+      this.activePlatforms.delete(account.platformId)
+    }
   }
 
   isAccountActive(accountId: string): boolean {
     const account = this.options.repository.getAccount(accountId)
     if (!account) return false
-    return this.adapters[account.platformId]?.isAccountActive(accountId) ?? false
+    return this.resolveAdapter(account)?.isAccountActive(accountId) ?? false
   }
 
   invalidatePreviews(): void {
@@ -66,8 +84,13 @@ export class PlatformSyncService implements SessionApiPlatformService {
   private adapterForAccount(accountId: string): SessionApiPlatformService {
     const account = this.options.repository.getAccount(accountId)
     if (!account) throw new Error('账号不存在')
-    const adapter = this.adapters[account.platformId]
+    const adapter = this.resolveAdapter(account)
     if (!adapter) throw new Error('该平台的数据同步功能尚未开放')
     return adapter
+  }
+
+  private resolveAdapter(account: Pick<Account, 'platformId'> & Partial<Pick<Account, 'adapterContributionId'>>): SessionApiPlatformService | undefined {
+    return (account.adapterContributionId ? this.adapters[account.adapterContributionId] : undefined) ??
+      this.adapters[account.platformId]
   }
 }

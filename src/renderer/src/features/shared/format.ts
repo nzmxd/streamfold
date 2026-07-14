@@ -49,13 +49,13 @@ export function contentTypeLabel(type: ContentType): string {
 }
 
 export function platformLabel(id: PlatformId): string {
-  const labels: Record<PlatformId, string> = {
+  const labels: Record<string, string> = {
     xiaohongshu: '小红书',
     weibo: '微博',
     douyin: '抖音',
     zhihu: '知乎'
   }
-  return labels[id]
+  return labels[id] ?? id
 }
 
 export function jobStatusLabel(status: JobStatus): string {

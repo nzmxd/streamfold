@@ -7,7 +7,6 @@ export interface StorageCounts {
   contentSnapshotCount: number
   accountSnapshotCount: number
   jobCount: number
-  importCount: number
 }
 
 interface SettingsDatabase {

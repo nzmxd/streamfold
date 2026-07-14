@@ -2,6 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import type {
   Account,
+  AccountAdapterOption,
   BrowserState,
   ConfirmSessionApiIdentityInput,
   Group,
@@ -44,9 +45,8 @@ const busy = ref(false)
 const localMessage = ref('')
 const verification = ref<SessionApiIdentityCheckResult | null>(null)
 const messageSyncAt = ref<string | null>(null)
-const supportsManagedSync = computed(() => (
-  props.account?.platformId === 'xiaohongshu' || props.account?.platformId === 'zhihu'
-))
+const adapters = ref<AccountAdapterOption[]>([])
+const supportsManagedSync = computed(() => Boolean(props.account?.adapterContributionId))
 const form = reactive({
   alias: '',
   note: '',
@@ -98,6 +98,32 @@ watch(
   },
   { immediate: true }
 )
+
+watch(() => props.account?.id, async (id) => {
+  adapters.value = id ? await window.socialVault.accounts.listAdapters(id).catch(() => []) : []
+}, { immediate: true })
+
+async function switchAdapter(event: Event): Promise<void> {
+  if (!props.account || busy.value) return
+  const contributionId = (event.target as HTMLSelectElement).value
+  if (!contributionId || contributionId === props.account.adapterContributionId) return
+  const target = adapters.value.find((item) => item.contributionId === contributionId)
+  if (!target?.available) return
+  const confirmed = await confirmDialog({
+    title: `切换到“${target.name}”？`,
+    description: '归页会先用候选适配器重新核验稳定账号 ID；只有身份一致才会切换，历史数据保持不变。',
+    confirmLabel: '核验并切换'
+  })
+  if (!confirmed) return
+  busy.value = true
+  try {
+    await window.socialVault.accounts.switchAdapter(props.account.id, contributionId)
+    localMessage.value = '适配器已完成身份复验并切换。'
+    adapters.value = await window.socialVault.accounts.listAdapters(props.account.id)
+  } finally {
+    busy.value = false
+  }
+}
 
 async function saveSettings(): Promise<void> {
   if (!props.account || busy.value) return
@@ -406,6 +432,7 @@ async function purgeAccount(): Promise<void> {
           <label>本地备注名（可选）<input v-model="form.alias" maxlength="40" placeholder="留空时显示平台昵称" /></label>
           <label>标签<input v-model="form.tags" placeholder="使用逗号分隔，例如：工作, 重点" /></label>
         </div>
+        <label v-if="adapters.length > 1">数据适配器<select :value="account.adapterContributionId ?? ''" :disabled="busy" @change="switchAdapter"><option v-for="adapter in adapters" :key="adapter.contributionId" :value="adapter.contributionId" :disabled="!adapter.available && !adapter.selected">{{ adapter.name }}{{ adapter.selected ? '（当前）' : adapter.available ? '' : '（不可用）' }}</option></select><small>切换前会重新核验稳定账号身份，不会清空历史内容与指标。</small></label>
         <label>账号备注<textarea v-model="form.note" rows="4" maxlength="1000" placeholder="负责人、内容方向、登录说明等"></textarea></label>
         <fieldset>
           <legend>所属分组</legend>

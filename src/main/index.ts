@@ -22,8 +22,21 @@ import { SocialDatabase } from './database'
 import { ExportService } from './export-service'
 import { loadApplicationIcon, loadTrayIcon } from './icon-assets'
 import { registerIpc, unregisterIpc } from './ipc'
-import { PluginService } from './plugin-service'
+import { PluginHostService } from './plugins/plugin-host-service'
+import { ElectronPluginSecretStore } from './plugins/plugin-secret-store'
+import { PluginAutomationService } from './plugins/automation-service'
+import { BrowserPlatformJsonProxy } from './plugins/browser-platform-json-proxy'
+import { PluginEntryResolver, PluginEntryStore } from './plugins/plugin-entry-store'
+import { PluginLifecycleService } from './plugins/plugin-lifecycle-service'
+import { verifyOfficialWebhookResource } from './plugins/official-webhook-resource'
+import { PlatformAdapterRegistryService } from './plugins/platform-adapter-registry'
+import type { VerifiedPluginPackage } from './plugins/plugin-package'
+import { PluginRuntimeExecutor } from './plugins/plugin-runtime-executor'
+import { DEFAULT_SANDBOX_LIMITS } from './plugins/sandbox-protocol'
+import { UtilityProcessSandboxManager } from './plugins/utility-process-manager'
+import { pluginCatalogReleaseConfig } from './plugins/release-config'
 import { PlatformSyncService } from './platform-sync-service'
+import { registerManifestPlatforms } from './platforms'
 import { ProfileMediaStore } from './profile-media'
 import { SettingsService } from './settings-service'
 import { JobService } from './services/job-service'
@@ -71,6 +84,9 @@ let smokeVisualAccountId: string | null = null
 let applicationIcon: NativeImage | null = null
 let tray: Tray | null = null
 let updateService: UpdateService | null = null
+let pluginAutomationService: PluginAutomationService | null = null
+let pluginEntryStore: PluginEntryStore | null = null
+let officialWebhookPackage: VerifiedPluginPackage | null = null
 let removeTrayUpdateListener: (() => void) | null = null
 let trayMenuSignature = ''
 
@@ -92,10 +108,15 @@ app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (event) => event.preventDefault())
 })
 
-app.whenReady().then(async () => {
+void app.whenReady().then(async () => {
   applicationIcon = loadApplicationIcon()
   profileMediaStore = new ProfileMediaStore(join(app.getPath('userData'), 'profile-media'))
   await registerShellProtocol(profileMediaStore)
+  pluginEntryStore = new PluginEntryStore(join(app.getPath('userData'), 'plugins'))
+  officialWebhookPackage = await verifyOfficialWebhookResource(
+    app.isPackaged ? process.resourcesPath : resolve(currentDir, '../../resources')
+  )
+  await pluginEntryStore.stageAndActivate(officialWebhookPackage)
   updateService = createUpdateService()
   removeTrayUpdateListener = updateService.subscribe(refreshTrayMenu)
   createWindow()
@@ -106,6 +127,12 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     showMainWindow()
   })
+}).catch((error: unknown) => {
+  console.error('STREAMFOLD_BOOTSTRAP_FAILED', error)
+  if (!smokeMode) {
+    dialog.showErrorBox('归页无法启动', '应用资源校验失败，请重新安装可信来源的最新版本。')
+  }
+  app.exit(1)
 })
 
 app.on('window-all-closed', () => {
@@ -122,6 +149,8 @@ app.on('before-quit', () => {
   updateService = null
   browserManager?.destroy()
   browserManager = null
+  pluginAutomationService?.stop()
+  pluginAutomationService = null
   unregisterIpc()
   database?.close()
   database = null
@@ -130,6 +159,7 @@ app.on('before-quit', () => {
 function showMainWindow(): void {
   if (!app.isReady()) return
   if (!mainWindow || mainWindow.isDestroyed()) {
+    if (!profileMediaStore || !updateService || !pluginEntryStore || !officialWebhookPackage) return
     createWindow()
     return
   }
@@ -194,6 +224,7 @@ function createWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) return
   if (!profileMediaStore) throw new Error('头像媒体缓存尚未初始化')
   if (!updateService) throw new Error('更新服务尚未初始化')
+  if (!pluginEntryStore || !officialWebhookPackage) throw new Error('官方插件资源尚未验证')
 
   database = new SocialDatabase(join(app.getPath('userData'), 'social-vault.sqlite'))
   updateService.setAutomaticChecks(readAutomaticUpdatePreference(database))
@@ -271,28 +302,98 @@ function createWindow(): void {
     profileMediaStore,
     applicationIcon
   )
-  const pluginService = new PluginService(database)
-  pluginService.initialize()
+  const pluginSecretStore = new ElectronPluginSecretStore()
+  installOfficialWebhookPackage(database, officialWebhookPackage)
+  const pluginHostService = new PluginHostService(database, pluginSecretStore)
+  pluginHostService.initialize()
+  registerManifestPlatforms(pluginHostService.extensionRegistry().platformDefinitions().map((platform) => ({
+    id: platform.id,
+    name: platform.name,
+    shortName: platform.shortName,
+    loginUrl: platform.loginUrl,
+    homeUrl: platform.homeUrl,
+    officialHosts: platform.navigationHosts,
+    contentUrls: platform.contentUrls,
+    riskNote: platform.riskNote
+  })))
   const jobService = new JobService(database)
   const xiaohongshuApiService = new XiaohongshuApiService({
     repository: database,
     browser: browserManager,
-    plugins: pluginService,
+    plugins: pluginHostService,
     jobs: jobService
   })
   const zhihuApiService = new ZhihuApiService({
     repository: database,
     browser: browserManager,
-    plugins: pluginService,
+    plugins: pluginHostService,
     jobs: jobService
   })
+  let platformSyncRef: PlatformSyncService | null = null
+  let runtimeExecutor!: PluginRuntimeExecutor
+  const pluginEntryResolver = new PluginEntryResolver(pluginEntryStore)
+  const sandboxManager = new UtilityProcessSandboxManager({
+    runnerPath: join(currentDir, 'plugin-sandbox.js'),
+    hostCall: (call, identity) => runtimeExecutor.hostCall(call, identity)
+  })
+  const platformJsonProxy = new BrowserPlatformJsonProxy(browserManager)
+  runtimeExecutor = new PluginRuntimeExecutor(
+    pluginHostService,
+    database,
+    pluginEntryResolver,
+    sandboxManager,
+    platformJsonProxy,
+    undefined,
+    {
+      execute: async (request, contribution) => {
+        if (contribution.kind !== 'platform.adapter' || !request.accountId || !platformSyncRef) {
+          throw new Error('内置贡献点没有可执行的手动动作')
+        }
+        await platformSyncRef.sync(request.accountId)
+        return null
+      }
+    }
+  )
   const platformSyncService = new PlatformSyncService({
     repository: database,
     adapters: {
       xiaohongshu: xiaohongshuApiService,
-      zhihu: zhihuApiService
+      zhihu: zhihuApiService,
+      'xiaohongshu-session-api.platform': xiaohongshuApiService,
+      'zhihu-session-api.platform': zhihuApiService
     }
   })
+  platformSyncRef = platformSyncService
+  const adapterRegistry = new PlatformAdapterRegistryService(
+    database,
+    pluginHostService,
+    runtimeExecutor,
+    jobService,
+    platformSyncService,
+    platformJsonProxy
+  )
+  adapterRegistry.reconcile()
+  const pluginLifecycle = new PluginLifecycleService({
+    repository: database,
+    host: pluginHostService,
+    entries: pluginEntryStore,
+    catalogUrl: pluginCatalogReleaseConfig.catalogUrl,
+    catalogRootPublicKey: pluginCatalogReleaseConfig.catalogRootPublicKey,
+    catalogCachePath: join(app.getPath('userData'), 'plugins', 'catalog.json'),
+    appVersion: readApplicationVersion(),
+    terminatePlugin: (pluginId) => runtimeExecutor.terminatePlugin(pluginId),
+    chooseDevelopmentPackage: async () => {
+      const result = await dialog.showOpenDialog(mainWindow!, {
+        title: '安装开发插件',
+        properties: ['openFile'],
+        filters: [{ name: '归页插件包', extensions: ['streamfold-plugin'] }]
+      })
+      return result.canceled ? null : result.filePaths[0] ?? null
+    }
+  })
+  void pluginLifecycle.initialize()
+  pluginAutomationService = new PluginAutomationService(database, pluginHostService, runtimeExecutor)
+  pluginAutomationService.start()
   const settingsService = new SettingsService({
     getStorageCounts: () => database!.getStorageCounts(),
     getSetting: (key) => database!.getSetting<string>(key),
@@ -312,11 +413,27 @@ function createWindow(): void {
     },
     repository: database,
     beforeRestore: () => {
+      pluginAutomationService?.stop()
       restorePartitions = database!.listAccounts().map((account) => account.sessionPartition)
       browserManager?.closeAll()
       platformSyncService.invalidatePreviews()
     },
-    afterRestore: () => pluginService.initialize(),
+    afterRestore: () => {
+      installOfficialWebhookPackage(database!, officialWebhookPackage!)
+      pluginHostService.initialize()
+      registerManifestPlatforms(pluginHostService.extensionRegistry().platformDefinitions().map((platform) => ({
+        id: platform.id,
+        name: platform.name,
+        shortName: platform.shortName,
+        loginUrl: platform.loginUrl,
+        homeUrl: platform.homeUrl,
+        officialHosts: platform.navigationHosts,
+        contentUrls: platform.contentUrls,
+        riskNote: platform.riskNote
+      })))
+      adapterRegistry.reconcile()
+      pluginAutomationService?.start()
+    },
     afterCommit: async () => {
       try {
         const restoredAccounts = database!.listAccounts()
@@ -331,7 +448,10 @@ function createWindow(): void {
     }
   })
   registerIpc(mainWindow, database, browserManager, {
-    plugins: pluginService,
+    pluginHost: pluginHostService,
+    pluginLifecycle,
+    pluginAutomation: pluginAutomationService,
+    adapterRegistry,
     settings: settingsService,
     exporter: exportService,
     backup: backupService,
@@ -351,12 +471,13 @@ function createWindow(): void {
         const hasApi = typeof window.socialVault === 'object'
         const platforms = hasApi ? await window.socialVault.platforms.list() : []
         const accounts = hasApi ? await window.socialVault.accounts.list() : []
-        const plugins = hasApi ? await window.socialVault.plugins.list() : []
+        const plugins = hasApi ? await window.socialVault.plugins.listPackages() : []
         const contents = hasApi ? await window.socialVault.content.list() : []
         const dashboard = hasApi ? await window.socialVault.analytics.dashboard() : null
         const settings = hasApi ? await window.socialVault.settings.overview() : null
         const appearance = hasApi ? await window.socialVault.appearance.get() : null
         const updates = hasApi ? await window.socialVault.updates.getState() : null
+        const catalog = hasApi ? await window.socialVault.plugins.getCatalog() : null
         return {
           title: document.title,
           hasApi,
@@ -370,7 +491,8 @@ function createWindow(): void {
           settingsReady: Boolean(settings?.appVersion),
           appearanceReady: appearance?.resolved === 'light' || appearance?.resolved === 'dark',
           updatesReady: Boolean(updates?.currentVersion) && typeof window.socialVault.updates.check === 'function',
-          v04ApiReady: typeof window.socialVault.accounts.verifyIdentity === 'function' &&
+          catalogReady: typeof catalog?.configured === 'boolean',
+          pluginV2ApiReady: typeof window.socialVault.accounts.verifyIdentity === 'function' &&
             typeof window.socialVault.accounts.confirmIdentity === 'function' &&
             typeof window.socialVault.accounts.sync === 'function' &&
             typeof window.socialVault.accounts.bulkUpdate === 'function' &&
@@ -384,6 +506,19 @@ function createWindow(): void {
       let workspaceResult: unknown = null
       let zhihuWorkspaceResult: unknown = null
       let partitionIsolation = false
+      const sandboxResult = await sandboxManager.invoke({
+        protocolVersion: 1,
+        type: 'invoke',
+        invocationId: 'smoke_invocation_0001',
+        pluginId: 'streamfold.smoke',
+        contributionId: 'streamfold.smoke.action',
+        entrySource: 'module.exports = { run() { return { quickjs: true } } }',
+        method: 'run',
+        input: null,
+        context: {},
+        allowedOperations: [],
+        limits: { ...DEFAULT_SANDBOX_LIMITS }
+      })
       if (database && browserManager) {
         const first = database.createAccount({ platformId: 'xiaohongshu', alias: 'Smoke A', syncMode: 'disabled' })
         const second = database.createAccount({ platformId: 'xiaohongshu', alias: 'Smoke B', syncMode: 'disabled' })
@@ -452,6 +587,7 @@ function createWindow(): void {
         shell: shellResult,
         workspace: workspaceResult,
         zhihuWorkspace: zhihuWorkspaceResult,
+        sandbox: sandboxResult,
         partitionIsolation,
         icons: iconResult,
         capturePath: capturePath ?? null
@@ -463,7 +599,8 @@ function createWindow(): void {
         settingsReady?: boolean
         appearanceReady?: boolean
         updatesReady?: boolean
-        v04ApiReady?: boolean
+        catalogReady?: boolean
+        pluginV2ApiReady?: boolean
       } | null
       const workspace = workspaceResult as {
         hasApi?: boolean
@@ -475,19 +612,23 @@ function createWindow(): void {
         accountId?: string
         remoteUserAgent?: string
       } | null
+      const sandbox = sandboxResult as { quickjs?: boolean } | null
       if (
         !shell?.hasApi || !shell.hasApp || !shell.dashboardReady || !shell.settingsReady ||
-        !shell.appearanceReady || !shell.updatesReady || !shell.v04ApiReady ||
+        !shell.appearanceReady || !shell.updatesReady || !shell.catalogReady || !shell.pluginV2ApiReady ||
         !workspace?.hasApi || !workspace.accountId || !workspace.appearanceReady ||
         !zhihuWorkspace?.hasApi || !zhihuWorkspace.accountId ||
         !zhihuWorkspace.remoteUserAgent?.includes(`Chrome/${process.versions.chrome}`) ||
         zhihuWorkspace.remoteUserAgent.includes('Electron/') ||
         zhihuWorkspace.remoteUserAgent.includes(`${app.getName()}/`) || !partitionIsolation ||
-        !iconResult.applicationReady || !iconResult.trayReady || !iconResult.nativeTrayReady
+        !sandbox?.quickjs || !iconResult.applicationReady || !iconResult.trayReady || !iconResult.nativeTrayReady
       ) {
         console.error(`SOCIAL_VAULT_SMOKE_FAILED ${JSON.stringify(smokePayload)}`)
         app.exit(1)
         return
+      }
+      if (process.env.SOCIAL_VAULT_SMOKE_RESULT) {
+        writeFileSync(process.env.SOCIAL_VAULT_SMOKE_RESULT, JSON.stringify(smokePayload))
       }
       console.log(`SOCIAL_VAULT_SMOKE_OK ${JSON.stringify(smokePayload)}`)
       app.quit()
@@ -505,6 +646,19 @@ function createWindow(): void {
     database?.close()
     database = null
     mainWindow = null
+  })
+}
+
+function installOfficialWebhookPackage(
+  repository: SocialDatabase,
+  verified: VerifiedPluginPackage
+): void {
+  repository.upsertPluginPackage(verified.manifest, {
+    source: 'builtin',
+    status: 'active',
+    packageHash: verified.archiveHash,
+    publisherKeyId: verified.manifest.publisher.keyId,
+    development: false
   })
 }
 

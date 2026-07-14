@@ -1,6 +1,6 @@
 {
   "name": "streamfold",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "author": "Streamfold Contributors",
   "license": "UNLICENSED",
@@ -19,14 +19,28 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:smoke": "pnpm build && node scripts/smoke.mjs"
+    "test:ui": "pnpm build && pnpm test:ui:run",
+    "test:ui:run": "playwright test --config playwright.config.ts",
+    "test:smoke": "pnpm build && electron-builder --dir --publish never && pnpm test:package-plugins -- release && pnpm test:package-runtime -- release",
+    "test:smoke:dev": "pnpm build && node scripts/smoke.mjs",
+    "sdk:build": "pnpm --filter @streamfold/plugin-sdk build",
+    "sdk:test": "vitest run packages/plugin-sdk/test",
+    "plugin:official-webhook:build": "pnpm sdk:build && node scripts/build-official-webhook.mjs build",
+    "plugin:official-webhook:verify": "pnpm sdk:build && node scripts/build-official-webhook.mjs verify",
+    "test:package-plugins": "pnpm sdk:build && node scripts/verify-packaged-plugins.mjs",
+    "test:package-runtime": "node scripts/smoke-packaged.mjs"
   },
   "dependencies": {
     "electron-updater": "6.8.9",
-    "vue": "3.5.39"
+    "quickjs-emscripten": "^0.32.0",
+    "vue": "3.5.39",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
+    "@playwright/test": "^1.61.1",
     "@types/node": "24.13.3",
+    "@types/yauzl": "^3.4.0",
     "@vitejs/plugin-vue": "6.0.7",
     "electron": "43.1.0",
     "electron-builder": "^26.15.3",
@@ -58,6 +72,13 @@
         "to": "icons",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "resources/plugins",
+        "to": "plugins",
+        "filter": [
+          "*.streamfold-plugin"
         ]
       }
     ],

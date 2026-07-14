@@ -2,9 +2,27 @@ import { resolve } from 'node:path'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
+const pluginCatalogUrl = process.env.STREAMFOLD_PLUGIN_CATALOG_URL?.trim() ?? ''
+const pluginCatalogRootKey = process.env.STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY?.trim() ?? ''
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()]
+    plugins: [externalizeDepsPlugin()],
+    define: {
+      __STREAMFOLD_PLUGIN_CATALOG_URL__: JSON.stringify(pluginCatalogUrl),
+      __STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY__: JSON.stringify(pluginCatalogRootKey)
+    },
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve('src/main/index.ts'),
+          'plugin-sandbox': resolve('src/main/plugins/utility-process-runner.ts')
+        },
+        output: {
+          entryFileNames: '[name].js'
+        }
+      }
+    }
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

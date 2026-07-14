@@ -9,8 +9,7 @@ describe('SettingsService', () => {
       contentCount: 3,
       contentSnapshotCount: 4,
       accountSnapshotCount: 1,
-      jobCount: 5,
-      importCount: 2
+      jobCount: 5
     }
     const service = new SettingsService({
       getStorageCounts: () => counts,

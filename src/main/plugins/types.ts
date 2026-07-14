@@ -1,8 +1,10 @@
 import type { ContentSnapshot, ContentType } from '../../shared/content-contracts'
 
-export interface NormalizedImportProfile {
+export interface StandardProfile {
   remoteId: string
   remoteName: string
+  /** Transient, manifest-constrained source URL; the host converts it to a local cache key. */
+  avatarUrl?: string
   avatarCacheKey?: string | null
   avatarMime?: string | null
   bio?: string
@@ -19,7 +21,7 @@ export interface NormalizedImportProfile {
   favorites?: number | null
 }
 
-export interface NormalizedImportContent {
+export interface StandardContent {
   remoteId: string
   type: ContentType
   title: string
@@ -29,23 +31,15 @@ export interface NormalizedImportContent {
   snapshots: ContentSnapshot[]
 }
 
-export interface NormalizedImportPayload {
+/** Platform-neutral dataset produced by a verified, read-only platform adapter. */
+export interface StandardDataset {
   capturedAt: string
-  profile: NormalizedImportProfile | null
-  contents: NormalizedImportContent[]
+  profile: StandardProfile | null
+  contents: StandardContent[]
   warnings: string[]
 }
 
-export interface ImportCommitMetadata {
-  accountId: string
-  pluginId: string
-  jobId?: string
-  fileName: string
-  fileHash: string
-  confirmOwnership: boolean
-}
-
-export interface ImportCommitStats {
+export interface DatasetCommitStats {
   newContentCount: number
   updatedContentCount: number
   snapshotCount: number

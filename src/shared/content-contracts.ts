@@ -115,6 +115,5 @@ export interface DashboardOverview {
   contentCount: number
   views: number
   interactions: number
-  lastImportedAt: string | null
   reminders: DashboardReminder[]
 }

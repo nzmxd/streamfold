@@ -1,0 +1,11 @@
+{
+  "pluginId": "community.example",
+  "version": "1.0.0",
+  "downloadUrl": "https://plugins.example.invalid/packages/community.example-1.0.0.streamfold-plugin",
+  "packageHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "publisherKeyId": "community.example.main",
+  "publisherPublicKey": "BASE64_ENCODED_ED25519_SPKI_DER",
+  "minimumAppVersion": "0.5.0",
+  "maximumAppVersion": "0.5.99",
+  "revoked": false
+}

@@ -9,7 +9,6 @@ export interface StorageOverview {
   contentSnapshotCount: number
   accountSnapshotCount: number
   jobCount: number
-  importCount: number
   rawRetentionDays: number
   autoCheckUpdates: boolean
   lastExportAt: string | null

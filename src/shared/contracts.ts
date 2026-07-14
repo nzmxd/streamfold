@@ -1,5 +1,5 @@
-export const platformIds = ['xiaohongshu', 'weibo', 'douyin', 'zhihu'] as const
-export type PlatformId = (typeof platformIds)[number]
+/** Runtime-validated identifier; third-party platform adapters are not compile-time enums. */
+export type PlatformId = string
 
 export const accountStatuses = [
   'pending',
@@ -28,12 +28,14 @@ export interface PlatformDefinition {
   loginUrl: string
   homeUrl: string
   officialHosts: string[]
+  contentUrls?: import('./plugin-host-contracts').PlatformContentUrlDeclaration[]
   riskNote: string
 }
 
 export interface Account {
   id: string
   platformId: PlatformId
+  adapterContributionId: string | null
   alias: string
   aliasCustomized: boolean
   remoteName: string
@@ -72,6 +74,7 @@ export interface Group {
 
 export interface CreateAccountInput {
   platformId: PlatformId
+  adapterContributionId?: string
   alias?: string
   syncMode: SyncMode
 }
@@ -160,6 +163,8 @@ export interface SocialVaultApi {
     verifyIdentity(id: string): Promise<import('./session-api-contracts').SessionApiIdentityCheckResult>
     confirmIdentity(input: import('./session-api-contracts').ConfirmSessionApiIdentityInput): Promise<import('./session-api-contracts').SessionApiIdentityCheckResult>
     sync(id: string): Promise<import('./session-api-contracts').SessionApiSyncResult>
+    listAdapters(id: string): Promise<import('./plugin-host-contracts').AccountAdapterOption[]>
+    switchAdapter(id: string, contributionId: string): Promise<Account>
   }
   groups: {
     list(): Promise<Group[]>
@@ -185,8 +190,29 @@ export interface SocialVaultApi {
     dashboard(): Promise<import('./content-contracts').DashboardOverview>
   }
   plugins: {
-    list(): Promise<import('./plugin-contracts').PluginInstallation[]>
-    setEnabled(id: string, enabled: boolean): Promise<import('./plugin-contracts').PluginInstallation>
+    listPackages(): Promise<import('./plugin-host-contracts').InstalledPluginPackage[]>
+    listContributions(): Promise<import('./plugin-host-contracts').PluginContributionState[]>
+    setPackageEnabled(id: string, enabled: boolean): Promise<import('./plugin-host-contracts').InstalledPluginPackage>
+    setContributionEnabled(pluginId: string, contributionId: string, enabled: boolean): Promise<import('./plugin-host-contracts').PluginContributionState>
+    grant(input: import('./plugin-host-contracts').UpsertPluginGrantInput): Promise<import('./plugin-host-contracts').PluginGrant>
+    getConfig(pluginId: string, contributionId: string): Promise<import('./plugin-host-contracts').PluginConfigView>
+    saveConfig(input: import('./plugin-host-contracts').SavePluginConfigInput): Promise<import('./plugin-host-contracts').PluginConfigView>
+    listSchedules(): Promise<import('./plugin-host-contracts').PluginSchedule[]>
+    createSchedule(input: import('./plugin-host-contracts').CreatePluginScheduleInput): Promise<import('./plugin-host-contracts').PluginSchedule>
+    setScheduleEnabled(id: string, enabled: boolean): Promise<import('./plugin-host-contracts').PluginSchedule>
+    removeSchedule(id: string): Promise<void>
+    listRuns(): Promise<import('./plugin-host-contracts').PluginRunRecord[]>
+    getGrant(pluginId: string, contributionId: string): Promise<import('./plugin-host-contracts').PluginGrant | null>
+    refreshCatalog(): Promise<import('./plugin-host-contracts').PluginCatalogState>
+    getCatalog(): Promise<import('./plugin-host-contracts').PluginCatalogState>
+    installFromCatalog(pluginId: string): Promise<import('./plugin-host-contracts').InstalledPluginPackage>
+    installDevelopment(): Promise<import('./plugin-host-contracts').InstalledPluginPackage | null>
+    update(pluginId: string, confirmPermissionExpansion?: boolean): Promise<import('./plugin-host-contracts').InstalledPluginPackage>
+    uninstall(pluginId: string): Promise<void>
+    getDeveloperMode(): Promise<import('./plugin-host-contracts').PluginDeveloperState>
+    setDeveloperMode(enabled: boolean): Promise<import('./plugin-host-contracts').PluginDeveloperState>
+    run(pluginId: string, contributionId: string, accountId?: string): Promise<import('./plugin-host-contracts').PluginRunRecord>
+    retryRun(id: string): Promise<import('./plugin-host-contracts').PluginRunRecord>
   }
   settings: {
     overview(): Promise<import('./settings-contracts').StorageOverview>
@@ -211,9 +237,10 @@ export interface BrowserWorkspaceApi {
 
 export * from './content-contracts'
 export * from './job-contracts'
-export * from './plugin-contracts'
+export * from './plugin-host-contracts'
 export * from './settings-contracts'
 export * from './backup-contracts'
 export * from './session-api-contracts'
 export * from './xiaohongshu-api-contracts'
 export * from './update-contracts'
+export * from './ipc-bridge-contracts'

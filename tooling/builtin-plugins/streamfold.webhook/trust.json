@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "streamfold.webhook",
+  "version": "1.0.0",
+  "packageFile": "streamfold.webhook-1.0.0.streamfold-plugin",
+  "packageHash": "sha256:54464a01ca3d01cb485753e53108384e1e6b10adced78c72146cbfe95a81654c",
+  "contentHash": "sha256:4644c9b29ac42fd2ff3088be17f077b0c7196463a6a86972c5b9ff124001f068",
+  "publisherKeyId": "streamfold-official",
+  "publisherPublicKey": "MCowBQYDK2VwAyEAkzMRMukUCfnt9MHqTNEEr8bU7gzEc2UFofHNk4aSX4Y="
+}

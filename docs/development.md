@@ -1,6 +1,6 @@
 # 开发与发布
 
-> 适用版本：归页 Streamfold 0.4.0
+> 适用版本：归页 Streamfold 0.5.0
 
 ## 1. 环境
 
@@ -24,9 +24,14 @@ pnpm dev
 | `pnpm dev` | 启动开发版桌面应用 |
 | `pnpm test` | 运行全部 Vitest 单元/服务测试 |
 | `pnpm test:watch` | 监听模式运行 Vitest |
+| `pnpm test:ui` | 构建后使用 Playwright Electron API 在隔离数据目录中运行界面回归（矮窗口、插件弹窗、控件和主题） |
 | `pnpm typecheck` | 检查 Vue/Renderer 与 Node/Electron TypeScript |
 | `pnpm build` | 类型检查并构建到 `out/` |
-| `pnpm test:smoke` | 生产构建后启动真实 Electron 做隔离和界面冒烟 |
+| `pnpm test:smoke` | 生成当前平台安装目录并执行资源检查、真实 Electron 与 QuickJS 冒烟 |
+| `pnpm test:smoke:dev` | 直接使用开发 Electron 执行快速界面冒烟或截图（受本机图形环境影响） |
+| `pnpm plugin:official-webhook:verify` | 验证随应用分发的官方 Webhook 包、签名与固定信任信息 |
+| `pnpm test:package-plugins -- release` | 检查安装目录中的沙箱入口、QuickJS 依赖和签名插件资源 |
+| `pnpm test:package-runtime -- release` | 启动安装目录应用并在真实 Utility Process 中执行 QuickJS Smoke |
 | `pnpm preview` | 预览生产构建 |
 | `pnpm dist:dir` | 生成未打包安装器的应用目录 |
 | `pnpm dist:win` | 生成 Windows NSIS 和 ZIP |
@@ -46,7 +51,9 @@ pnpm dev
 | `src/main/storage/migrations.ts` | SQLite schema 与逐版迁移 |
 | `src/main/*-api.ts` | 平台固定端点、严格解析和标准化 |
 | `src/main/*-api-service.ts` | 平台锁、限频、任务、头像和提交编排 |
-| `src/main/plugins/registry.ts` | 内置平台插件清单与可用状态 |
+| `src/main/plugins/` | Manifest、注册中心、包/目录验证、QuickJS 宿主、权限、事件与生命周期 |
+| `packages/plugin-sdk/` | 插件合同、Manifest 构建器、测试宿主和打包签名 CLI |
+| `tooling/plugin-catalog-template/` | 可复制到独立目录仓库的 Schema、签名脚本和 CI 工作流 |
 | `src/preload/` | 两个本地窗口的最小能力桥接 |
 | `src/shared/` | 主进程、preload、Renderer 共用合同 |
 | `src/renderer/src/features/` | 六个业务页面和在线更新 UI |
@@ -67,21 +74,11 @@ pnpm dev
 
 不要把文件路径、任意 URL、任意 JavaScript、数据库对象、`ipcRenderer` 或 Session 对象暴露给 Renderer。
 
-## 5. 新增平台适配器
+## 5. 开发插件和平台适配器
 
-当前插件系统是“内置适配器注册表”，不是动态加载目录。新增平台通常涉及：
+普通第三方插件通过 Manifest v2、SDK 和签名目录接入，不应修改 `src/main/index.ts`、`BrowserManager`、Renderer 平台枚举或数据库提交代码。平台信息、固定 JSON 端点、捕获规则、图片域名和原帖 URL 模板都由 `platform.adapter` 贡献点声明，账号绑定具体贡献点。
 
-1. **平台定义**：在 `src/shared/contracts.ts` 增加平台 ID，在 `src/main/platforms.ts` 增加官方登录页、主页和精确主机清单。
-2. **传输合同**：定义适配器只需要的 `getJson`/响应捕获接口，不让服务直接拿到 `WebContents`。
-3. **API 层**：新增 `<platform>-api.ts`，集中维护端点、分页、响应上限、字段解析和身份前后复验。
-4. **浏览器传输**：在 `BrowserManager` 中实现固定同源 GET 或精确 XHR/Fetch JSON 响应捕获，并验证最终 URL、状态和 Content-Type。
-5. **事务服务**：新增 `<platform>-api-service.ts`，实现 `SessionApiPlatformService` 的 `verifyIdentity`、`confirmIdentity`、`sync`、互斥和限频。
-6. **插件清单**：在 `src/main/plugins/registry.ts` 声明能力、允许主机、最小间隔、风险级别和可用状态。
-7. **平台路由**：在 `src/main/index.ts` 的 `PlatformSyncService` 组合中注册适配器。
-8. **测试与验收**：覆盖传输白名单、异常响应、身份变化、分页完整性、事务回滚，再用本人测试账号完成真实响应验收。
-9. **文档**：更新[平台适配器](platform-adapters.md)，并在平台状态表中明确可用范围。
-
-只有完成真实账号身份、空列表、分页、登录失效、限流和账号切换验收后，才能把清单从 `planned` 改为 `available`。
+开发流程、入口方法、标准数据集、权限、QuickJS 限制、打包签名、目录 PR 和开发者模式统一见[开放插件系统](plugin-system.md)。小红书和知乎属于可信内置实现；修改它们仍需更新[平台适配器](platform-adapters.md)并完成真实本人账号验收。
 
 ## 6. 数据采集实现规则
 
@@ -116,6 +113,7 @@ pnpm dev
 - 数据库：迁移、约束、事务、快照去重、分析、备份恢复和账号隔离。
 - Renderer：展示映射、筛选、图表、排版、侧栏和弹窗行为。
 - Electron smoke：`app://` 页面、preload API、主题、更新 API、两个账号 Partition 隔离、浏览器 User-Agent 和图标。
+- Electron UI 回归：矮窗口设置卡片不裁切或重叠、Webhook 权限与配置弹窗、复选框/开关状态、弹窗滚动和 `Esc` 关闭、浅色/深色主题。
 
 提交前建议至少执行：
 
@@ -138,7 +136,12 @@ git diff --check
 - 手动触发只生成保留 14 天的 Actions 构件，不创建 Release。
 - 标签必须是严格的稳定 SemVer，例如 `v0.5.0`，并与 `package.json` 版本一致。
 - Windows、macOS、Linux 在各自原生 runner 上打包；三个任务都成功后才汇总 Release。
+- 每个平台打包后都会检查 `plugin-sandbox.js`、QuickJS 运行资源和官方签名 Webhook 包。
 - 已存在同名 Release 时拒绝覆盖；发布先创建 draft，完整上传后再标记为 latest。
+
+Release 仓库必须配置 Actions Variable `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`（Ed25519 SPKI DER Base64 或完整公钥）。目录 URL 在构建时固定为同一 GitHub 所有者的 `https://<owner>.github.io/streamfold-plugins/catalog.json`；这两个值会编译进主进程 Bundle，运行时环境变量不能替换信任根。
+
+官方 Webhook 源码位于 `tooling/builtin-plugins/streamfold.webhook`，提交的签名包位于 `resources/plugins`。日常验证只运行 `plugin:official-webhook:verify`。需要重签时，通过 `STREAMFOLD_OFFICIAL_PLUGIN_PRIVATE_KEY_FILE` 指向受保护的 Ed25519 私钥后运行 `plugin:official-webhook:build`；私钥不得进入仓库、Actions 构件或安装包。
 
 | 平台 | 用户构件 | 在线更新资产 | 应用内更新边界 |
 |---|---|---|---|
@@ -172,7 +175,8 @@ git diff --check
 - 多账号隔离 Session、独立账号浏览器、后台 workspace lease 与登录失效提升窗口。
 - 小红书、知乎本人身份、资料、内容、指标与官方原帖链接同步。
 - 账号整理、内容检索、趋势分析、JSON/CSV 导出和加密数据库备份恢复。
-- v0 → v8 数据库迁移、243 项测试、生产构建与 Electron smoke。
+- v0 → v10 数据库迁移、自动化测试、生产构建与 Electron smoke。
+- Manifest v2、签名包/目录、QuickJS Utility Process、权限代理、事件 Outbox、计划队列、真实签名 Webhook 资源和 SDK/CLI。
 - 三平台构建配置、GitHub CI/Release 工作流和客户端在线更新状态机。
 
 尚未完成：
@@ -180,8 +184,7 @@ git diff --check
 - 微博、抖音 Session API 适配器和真实本人账号验收。
 - 小红书多页大账号、空作品、更多登录失效与 429/461/471 在线场景。
 - 知乎空列表、真实 401/403/429 与账号切换在线场景。
-- 串行批量同步、定时同步、Retry-After 调度和连续失败熔断。
 - Windows/macOS 正式签名、公证，以及公开 GitHub 仓库的首次 Release/在线更新验收。
 - 媒体文件备份、XLSX 导出、分组拖拽和浏览器窗口位置恢复。
 
-优先顺序是先补足现有平台异常场景，再实现串行批量同步，最后逐个平台开放新适配器。
+优先顺序是先补足现有平台异常场景，再实现串行批量同步，最后通过签名目录逐个平台开放新适配器。

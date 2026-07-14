@@ -1,0 +1,48 @@
+name: Sign and publish plugin catalog
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: plugin-catalog-pages
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    environment: plugin-catalog-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+      - name: Validate source index
+        run: node scripts/catalog.mjs validate-source catalog.source.json
+      - name: Sign catalog
+        env:
+          CATALOG_ROOT_PRIVATE_KEY_BASE64: ${{ secrets.CATALOG_ROOT_PRIVATE_KEY_BASE64 }}
+          CATALOG_VALIDITY_DAYS: "7"
+        run: node scripts/catalog.mjs sign catalog.source.json public/catalog.json
+      - name: Verify generated catalog
+        env:
+          CATALOG_ROOT_PUBLIC_KEY: ${{ vars.CATALOG_ROOT_PUBLIC_KEY }}
+        run: node scripts/catalog.mjs verify public/catalog.json
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: sign
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -6,6 +6,7 @@ dist/
 release/
 coverage/
 artifacts/
+output/
 prototypes/
 .vite/
 .electron-vite/
@@ -26,6 +27,7 @@ prototypes/
 .env.*
 !.env.example
 .npmrc.local
+.local-plugin-signing/
 *.pem
 *.key
 *.p12

@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { NormalizedImportPayload } from './plugins/types'
+import type { StandardDataset } from './plugins/types'
+import type { PluginManifestV2 } from '../shared/plugin-host-contracts'
 import { CURRENT_SCHEMA_VERSION, SocialDatabase } from './database'
-import { PluginService } from './plugin-service'
+import {
+  XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID,
+  xiaohongshuPluginManifestV2
+} from './plugins/builtin-manifests'
 
 describe('SocialDatabase', () => {
   let database: SocialDatabase
@@ -86,13 +90,9 @@ describe('SocialDatabase', () => {
 
   it('deleting a group does not delete its account', () => {
     const group = database.createGroup({ name: '工作账号', color: '#36a76c' })
-    const account = database.createAccount({
-      platformId: 'weibo',
-      alias: '资讯号',
-      syncMode: 'disabled'
-    })
+    const account = createManagedAccount(database, 'remote-grouped', '资讯号')
     database.updateAccount({ id: account.id, groupIds: [group.id] })
-    database.commitImport(importPayload('remote-grouped', 'content-grouped'), importMetadata(account.id))
+    commitManagedDataset(database, account.id, standardDataset('remote-grouped', 'content-grouped'))
 
     database.removeGroup(group.id)
 
@@ -224,17 +224,17 @@ describe('SocialDatabase', () => {
     expect(database.getAccount(second.id)?.alias).toBe('账号 B')
   })
 
-  it('keeps content and snapshots idempotent across repeated imports', () => {
-    const account = createAccount(database, '账号 A')
-    const payload = importPayload('remote-account-a', 'content-a')
+  it('keeps content and snapshots idempotent across repeated managed syncs', () => {
+    const account = createManagedAccount(database, 'remote-account-a', '账号 A')
+    const payload = standardDataset('remote-account-a', 'content-a')
 
-    expect(database.commitImport(payload, importMetadata(account.id))).toEqual({
+    expect(commitManagedDataset(database, account.id, payload, '2026-07-13T08:00:01.000Z')).toEqual({
       newContentCount: 1,
       updatedContentCount: 0,
       snapshotCount: 1,
       skippedSnapshotCount: 0
     })
-    expect(database.commitImport(payload, importMetadata(account.id))).toEqual({
+    expect(commitManagedDataset(database, account.id, payload, '2026-07-13T08:01:01.000Z')).toEqual({
       newContentCount: 0,
       updatedContentCount: 1,
       snapshotCount: 0,
@@ -244,8 +244,7 @@ describe('SocialDatabase', () => {
     expect(database.getStorageCounts()).toMatchObject({
       contentCount: 1,
       contentSnapshotCount: 1,
-      accountSnapshotCount: 1,
-      importCount: 2
+      accountSnapshotCount: 1
     })
     const content = database.listContents({ accountId: account.id })[0]
     expect(content?.remoteId).toBe('content-a')
@@ -259,11 +258,11 @@ describe('SocialDatabase', () => {
   })
 
   it('skips a later content snapshot when every metric is unchanged', () => {
-    const account = createAccount(database, '账号 A')
-    const first = importPayload('remote-account-a', 'content-a')
-    database.commitImport(first, importMetadata(account.id))
+    const account = createManagedAccount(database, 'remote-account-a', '账号 A')
+    const first = standardDataset('remote-account-a', 'content-a')
+    commitManagedDataset(database, account.id, first, '2026-07-13T08:00:01.000Z')
     const capturedAt = '2026-07-14T09:00:00.000Z'
-    const unchanged: NormalizedImportPayload = {
+    const unchanged: StandardDataset = {
       ...first,
       capturedAt,
       contents: first.contents.map((content) => ({
@@ -272,7 +271,7 @@ describe('SocialDatabase', () => {
       }))
     }
 
-    expect(database.commitImport(unchanged, importMetadata(account.id))).toEqual({
+    expect(commitManagedDataset(database, account.id, unchanged, '2026-07-14T09:00:01.000Z')).toEqual({
       newContentCount: 0,
       updatedContentCount: 1,
       snapshotCount: 0,
@@ -283,24 +282,24 @@ describe('SocialDatabase', () => {
   })
 
   it('attaches only the newest account snapshot when listing accounts', () => {
-    const account = createAccount(database, '账号快照')
-    const first = importPayload('snapshot-owner', 'snapshot-content')
-    database.commitImport(first, importMetadata(account.id))
-    const second: NormalizedImportPayload = {
+    const account = createManagedAccount(database, 'snapshot-owner', '账号快照')
+    const first = standardDataset('snapshot-owner', 'snapshot-content')
+    commitManagedDataset(database, account.id, first, '2026-07-13T08:00:01.000Z')
+    const second: StandardDataset = {
       ...first,
       capturedAt: '2026-07-14T08:00:00.000Z',
       profile: { ...first.profile!, followers: 99 },
       contents: []
     }
-    database.commitImport(second, importMetadata(account.id))
+    commitManagedDataset(database, account.id, second, '2026-07-14T08:00:01.000Z')
 
     expect(database.listAccounts().find((item) => item.id === account.id)?.latestSnapshot)
       .toMatchObject({ followers: 99, capturedAt: second.capturedAt })
   })
 
-  it('commits managed sync data idempotently without creating a file import batch', () => {
+  it('commits managed sync data idempotently', () => {
     const account = createManagedAccount(database, 'managed-owner', '本人账号')
-    const payload = importPayload('managed-owner', 'managed-note-1')
+    const payload = standardDataset('managed-owner', 'managed-note-1')
     const metadata = managedSyncMetadata(database, account.id, '2026-07-13T08:00:01.000Z')
 
     expect(database.markManagedSyncStarted(account.id, '2026-07-13T07:59:59.000Z')).toMatchObject({
@@ -328,7 +327,6 @@ describe('SocialDatabase', () => {
       contentCount: 1,
       contentSnapshotCount: 1,
       accountSnapshotCount: 1,
-      importCount: 0,
       jobCount: 1
     })
 
@@ -347,7 +345,6 @@ describe('SocialDatabase', () => {
       contentCount: 1,
       contentSnapshotCount: 1,
       accountSnapshotCount: 1,
-      importCount: 0,
       jobCount: 2
     })
     expect(database.getPluginState('xiaohongshu-session-api')).toMatchObject({ successCount: 2 })
@@ -359,7 +356,7 @@ describe('SocialDatabase', () => {
       remoteId: 'auto-owner', remoteName: '初始昵称'
     }, '2026-07-13T07:00:00.000Z')
     const account = database.updateAccount({ id: created.id, syncEnabled: true })
-    const payload = importPayload('auto-owner', 'auto-note')
+    const payload = standardDataset('auto-owner', 'auto-note')
     payload.profile = {
       ...payload.profile!,
       remoteName: '同步后的昵称',
@@ -385,7 +382,7 @@ describe('SocialDatabase', () => {
 
   it('rejects a managed identity mismatch atomically and records a sanitized failure state', () => {
     const account = createManagedAccount(database, 'bound-owner', '已绑定账号')
-    const payload = importPayload('different-owner', 'must-not-be-written')
+    const payload = standardDataset('different-owner', 'must-not-be-written')
     database.markManagedSyncStarted(account.id, '2026-07-13T08:00:00.000Z')
     const metadata = managedSyncMetadata(database, account.id, '2026-07-13T08:00:01.000Z')
     const before = database.getStorageCounts()
@@ -423,27 +420,11 @@ describe('SocialDatabase', () => {
     )).toThrow('已核验的本人账号身份')
   })
 
-  it('rolls back every write when an imported identity conflicts', () => {
-    const first = createAccount(database, '账号 A')
-    const second = createAccount(database, '账号 B')
-    database.commitImport(importPayload('same-remote-id', 'content-a'), importMetadata(first.id))
-    const before = database.getStorageCounts()
-
-    expect(() => database.commitImport(
-      importPayload('same-remote-id', 'content-b'),
-      importMetadata(second.id)
-    )).toThrow('已经绑定')
-
-    expect(database.getStorageCounts()).toEqual(before)
-    expect(database.getAccount(second.id)?.remoteId).toBeNull()
-    expect(database.listContents({ accountId: second.id })).toEqual([])
-  })
-
   it('isolates account data when clearing one account', () => {
-    const first = createAccount(database, '账号 A')
-    const second = createAccount(database, '账号 B')
-    database.commitImport(importPayload('remote-a', 'content-a'), importMetadata(first.id))
-    database.commitImport(importPayload('remote-b', 'content-b'), importMetadata(second.id))
+    const first = createManagedAccount(database, 'remote-a', '账号 A')
+    const second = createManagedAccount(database, 'remote-b', '账号 B')
+    commitManagedDataset(database, first.id, standardDataset('remote-a', 'content-a'))
+    commitManagedDataset(database, second.id, standardDataset('remote-b', 'content-b'))
 
     database.clearAccountData(first.id)
 
@@ -454,14 +435,13 @@ describe('SocialDatabase', () => {
       accountCount: 2,
       contentCount: 1,
       contentSnapshotCount: 1,
-      accountSnapshotCount: 1,
-      importCount: 1
+      accountSnapshotCount: 1
     })
   })
 
   it('disconnects without deleting history and purges only on explicit removal', () => {
-    const account = createAccount(database, '账号 A')
-    database.commitImport(importPayload('remote-a', 'content-a'), importMetadata(account.id))
+    const account = createManagedAccount(database, 'remote-a', '账号 A')
+    commitManagedDataset(database, account.id, standardDataset('remote-a', 'content-a'))
 
     const disconnected = database.disconnectAccount(account.id)
     expect(disconnected.connectionStatus).toBe('disconnected')
@@ -483,8 +463,7 @@ describe('SocialDatabase', () => {
       accountCount: 0,
       contentCount: 0,
       contentSnapshotCount: 0,
-      accountSnapshotCount: 0,
-      importCount: 0
+      accountSnapshotCount: 0
     })
   })
 
@@ -601,8 +580,7 @@ describe('SocialDatabase migrations', () => {
     expect(database.getStorageCounts()).toMatchObject({
       accountCount: 1,
       contentCount: 0,
-      jobCount: 0,
-      importCount: 0
+      jobCount: 0
     })
   })
 
@@ -779,9 +757,9 @@ describe('SocialDatabase migrations', () => {
     directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
     const path = join(directory, 'v7.sqlite')
     database = new SocialDatabase(path)
-    const account = createAccount(database, '历史快照账号')
-    const payload = importPayload('snapshot-owner', 'snapshot-content')
-    database.commitImport(payload, importMetadata(account.id))
+    const account = createManagedAccount(database, 'snapshot-owner', '历史快照账号')
+    const payload = standardDataset('snapshot-owner', 'snapshot-content')
+    commitManagedDataset(database, account.id, payload)
     const contentId = database.listContents({ accountId: account.id })[0]!.id
     database.close()
     database = null
@@ -805,6 +783,51 @@ describe('SocialDatabase migrations', () => {
     expect(database.getContentDetail(contentId).snapshots.map((snapshot) => snapshot.views))
       .toEqual([120, 121])
   })
+
+  it('drops legacy import bookkeeping without deleting synchronized business data in v10', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v9.sqlite')
+    database = new SocialDatabase(path)
+    const account = createManagedAccount(database, 'preserved-owner', '保留账号')
+    commitManagedDataset(database, account.id, standardDataset('preserved-owner', 'preserved-content'))
+    const contentId = database.listContents({ accountId: account.id })[0]!.id
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    previous.exec(`
+      CREATE TABLE import_batches (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+      ) STRICT;
+      INSERT INTO import_batches (id, account_id, created_at)
+      VALUES ('legacy-import', '${account.id}', '2026-07-13T08:00:00.000Z');
+      PRAGMA user_version = 9;
+    `)
+    previous.close()
+
+    database = new SocialDatabase(path)
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
+    expect(database.getAccount(account.id)).not.toBeNull()
+    expect(database.getContentDetail(contentId).remoteId).toBe('preserved-content')
+    expect(database.getContentDetail(contentId).snapshots).toHaveLength(1)
+    expect(database.getStorageCounts()).toMatchObject({
+      accountCount: 1,
+      contentCount: 1,
+      accountSnapshotCount: 1,
+      contentSnapshotCount: 1,
+      jobCount: 1
+    })
+    database.close()
+    database = null
+
+    const inspected = new DatabaseSync(path, { readOnly: true })
+    expect(inspected.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'import_batches'
+    `).get()).toBeUndefined()
+    inspected.close()
+  })
 })
 
 describe('SocialDatabase backup images', () => {
@@ -821,18 +844,64 @@ describe('SocialDatabase backup images', () => {
     directory = mkdtempSync(join(tmpdir(), 'social-vault-backup-'))
     database = new SocialDatabase(join(directory, 'vault.sqlite'))
     const group = database.createGroup({ name: '备份分组', color: '#339cff' })
-    const account = database.createAccount({
-      platformId: 'xiaohongshu', alias: '备份账号', syncMode: 'profile_only'
-    })
+    const account = createManagedAccount(database, 'remote-backup', '备份账号')
     database.applyManagedIdentity(account.id, {
-      remoteId: 'remote-backup',
-      remoteName: '备份账号',
-      avatarCacheKey: 'abc123.webp',
-      avatarMime: 'image/webp'
-    }, '2026-07-13T07:00:00.000Z')
+      remoteId: 'remote-backup', remoteName: '备份账号',
+      avatarCacheKey: 'abc123.webp', avatarMime: 'image/webp'
+    }, '2026-07-13T07:00:01.000Z')
     database.updateAccount({ id: account.id, groupIds: [group.id] })
-    database.commitImport(importPayload('remote-backup', 'content-backup'), importMetadata(account.id))
+    commitManagedDataset(database, account.id, standardDataset('remote-backup', 'content-backup'))
+    const externalManifest: PluginManifestV2 = {
+      schemaVersion: 2,
+      id: 'backup.example',
+      name: 'Backup example',
+      version: '1.0.0',
+      description: 'Verifies portable plugin state',
+      license: 'MIT',
+      publisher: { id: 'example.publisher', name: 'Example', keyId: 'example.publisher.main' },
+      minimumAppVersion: '0.5.0',
+      sdkVersion: '1.0.0',
+      contributions: [{
+        id: 'backup.example.action',
+        kind: 'action',
+        name: 'Backup action',
+        description: 'Test action',
+        entry: 'entries/action.js',
+        runtime: 'quickjs',
+        permissions: ['network.https'],
+        placements: ['plugin-center']
+      }]
+    }
+    database.upsertPluginPackage(externalManifest, {
+      source: 'catalog', status: 'active', enabled: true,
+      packageHash: `sha256:${'b'.repeat(64)}`,
+      publisherKeyId: externalManifest.publisher.keyId
+    })
+    database.savePluginConfig({
+      pluginId: externalManifest.id,
+      contributionId: externalManifest.contributions[0]!.id,
+      publicConfig: { url: 'https://hooks.example.test/events' },
+      encryptedSecrets: { token: 'encrypted-secret-that-must-not-be-backed-up' }
+    })
     const image = database.createBackupImage()
+
+    const portablePath = join(directory, 'portable-inspection.sqlite')
+    writeFileSync(portablePath, image)
+    const portable = new DatabaseSync(portablePath, { readOnly: true })
+    expect(portable.prepare(`
+      SELECT encrypted_secrets_json FROM plugin_configs
+      WHERE plugin_id = ? AND contribution_id = ?
+    `).get(externalManifest.id, externalManifest.contributions[0]!.id)).toEqual({
+      encrypted_secrets_json: '{}'
+    })
+    expect(portable.prepare(`
+      SELECT enabled, package_status, last_error FROM plugin_installations WHERE plugin_id = ?
+    `).get(externalManifest.id)).toEqual({
+      enabled: 0,
+      package_status: 'disabled',
+      last_error: '恢复后需要从插件目录重新安装'
+    })
+    portable.close()
 
     database.updateAccount({ id: account.id, alias: '已修改', groupIds: [] })
     expect(() => database?.restoreBackupImage(image, () => {
@@ -877,9 +946,18 @@ function createManagedAccount(database: SocialDatabase, remoteId: string, remote
 }
 
 function managedSyncMetadata(database: SocialDatabase, accountId: string, finishedAt: string) {
-  const plugins = new PluginService(database)
-  plugins.initialize()
-  plugins.setEnabled('xiaohongshu-session-api', true)
+  database.upsertPluginPackage(xiaohongshuPluginManifestV2, {
+    source: 'builtin',
+    status: 'active',
+    enabled: true,
+    packageHash: 'builtin:xiaohongshu-session-api@0.3.0',
+    publisherKeyId: xiaohongshuPluginManifestV2.publisher.keyId
+  })
+  database.setPluginContributionEnabled(
+    xiaohongshuPluginManifestV2.id,
+    XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID,
+    true
+  )
   const job = database.createJob({
     kind: 'managed_sync',
     accountId,
@@ -898,17 +976,19 @@ function managedSyncMetadata(database: SocialDatabase, accountId: string, finish
   }
 }
 
-function importMetadata(accountId: string) {
-  return {
-    accountId,
-    pluginId: 'builtin.file',
-    fileName: 'C:\\private\\exports\\social-data.json',
-    fileHash: `hash-${accountId}`,
-    confirmOwnership: true
-  }
+function commitManagedDataset(
+  database: SocialDatabase,
+  accountId: string,
+  dataset: StandardDataset,
+  finishedAt = '2026-07-13T08:00:01.000Z'
+) {
+  const startedAt = new Date(Date.parse(finishedAt) - 1_000).toISOString()
+  database.markManagedSyncStarted(accountId, startedAt)
+  const metadata = managedSyncMetadata(database, accountId, finishedAt)
+  return database.commitManagedSync(dataset, metadata).stats
 }
 
-function importPayload(remoteAccountId: string, remoteContentId: string): NormalizedImportPayload {
+function standardDataset(remoteAccountId: string, remoteContentId: string): StandardDataset {
   return {
     capturedAt: '2026-07-13T08:00:00.000Z',
     profile: {

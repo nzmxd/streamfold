@@ -1,0 +1,41 @@
+{
+  "name": "@streamfold/plugin-sdk",
+  "version": "1.0.0",
+  "description": "TypeScript contracts, test host and packaging CLI for Streamfold plugins",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "bin": {
+    "streamfold-plugin": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./test-host": {
+      "types": "./dist/test-host.d.ts",
+      "import": "./dist/test-host.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "yauzl": "^3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/yauzl": "^3.4.0",
+    "typescript": "^6.0.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

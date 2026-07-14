@@ -1,6 +1,5 @@
 import {
   contentTypes,
-  platformIds,
   type AnalyticsQuery,
   type BulkUpdateAccountsInput,
   type ConfirmSessionApiIdentityInput,
@@ -10,6 +9,10 @@ import {
   type CreateGroupInput,
   type ExportDataInput,
   type MoveGroupInput,
+  pluginPermissions,
+  type CreatePluginScheduleInput,
+  type SavePluginConfigInput,
+  type UpsertPluginGrantInput,
   type RestoreEncryptedBackupInput,
   type SyncMode,
   type UpdateContentInput,
@@ -22,10 +25,14 @@ const syncModes = ['profile_only', 'recent_20', 'recent_100', 'disabled'] as con
 
 export function parseCreateAccount(value: unknown): CreateAccountInput {
   const record = asRecord(value)
-  const platformId = asEnum(record.platformId, platformIds, '平台')
+  const platformId = asPlatformId(record.platformId)
   const syncMode = asEnum(record.syncMode, syncModes, '同步范围') as SyncMode
-  if (record.alias === undefined) return { platformId, syncMode }
-  return { platformId, alias: asText(record.alias, '本地别名', 0, 40), syncMode }
+  const adapterContributionId = record.adapterContributionId === undefined
+    ? undefined
+    : asPlatformId(record.adapterContributionId)
+  const result: CreateAccountInput = { platformId, syncMode, ...(adapterContributionId ? { adapterContributionId } : {}) }
+  if (record.alias === undefined) return result
+  return { ...result, alias: asText(record.alias, '本地别名', 0, 40) }
 }
 
 export function parseUpdateAccount(value: unknown): UpdateAccountInput {
@@ -110,7 +117,7 @@ export function parseContentQuery(value: unknown): ContentQuery {
   const record = asRecord(value)
   const result: ContentQuery = {}
   if (record.accountId !== undefined) result.accountId = asId(record.accountId)
-  if (record.platformId !== undefined) result.platformId = asEnum(record.platformId, platformIds, '平台')
+  if (record.platformId !== undefined) result.platformId = asPlatformId(record.platformId)
   if (record.type !== undefined) result.type = asEnum(record.type, contentTypes, '内容类型')
   if (record.query !== undefined) result.query = asText(record.query, '搜索词', 0, 100)
   if (record.from !== undefined) result.from = asDate(record.from, '开始日期')
@@ -133,7 +140,7 @@ export function parseAnalyticsQuery(value: unknown): AnalyticsQuery {
   const record = asRecord(value)
   const result: AnalyticsQuery = {}
   if (record.accountId !== undefined) result.accountId = asId(record.accountId)
-  if (record.platformId !== undefined) result.platformId = asEnum(record.platformId, platformIds, '平台')
+  if (record.platformId !== undefined) result.platformId = asPlatformId(record.platformId)
   if (record.days !== undefined) {
     const days = asInteger(record.days, '统计周期', 7, 365)
     if (![7, 30, 90, 365].includes(days)) throw new Error('统计周期无效')
@@ -184,13 +191,80 @@ export function parseRestoreEncryptedBackup(value: unknown): RestoreEncryptedBac
   }
 }
 
+export function parsePluginGrant(value: unknown): UpsertPluginGrantInput {
+  const record = asRecord(value)
+  return {
+    pluginId: asId(record.pluginId),
+    contributionId: asText(record.contributionId, '贡献点 ID', 1, 160),
+    permissions: asStringArray(record.permissions, '插件权限', 32, 80)
+      .map((permission) => asEnum(permission, pluginPermissions, '插件权限')),
+    accountIds: asStringArray(record.accountIds, '账号', 500, 160),
+    groupIds: asStringArray(record.groupIds, '分组', 500, 160),
+    dataScopes: asStringArray(record.dataScopes, '数据范围', 4, 20)
+      .map((scope) => asEnum(scope, ['account', 'profile', 'content', 'metrics'] as const, '数据范围')),
+    networkOrigins: asStringArray(record.networkOrigins, '网络目标', 32, 2_048)
+  }
+}
+
+export function parsePluginConfig(value: unknown): SavePluginConfigInput {
+  const record = asRecord(value)
+  const values = asJsonObject(record.values, '插件配置')
+  const secretsRecord = record.secrets === undefined ? undefined : asRecord(record.secrets)
+  const secrets = secretsRecord === undefined ? undefined : Object.fromEntries(
+    Object.entries(secretsRecord).map(([key, secret]) => [
+      asText(key, '密钥字段', 1, 128),
+      asText(secret, '插件密钥', 1, 4_096)
+    ])
+  )
+  return {
+    pluginId: asId(record.pluginId),
+    contributionId: asText(record.contributionId, '贡献点 ID', 1, 160),
+    values,
+    ...(secrets ? { secrets } : {}),
+    ...(record.clearSecrets === undefined ? {} : {
+      clearSecrets: asStringArray(record.clearSecrets, '清除密钥字段', 64, 128)
+    })
+  }
+}
+
+export function parseCreatePluginSchedule(value: unknown): CreatePluginScheduleInput {
+  const record = asRecord(value)
+  return {
+    pluginId: asId(record.pluginId),
+    contributionId: asText(record.contributionId, '贡献点 ID', 1, 160),
+    accountIds: asStringArray(record.accountIds, '账号', 500, 160),
+    groupIds: asStringArray(record.groupIds, '分组', 500, 160),
+    intervalMinutes: asInteger(record.intervalMinutes, '调度间隔', 5, 525_600),
+    enabled: asBoolean(record.enabled, '计划开关')
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('请求参数无效')
   return value as Record<string, unknown>
 }
 
+function asJsonObject(value: unknown, label: string): Record<string, unknown> {
+  const record = asRecord(value)
+  let serialized = ''
+  try {
+    serialized = JSON.stringify(record)
+  } catch {
+    throw new Error(`${label}无效`)
+  }
+  if (Buffer.byteLength(serialized, 'utf8') > 16 * 1024) throw new Error(`${label}过大`)
+  const parsed = JSON.parse(serialized) as unknown
+  return asRecord(parsed)
+}
+
 function asId(value: unknown): string {
   return asText(value, 'ID', 1, 80)
+}
+
+function asPlatformId(value: unknown): string {
+  const id = asText(value, '平台', 2, 128)
+  if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(id)) throw new Error('平台无效')
+  return id
 }
 
 function asText(value: unknown, label: string, min: number, max: number): string {

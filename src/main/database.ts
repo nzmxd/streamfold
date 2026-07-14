@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
+  copyFileSync,
   existsSync,
   readFileSync,
   renameSync,
@@ -39,16 +40,21 @@ import type {
 } from '../shared/content-contracts'
 import type { JobKind, JobRecord, JobStatus } from '../shared/job-contracts'
 import type {
-  PluginAvailability,
-  PluginInstallation,
-  PluginManifest
-} from '../shared/plugin-contracts'
+  InstalledPluginPackage,
+  PluginEventDelivery,
+  PluginEventEnvelope,
+  PluginGrant,
+  PluginManifestV2,
+  PluginPackageSource,
+  PluginPackageStatus,
+  PluginRunRecord as ExtensionRunRecord,
+  PluginSchedule
+} from '../shared/plugin-host-contracts'
 import type {
-  ImportCommitMetadata,
-  ImportCommitStats,
-  NormalizedImportContent,
-  NormalizedImportProfile,
-  NormalizedImportPayload
+  DatasetCommitStats,
+  StandardContent,
+  StandardDataset,
+  StandardProfile
 } from './plugins/types'
 import { CURRENT_SCHEMA_VERSION, migrateDatabase, readUserVersion } from './storage/migrations'
 
@@ -70,20 +76,6 @@ export interface CreateJobInput {
 
 export type UpdateJobInput = Partial<Omit<JobRecord, 'id'>>
 
-export interface PluginRunRecordInput {
-  jobId: string
-  pluginId: string
-  accountId: string
-  status: 'succeeded' | 'failed'
-  startedAt: string
-  finishedAt: string
-  fileName: string
-  fileHash: string
-  result: Record<string, unknown> | null
-  errorCode: string
-  errorMessage: string
-}
-
 export interface ManagedSyncCommitMetadata {
   accountId: string
   pluginId: string
@@ -94,13 +86,37 @@ export interface ManagedSyncCommitMetadata {
 }
 
 export interface ManagedSyncCommitResult {
-  stats: ImportCommitStats
+  stats: DatasetCommitStats
   job: JobRecord
 }
 
-export type PluginStatePatch = Partial<Pick<PluginInstallation,
-  'enabled' | 'availability' | 'installedAt' | 'lastRunAt' | 'successCount' | 'failureCount' | 'lastError'
->>
+export interface UpsertPluginPackageOptions {
+  source: PluginPackageSource
+  status?: PluginPackageStatus
+  packageHash?: string
+  publisherKeyId?: string
+  enabled?: boolean
+  development?: boolean
+}
+
+export interface PluginConfigRecord {
+  pluginId: string
+  contributionId: string
+  publicConfig: Record<string, unknown>
+  encryptedSecrets: Record<string, string>
+  updatedAt: string
+}
+
+export interface PluginContributionRecord {
+  pluginId: string
+  contributionId: string
+  kind: string
+  enabled: boolean
+  runtime: string
+  consecutiveFailures: number
+  suspendedReason: string
+  updatedAt: string
+}
 
 export interface StorageCounts {
   accountCount: number
@@ -108,12 +124,12 @@ export interface StorageCounts {
   contentSnapshotCount: number
   accountSnapshotCount: number
   jobCount: number
-  importCount: number
 }
 
 interface AccountRow {
   id: string
   platform_id: PlatformId
+  adapter_contribution_id: string | null
   alias: string
   alias_customized: number
   remote_name: string
@@ -204,12 +220,92 @@ interface PluginRow {
   plugin_id: string
   manifest_json: string
   enabled: number
-  availability: PluginAvailability
+  availability: 'available' | 'planned' | 'disabled'
   installed_at: string | null
   last_run_at: string | null
   success_count: number
   failure_count: number
   last_error: string
+}
+
+/** Read-only bridge used once to migrate a pre-v10 enable flag into Manifest v2. */
+export interface LegacyPluginState {
+  enabled: boolean
+  availability: 'available' | 'planned' | 'disabled'
+  installedAt: string | null
+  lastRunAt: string | null
+  successCount: number
+  failureCount: number
+  lastError: string
+}
+
+interface PluginPackageRow extends PluginRow {
+  package_manifest_json: string
+  source: PluginPackageSource
+  package_status: PluginPackageStatus
+  package_hash: string
+  publisher_key_id: string
+  update_available: string | null
+  development: number
+  updated_at: string
+}
+
+interface PluginScheduleRow {
+  id: string
+  plugin_id: string
+  contribution_id: string
+  account_ids_json: string
+  group_ids_json: string
+  interval_minutes: number
+  enabled: number
+  next_run_at: string | null
+  last_run_at: string | null
+  consecutive_failures: number
+  suspended_reason: string
+  created_at: string
+  updated_at: string
+}
+
+interface PluginRunRow {
+  id: string
+  plugin_id: string
+  contribution_id: string
+  trigger_kind: ExtensionRunRecord['trigger']
+  status: ExtensionRunRecord['status']
+  account_id: string | null
+  event_id: string | null
+  attempt: number
+  started_at: string | null
+  finished_at: string | null
+  next_attempt_at: string | null
+  error_code: string
+  error_message: string
+  created_at: string
+}
+
+interface PluginEventRow {
+  id: string
+  type: PluginEventEnvelope['type']
+  schema_version: 1
+  source_plugin_id: string | null
+  account_id: string | null
+  content_id: string | null
+  payload_json: string
+  occurred_at: string
+}
+
+interface PluginDeliveryRow {
+  id: string
+  event_id: string
+  plugin_id: string
+  contribution_id: string
+  status: PluginEventDelivery['status']
+  attempt: number
+  next_attempt_at: string | null
+  error_code: string
+  error_message: string
+  created_at: string
+  updated_at: string
 }
 
 export class SocialDatabase {
@@ -232,9 +328,23 @@ export class SocialDatabase {
   createBackupImage(): Buffer {
     if (this.databasePath === ':memory:') throw new Error('内存数据库不能创建文件备份')
     checkpointDatabase(this.db)
-    const size = statSync(this.databasePath).size
-    if (size <= 0 || size > 48 * 1024 * 1024) throw new Error('本地数据库超过 48 MB 备份上限')
-    return readFileSync(this.databasePath)
+    const temporaryPath = `${this.databasePath}.portable-backup-${randomUUID()}.tmp`
+    try {
+      copyFileSync(this.databasePath, temporaryPath)
+      const portable = new DatabaseSync(temporaryPath)
+      try {
+        portable.exec('PRAGMA journal_mode = DELETE; PRAGMA foreign_keys = ON;')
+        sanitizePortablePluginState(portable)
+      } finally {
+        portable.close()
+      }
+      const size = statSync(temporaryPath).size
+      if (size <= 0 || size > 48 * 1024 * 1024) throw new Error('本地数据库超过 48 MB 备份上限')
+      return readFileSync(temporaryPath)
+    } finally {
+      rmSync(temporaryPath, { force: true })
+      removeSqliteSidecars(temporaryPath)
+    }
   }
 
   restoreBackupImage(image: Uint8Array, afterReplace?: () => void): void {
@@ -260,6 +370,7 @@ export class SocialDatabase {
       renameSync(temporaryPath, this.databasePath)
 
       this.db = openDatabase(this.databasePath)
+      sanitizePortablePluginState(this.db)
       const now = new Date().toISOString()
       this.db.prepare(`
         UPDATE accounts SET connection_status = 'pending', status = 'pending', sync_enabled = 0,
@@ -334,14 +445,15 @@ export class SocialDatabase {
     })
     this.db.prepare(`
       INSERT INTO accounts (
-        id, platform_id, alias, alias_customized, remote_name, remote_id, status, connection_status,
+        id, platform_id, adapter_contribution_id, alias, alias_customized, remote_name, remote_id, status, connection_status,
         ownership_status, sync_enabled, sync_status, cooldown_until, last_sync_error,
         ownership_confirmed_at, identity_verified_at, note, tags_json, session_partition, sync_mode, is_default,
         created_at, updated_at, last_synced_at
-      ) VALUES (?, ?, ?, ?, '', NULL, ?, 'pending', 'unconfirmed', ?, 'idle', NULL, '',
+      ) VALUES (?, ?, ?, ?, ?, '', NULL, ?, 'pending', 'unconfirmed', ?, 'idle', NULL, '',
         NULL, NULL, '', '[]', ?, ?, 0, ?, ?, NULL)
     `).run(
-      id, input.platformId, alias, aliasCustomized ? 1 : 0, status,
+      id, input.platformId, input.adapterContributionId ?? defaultAdapterContributionId(input.platformId), alias,
+      aliasCustomized ? 1 : 0, status,
       syncEnabled ? 1 : 0, partition, input.syncMode, now, now
     )
     return requireAccount(this.getAccount(id))
@@ -401,8 +513,60 @@ export class SocialDatabase {
         const insert = this.db.prepare('INSERT INTO account_groups (account_id, group_id) VALUES (?, ?)')
         for (const groupId of next.groupIds) insert.run(current.id, groupId)
       }
+      this.enqueuePluginEvent({
+        id: randomUUID(),
+        type: 'account.updated.v1',
+        schemaVersion: 1,
+        occurredAt: now,
+        source: { app: 'streamfold', pluginId: null },
+        subject: { accountId: current.id, contentId: null },
+        data: {
+          accountId: current.id,
+          platformId: current.platformId,
+          alias: next.alias,
+          note: next.note,
+          tags: next.tags,
+          groupIds: next.groupIds,
+          syncEnabled: next.syncEnabled,
+          syncMode: next.syncMode
+        }
+      })
     })
     return requireAccount(this.getAccount(input.id))
+  }
+
+  setAccountAdapterContribution(
+    accountId: string,
+    contributionId: string,
+    expectedContributionId: string | null
+  ): Account {
+    if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(contributionId)) throw new Error('适配器贡献点 ID 无效')
+    const account = requireAccount(this.getAccount(accountId))
+    const now = new Date().toISOString()
+    const result = this.transaction(() => {
+      const updated = this.db.prepare(`
+        UPDATE accounts SET adapter_contribution_id = ?, sync_status = 'idle',
+          cooldown_until = NULL, last_sync_error = '', updated_at = ?
+        WHERE id = ? AND adapter_contribution_id IS ?
+      `).run(contributionId, now, accountId, expectedContributionId)
+      if (Number(updated.changes) !== 1) throw new Error('账号适配器绑定已变化，请刷新后重试')
+      this.enqueuePluginEvent({
+        id: randomUUID(),
+        type: 'account.updated.v1',
+        schemaVersion: 1,
+        occurredAt: now,
+        source: { app: 'streamfold', pluginId: null },
+        subject: { accountId, contentId: null },
+        data: {
+          accountId,
+          platformId: account.platformId,
+          adapterContributionId: contributionId,
+          previousAdapterContributionId: expectedContributionId
+        }
+      })
+    })
+    void result
+    return requireAccount(this.getAccount(accountId))
   }
 
   bulkUpdateAccounts(input: BulkUpdateAccountsInput): Account[] {
@@ -742,14 +906,32 @@ export class SocialDatabase {
   updateContent(input: UpdateContentInput): ContentDetail {
     if (!this.getContentRow(input.id)) throw new Error('内容不存在')
     const current = this.getContentDetail(input.id)
-    this.db.prepare(`
-      UPDATE contents SET note = ?, tags_json = ?, updated_at = ? WHERE id = ?
-    `).run(
-      input.note ?? current.note,
-      JSON.stringify(input.tags ?? current.tags),
-      new Date().toISOString(),
-      input.id
-    )
+    const now = new Date().toISOString()
+    this.transaction(() => {
+      this.db.prepare(`
+        UPDATE contents SET note = ?, tags_json = ?, updated_at = ? WHERE id = ?
+      `).run(
+        input.note ?? current.note,
+        JSON.stringify(input.tags ?? current.tags),
+        now,
+        input.id
+      )
+      this.enqueuePluginEvent({
+        id: randomUUID(),
+        type: 'content.updated.v1',
+        schemaVersion: 1,
+        occurredAt: now,
+        source: { app: 'streamfold', pluginId: null },
+        subject: { accountId: current.accountId, contentId: current.id },
+        data: {
+          accountId: current.accountId,
+          contentId: current.id,
+          remoteId: current.remoteId,
+          note: input.note ?? current.note,
+          tags: input.tags ?? current.tags
+        }
+      })
+    })
     return this.getContentDetail(input.id)
   }
 
@@ -764,7 +946,6 @@ export class SocialDatabase {
     this.transaction(() => {
       this.db.prepare('DELETE FROM account_snapshots WHERE account_id = ?').run(accountId)
       this.db.prepare('DELETE FROM contents WHERE account_id = ?').run(accountId)
-      this.db.prepare('DELETE FROM import_batches WHERE account_id = ?').run(accountId)
       this.db.prepare('DELETE FROM jobs WHERE account_id = ?').run(accountId)
       this.db.prepare('DELETE FROM sync_cursors WHERE account_id = ?').run(accountId)
       this.db.prepare(`
@@ -807,7 +988,7 @@ export class SocialDatabase {
   }
 
   commitManagedSync(
-    payload: NormalizedImportPayload,
+    payload: StandardDataset,
     metadata: ManagedSyncCommitMetadata
   ): ManagedSyncCommitResult {
     validateManagedSync(payload, metadata)
@@ -822,10 +1003,24 @@ export class SocialDatabase {
         job.kind !== 'managed_sync' || job.accountId !== account.id ||
         job.pluginId !== metadata.pluginId || job.status !== 'committing'
       ) throw new Error('受管同步任务状态已变更')
-      const plugin = requirePlugin(this.getPluginState(metadata.pluginId))
-      if (!plugin.enabled || plugin.availability !== 'available') {
-        throw new Error('同步期间插件已停用，未写入任何数据')
-      }
+      const installedPackage = this.getInstalledPluginPackage(metadata.pluginId)
+      if (installedPackage) {
+        const adapterId = account.adapterContributionId
+        const declared = adapterId && installedPackage.manifest.contributions.some((contribution) => (
+          contribution.kind === 'platform.adapter' && contribution.id === adapterId &&
+          contribution.platform.id === account.platformId
+        ))
+        const contributionState = adapterId
+          ? this.db.prepare(`
+              SELECT enabled, suspended_reason FROM plugin_contributions
+              WHERE plugin_id = ? AND contribution_id = ?
+            `).get(metadata.pluginId, adapterId) as unknown as { enabled: number; suspended_reason: string } | undefined
+          : undefined
+        if (installedPackage.status !== 'active' || !installedPackage.enabled || !declared ||
+          !contributionState?.enabled || contributionState.suspended_reason) {
+          throw new Error('同步期间插件或账号适配器已停用，未写入任何数据')
+        }
+      } else throw new Error('同步期间插件包不可用，未写入任何数据')
 
       const now = new Date().toISOString()
       const status = deriveAccountStatus({
@@ -866,7 +1061,7 @@ export class SocialDatabase {
         account.id
       )
       this.insertAccountSnapshot(account.id, profile, payload.capturedAt)
-      const stats = this.writeNormalizedContents(account.id, payload.contents, payload.capturedAt, now)
+      const stats = this.writeStandardContents(account.id, payload.contents, payload.capturedAt, now)
       const resultJson = JSON.stringify({ ...stats, warnings: payload.warnings })
       const jobUpdate = this.db.prepare(`
         UPDATE jobs SET status = 'succeeded', progress = 100, stage = '只读同步完成',
@@ -878,122 +1073,37 @@ export class SocialDatabase {
       const pluginUpdate = this.db.prepare(`
         UPDATE plugin_installations SET last_run_at = ?, success_count = success_count + 1,
           last_error = '', updated_at = ?
-        WHERE plugin_id = ? AND enabled = 1 AND availability = 'available'
+        WHERE plugin_id = ? AND enabled = 1 AND (
+          (package_manifest_json <> '{}' AND package_status = 'active') OR
+          (package_manifest_json = '{}' AND availability = 'available')
+        )
       `).run(metadata.finishedAt, metadata.finishedAt, metadata.pluginId)
       if (Number(pluginUpdate.changes) !== 1) throw new Error('同步期间插件已停用，未写入任何数据')
+      this.enqueuePluginEvent({
+        id: randomUUID(),
+        type: 'sync.completed.v1',
+        schemaVersion: 1,
+        occurredAt: metadata.finishedAt,
+        source: { app: 'streamfold', pluginId: metadata.pluginId },
+        subject: { accountId: account.id, contentId: null },
+        data: {
+          accountId: account.id,
+          platformId: account.platformId,
+          adapterContributionId: account.adapterContributionId,
+          capturedAt: payload.capturedAt,
+          profile,
+          contents: payload.contents,
+          warnings: payload.warnings,
+          stats
+        }
+      })
       return { stats, job: requireJob(this.getJob(job.id)) }
-    })
-  }
-
-  commitImport(payload: NormalizedImportPayload, metadata: ImportCommitMetadata): ImportCommitStats {
-    const account = requireAccount(this.getAccount(metadata.accountId))
-    const importJob = metadata.jobId ? requireJob(this.getJob(metadata.jobId)) : null
-    if (importJob && (
-      importJob.accountId !== metadata.accountId ||
-      importJob.pluginId !== metadata.pluginId ||
-      importJob.status !== 'committing'
-    )) throw new Error('导入任务状态已变更')
-    validateImport(payload, metadata)
-    if (payload.profile) {
-      if (account.remoteId && account.remoteId !== payload.profile.remoteId) {
-        throw new Error('导入身份与已绑定账号不一致')
-      }
-      this.assertRemoteIdentityAvailable(account.id, account.platformId, payload.profile.remoteId)
-    }
-    if (account.ownershipStatus === 'unconfirmed' && !metadata.confirmOwnership) {
-      throw new Error('导入前必须确认这是本人账号')
-    }
-
-    return this.transaction(() => {
-      const now = new Date().toISOString()
-
-      if (payload.profile) {
-        const profile = payload.profile
-        const ownershipStatus: OwnershipStatus = account.ownershipStatus === 'plugin_verified'
-          ? 'plugin_verified'
-          : 'user_confirmed'
-        const nextStatus = deriveAccountStatus({
-          // A local export proves only what the user confirmed about the file. It does not prove
-          // that the managed Chromium session is currently authenticated.
-          connectionStatus: account.connectionStatus,
-          syncEnabled: account.syncEnabled,
-          syncStatus: 'idle',
-          syncMode: account.syncMode
-        })
-        this.db.prepare(`
-          UPDATE accounts SET remote_id = ?, remote_name = ?, ownership_status = ?,
-            ownership_confirmed_at = ?, sync_status = 'idle',
-            cooldown_until = NULL, last_sync_error = '', status = ?, last_synced_at = ?,
-            updated_at = ? WHERE id = ?
-        `).run(
-          profile.remoteId,
-          profile.remoteName,
-          ownershipStatus,
-          now,
-          nextStatus,
-          payload.capturedAt,
-          now,
-          account.id
-        )
-        this.insertAccountSnapshot(account.id, profile, payload.capturedAt)
-      } else {
-        const ownershipStatus = metadata.confirmOwnership && account.ownershipStatus === 'unconfirmed'
-          ? 'user_confirmed'
-          : account.ownershipStatus
-        const nextStatus = deriveAccountStatus({
-          connectionStatus: account.connectionStatus,
-          syncEnabled: account.syncEnabled,
-          syncStatus: 'idle',
-          syncMode: account.syncMode
-        })
-        this.db.prepare(`
-          UPDATE accounts SET ownership_status = ?, ownership_confirmed_at = ?, sync_status = 'idle',
-            cooldown_until = NULL, last_sync_error = '', status = ?, last_synced_at = ?,
-            updated_at = ? WHERE id = ?
-        `).run(
-          ownershipStatus,
-          metadata.confirmOwnership ? now : account.ownershipConfirmedAt,
-          nextStatus,
-          payload.capturedAt,
-          now,
-          account.id
-        )
-      }
-
-      const stats = this.writeNormalizedContents(account.id, payload.contents, payload.capturedAt, now)
-      const resultJson = JSON.stringify(stats)
-      this.db.prepare(`
-        INSERT INTO import_batches (
-          id, account_id, plugin_id, file_name, file_hash, captured_at,
-          new_content_count, updated_content_count, snapshot_count, skipped_snapshot_count,
-          warnings_json, created_at, job_id, status, started_at, finished_at,
-          result_json, error_code, error_message
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', ?, ?, ?, '', '')
-      `).run(
-        randomUUID(), account.id, metadata.pluginId, safeFileName(metadata.fileName),
-        metadata.fileHash, payload.capturedAt, stats.newContentCount, stats.updatedContentCount,
-        stats.snapshotCount, stats.skippedSnapshotCount, JSON.stringify(payload.warnings), now,
-        metadata.jobId ?? null, importJob?.startedAt ?? now, now, resultJson
-      )
-      if (metadata.jobId) {
-        const jobResult = this.db.prepare(`
-          UPDATE jobs SET status = 'succeeded', progress = 100, stage = '导入完成',
-            result_json = ?, error_code = '', error_message = '', finished_at = ?
-          WHERE id = ? AND status = 'committing'
-        `).run(resultJson, now, metadata.jobId)
-        if (Number(jobResult.changes) !== 1) throw new Error('导入任务状态已变更')
-        this.db.prepare(`
-          UPDATE plugin_installations SET last_run_at = ?, success_count = success_count + 1,
-            last_error = '', updated_at = ? WHERE plugin_id = ?
-        `).run(now, now, metadata.pluginId)
-      }
-      return stats
     })
   }
 
   private insertAccountSnapshot(
     accountId: string,
-    profile: NormalizedImportProfile,
+    profile: StandardProfile,
     capturedAt: string
   ): void {
     this.db.prepare(`
@@ -1010,17 +1120,17 @@ export class SocialDatabase {
     )
   }
 
-  private writeNormalizedContents(
+  private writeStandardContents(
     accountId: string,
-    sourceContents: NormalizedImportContent[],
+    sourceContents: StandardContent[],
     firstCapturedAt: string,
     updatedAt: string
-  ): ImportCommitStats {
+  ): DatasetCommitStats {
     let newContentCount = 0
     let updatedContentCount = 0
     let snapshotCount = 0
     let skippedSnapshotCount = 0
-    const contents = dedupeImportedContents(sourceContents)
+    const contents = dedupeStandardContents(sourceContents)
     const findContent = this.db.prepare('SELECT id FROM contents WHERE account_id = ? AND remote_id = ?')
     const insertContent = this.db.prepare(`
       INSERT INTO contents (
@@ -1172,121 +1282,547 @@ export class SocialDatabase {
     return rows.map(({ id }) => requireJob(this.getJob(id)))
   }
 
-  getPluginState(id: string): PluginInstallation | null {
+  getPluginState(id: string): LegacyPluginState | null {
     const row = this.db.prepare('SELECT * FROM plugin_installations WHERE plugin_id = ?').get(id) as unknown as PluginRow | undefined
     return row ? mapPlugin(row) : null
   }
 
-  isPluginEnabled(id: string): boolean {
-    const state = this.getPluginState(id)
-    return state?.enabled === true && state.availability === 'available'
-  }
-
-  listPluginStates(): PluginInstallation[] {
-    const rows = this.db.prepare('SELECT * FROM plugin_installations ORDER BY plugin_id').all() as unknown as PluginRow[]
-    return rows.map(mapPlugin)
-  }
-
-  upsertPluginState(manifest: PluginManifest, patch: PluginStatePatch = {}): PluginInstallation {
-    const current = this.getPluginState(manifest.id)
+  upsertPluginPackage(
+    manifest: PluginManifestV2,
+    options: UpsertPluginPackageOptions
+  ): InstalledPluginPackage {
+    const current = this.getInstalledPluginPackage(manifest.id)
     const now = new Date().toISOString()
-    const state = {
-      enabled: patch.enabled ?? current?.enabled ?? false,
-      availability: patch.availability ?? current?.availability ?? 'available',
-      installedAt: patch.installedAt === undefined ? (current?.installedAt ?? now) : patch.installedAt,
-      lastRunAt: patch.lastRunAt === undefined ? (current?.lastRunAt ?? null) : patch.lastRunAt,
-      successCount: patch.successCount ?? current?.successCount ?? 0,
-      failureCount: patch.failureCount ?? current?.failureCount ?? 0,
-      lastError: patch.lastError ?? current?.lastError ?? ''
-    }
-    this.db.prepare(`
-      INSERT INTO plugin_installations (
-        plugin_id, manifest_json, enabled, availability, installed_at, last_run_at,
-        success_count, failure_count, last_error, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(plugin_id) DO UPDATE SET
-        manifest_json = excluded.manifest_json,
-        enabled = excluded.enabled,
-        availability = excluded.availability,
-        installed_at = excluded.installed_at,
-        last_run_at = excluded.last_run_at,
-        success_count = excluded.success_count,
-        failure_count = excluded.failure_count,
-        last_error = excluded.last_error,
-        updated_at = excluded.updated_at
-    `).run(
-      manifest.id, JSON.stringify(manifest), state.enabled ? 1 : 0, state.availability,
-      state.installedAt, state.lastRunAt, state.successCount, state.failureCount,
-      state.lastError, now
-    )
-    return requirePlugin(this.getPluginState(manifest.id))
-  }
-
-  setPluginEnabled(id: string, enabled: boolean): PluginInstallation {
-    if (!this.getPluginState(id)) throw new Error('插件不存在')
-    this.db.prepare('UPDATE plugin_installations SET enabled = ?, updated_at = ? WHERE plugin_id = ?')
-      .run(enabled ? 1 : 0, new Date().toISOString(), id)
-    return requirePlugin(this.getPluginState(id))
-  }
-
-  recordPluginRun(record: PluginRunRecordInput): void {
-    requireAccount(this.getAccount(record.accountId))
-    const state = this.getPluginState(record.pluginId)
-    if (!state) throw new Error('插件不存在')
-    const fileName = safeFileName(record.fileName)
-    const result = record.result ?? {}
-    const newContentCount = safeCount(result.newContentCount)
-    const updatedContentCount = safeCount(result.updatedContentCount)
-    const snapshotCount = safeCount(result.snapshotCount)
-    const skippedSnapshotCount = safeCount(result.skippedSnapshotCount)
+    const installedAt = current?.installedAt ?? now
+    const enabled = options.enabled ?? current?.enabled ?? false
+    const status = options.status ?? current?.status ?? 'active'
+    const packageHash = options.packageHash ?? current?.packageHash ?? ''
+    const publisherKeyId = options.publisherKeyId ?? manifest.publisher.keyId
+    const development = options.development ?? options.source === 'local_development'
+    const enableNewContributions = enabled && current === null
     this.transaction(() => {
-      const alreadyRecorded = this.db.prepare('SELECT 1 FROM import_batches WHERE job_id = ?').get(record.jobId)
-      if (alreadyRecorded) return
       this.db.prepare(`
-        UPDATE plugin_installations SET last_run_at = ?,
-          success_count = success_count + ?, failure_count = failure_count + ?,
-          last_error = ?, updated_at = ? WHERE plugin_id = ?
+        INSERT INTO plugin_installations (
+          plugin_id, manifest_json, package_manifest_json, enabled, availability,
+          installed_at, last_run_at, success_count, failure_count, last_error,
+          source, package_status, package_hash, publisher_key_id, update_available,
+          development, updated_at
+        ) VALUES (?, '{}', ?, ?, 'available', ?, NULL, 0, 0, '', ?, ?, ?, ?, NULL, ?, ?)
+        ON CONFLICT(plugin_id) DO UPDATE SET
+          package_manifest_json = excluded.package_manifest_json,
+          enabled = excluded.enabled,
+          source = excluded.source,
+          package_status = excluded.package_status,
+          package_hash = excluded.package_hash,
+          publisher_key_id = excluded.publisher_key_id,
+          development = excluded.development,
+          updated_at = excluded.updated_at
       `).run(
-        record.finishedAt, record.status === 'succeeded' ? 1 : 0,
-        record.status === 'failed' ? 1 : 0,
-        record.status === 'failed' ? record.errorMessage : '',
-        new Date().toISOString(), record.pluginId
+        manifest.id,
+        JSON.stringify(manifest),
+        enabled ? 1 : 0,
+        installedAt,
+        options.source,
+        status,
+        packageHash,
+        publisherKeyId,
+        development ? 1 : 0,
+        now
       )
-
-      const pendingBatch = record.status === 'succeeded'
-        ? this.db.prepare(`
-            SELECT id FROM import_batches
-            WHERE account_id = ? AND plugin_id = ? AND file_hash = ? AND job_id IS NULL
-            ORDER BY created_at DESC LIMIT 1
-          `).get(record.accountId, record.pluginId, record.fileHash) as unknown as { id: string } | undefined
-        : undefined
-      if (pendingBatch) {
+      const contributionIds = manifest.contributions.map((contribution) => contribution.id)
+      for (const contribution of manifest.contributions) {
         this.db.prepare(`
-          UPDATE import_batches SET job_id = ?, status = ?, started_at = ?, finished_at = ?,
-            result_json = ?, error_code = ?, error_message = ?, file_name = ? WHERE id = ?
+          INSERT INTO plugin_contributions (
+            plugin_id, contribution_id, kind, manifest_json, enabled, runtime,
+            consecutive_failures, suspended_reason, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 0, '', ?)
+          ON CONFLICT(plugin_id, contribution_id) DO UPDATE SET
+            kind = excluded.kind,
+            manifest_json = excluded.manifest_json,
+            runtime = excluded.runtime,
+            updated_at = excluded.updated_at
         `).run(
-          record.jobId, record.status, record.startedAt, record.finishedAt,
-          record.result === null ? null : JSON.stringify(record.result), record.errorCode,
-          record.errorMessage, fileName, pendingBatch.id
-        )
-      } else {
-        this.db.prepare(`
-          INSERT INTO import_batches (
-            id, account_id, plugin_id, file_name, file_hash, captured_at,
-            new_content_count, updated_content_count, snapshot_count, skipped_snapshot_count,
-            warnings_json, created_at, job_id, status, started_at, finished_at,
-            result_json, error_code, error_message
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          randomUUID(), record.accountId, record.pluginId, fileName, record.fileHash,
-          record.finishedAt, newContentCount, updatedContentCount, snapshotCount,
-          skippedSnapshotCount, record.finishedAt, record.jobId, record.status,
-          record.startedAt, record.finishedAt,
-          record.result === null ? null : JSON.stringify(record.result),
-          record.errorCode, record.errorMessage
+          manifest.id,
+          contribution.id,
+          contribution.kind,
+          JSON.stringify(contribution),
+          enableNewContributions ? 1 : 0,
+          contribution.runtime,
+          now
         )
       }
+      const existing = this.db.prepare(`
+        SELECT contribution_id FROM plugin_contributions WHERE plugin_id = ?
+      `).all(manifest.id) as unknown as Array<{ contribution_id: string }>
+      for (const row of existing) {
+        if (!contributionIds.includes(row.contribution_id)) {
+          this.db.prepare(`
+            DELETE FROM plugin_contributions WHERE plugin_id = ? AND contribution_id = ?
+          `).run(manifest.id, row.contribution_id)
+        }
+      }
     })
+    return requireInstalledPlugin(this.getInstalledPluginPackage(manifest.id))
+  }
+
+  listInstalledPluginPackages(): InstalledPluginPackage[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM plugin_installations
+      WHERE package_manifest_json <> '{}'
+      ORDER BY plugin_id
+    `).all() as unknown as PluginPackageRow[]
+    return rows.map(mapInstalledPlugin)
+  }
+
+  getInstalledPluginPackage(pluginId: string): InstalledPluginPackage | null {
+    const row = this.db.prepare(`
+      SELECT * FROM plugin_installations
+      WHERE plugin_id = ? AND package_manifest_json <> '{}'
+    `).get(pluginId) as unknown as PluginPackageRow | undefined
+    return row ? mapInstalledPlugin(row) : null
+  }
+
+  setPluginPackageStatus(pluginId: string, status: PluginPackageStatus, error = ''): InstalledPluginPackage {
+    if (!this.getInstalledPluginPackage(pluginId)) throw new Error('插件包不存在')
+    const enabled = status === 'active' ? undefined : 0
+    this.transaction(() => {
+      this.db.prepare(`
+        UPDATE plugin_installations SET package_status = ?,
+          enabled = COALESCE(?, enabled), last_error = ?, updated_at = ?
+        WHERE plugin_id = ?
+      `).run(status, enabled ?? null, error.slice(0, 300), new Date().toISOString(), pluginId)
+      if (status !== 'active') {
+        this.db.prepare(`
+          UPDATE plugin_contributions SET enabled = 0, suspended_reason = ?, updated_at = ?
+          WHERE plugin_id = ?
+        `).run(error.slice(0, 300) || status, new Date().toISOString(), pluginId)
+        this.db.prepare(`
+          UPDATE plugin_schedules SET enabled = 0, suspended_reason = ?, updated_at = ?
+          WHERE plugin_id = ?
+        `).run(error.slice(0, 300) || status, new Date().toISOString(), pluginId)
+      }
+    })
+    return requireInstalledPlugin(this.getInstalledPluginPackage(pluginId))
+  }
+
+  setPluginUpdateAvailable(pluginId: string, version: string | null): void {
+    if (version !== null && !/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+      throw new Error('插件更新版本无效')
+    }
+    const result = this.db.prepare(`
+      UPDATE plugin_installations SET update_available = ?, updated_at = ? WHERE plugin_id = ?
+    `).run(version, new Date().toISOString(), pluginId)
+    if (Number(result.changes) !== 1) throw new Error('插件包不存在')
+  }
+
+  removePluginPackage(pluginId: string): void {
+    const installed = requireInstalledPlugin(this.getInstalledPluginPackage(pluginId))
+    if (installed.source === 'builtin') throw new Error('内置插件不能卸载')
+    const now = new Date().toISOString()
+    this.transaction(() => {
+      this.db.prepare(`
+        UPDATE accounts SET sync_enabled = 0, sync_status = 'unsupported', status = 'unsupported',
+          cooldown_until = NULL, last_sync_error = '账号适配器不可用', updated_at = ?
+        WHERE adapter_contribution_id IN (
+          SELECT contribution_id FROM plugin_contributions WHERE plugin_id = ?
+        )
+      `).run(now, pluginId)
+      const result = this.db.prepare(`
+        DELETE FROM plugin_installations WHERE plugin_id = ? AND source <> 'builtin'
+      `).run(pluginId)
+      if (Number(result.changes) !== 1) throw new Error('插件包不存在或不能卸载')
+    })
+  }
+
+  setPluginPackageEnabled(pluginId: string, enabled: boolean): InstalledPluginPackage {
+    const current = requireInstalledPlugin(this.getInstalledPluginPackage(pluginId))
+    if (enabled && current.status !== 'active') throw new Error('插件包当前不能启用')
+    const now = new Date().toISOString()
+    this.transaction(() => {
+      this.db.prepare(`
+        UPDATE plugin_installations SET enabled = ?, updated_at = ? WHERE plugin_id = ?
+      `).run(enabled ? 1 : 0, now, pluginId)
+      if (!enabled) {
+        this.db.prepare(`
+          UPDATE plugin_contributions SET enabled = 0, updated_at = ? WHERE plugin_id = ?
+        `).run(now, pluginId)
+        this.db.prepare(`
+          UPDATE plugin_schedules SET enabled = 0, suspended_reason = '插件已停用', updated_at = ?
+          WHERE plugin_id = ?
+        `).run(now, pluginId)
+      }
+    })
+    return requireInstalledPlugin(this.getInstalledPluginPackage(pluginId))
+  }
+
+  setPluginContributionEnabled(pluginId: string, contributionId: string, enabled: boolean): void {
+    const result = this.db.prepare(`
+      UPDATE plugin_contributions SET enabled = ?, suspended_reason = '', updated_at = ?
+      WHERE plugin_id = ? AND contribution_id = ?
+        AND EXISTS (
+          SELECT 1 FROM plugin_installations p
+          WHERE p.plugin_id = plugin_contributions.plugin_id
+            AND p.package_status = 'active' AND p.enabled = 1
+        )
+    `).run(enabled ? 1 : 0, new Date().toISOString(), pluginId, contributionId)
+    if (Number(result.changes) !== 1) throw new Error('贡献点不存在、插件未启用或已被停用')
+  }
+
+  suspendPluginContributions(pluginId: string, contributionIds: string[], reason: string): void {
+    const ids = [...new Set(contributionIds)]
+    if (ids.length === 0) return
+    if (ids.some((id) => !/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(id))) {
+      throw new Error('贡献点 ID 无效')
+    }
+    const safeReason = reason.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 300)
+    const now = new Date().toISOString()
+    this.transaction(() => {
+      const suspendContribution = this.db.prepare(`
+        UPDATE plugin_contributions SET enabled = 0, suspended_reason = ?, updated_at = ?
+        WHERE plugin_id = ? AND contribution_id = ?
+      `)
+      const suspendSchedules = this.db.prepare(`
+        UPDATE plugin_schedules SET enabled = 0, next_run_at = NULL,
+          suspended_reason = ?, updated_at = ?
+        WHERE plugin_id = ? AND contribution_id = ?
+      `)
+      for (const id of ids) {
+        suspendContribution.run(safeReason, now, pluginId, id)
+        suspendSchedules.run(safeReason, now, pluginId, id)
+      }
+    })
+  }
+
+  listPluginContributionRecords(pluginId?: string): PluginContributionRecord[] {
+    const rows = (pluginId
+      ? this.db.prepare('SELECT * FROM plugin_contributions WHERE plugin_id = ? ORDER BY contribution_id').all(pluginId)
+      : this.db.prepare('SELECT * FROM plugin_contributions ORDER BY plugin_id, contribution_id').all()
+    ) as unknown as Array<{
+      plugin_id: string
+      contribution_id: string
+      kind: string
+      enabled: number
+      runtime: string
+      consecutive_failures: number
+      suspended_reason: string
+      updated_at: string
+    }>
+    return rows.map((row) => ({
+      pluginId: row.plugin_id,
+      contributionId: row.contribution_id,
+      kind: row.kind,
+      enabled: Boolean(row.enabled),
+      runtime: row.runtime,
+      consecutiveFailures: Number(row.consecutive_failures),
+      suspendedReason: row.suspended_reason,
+      updatedAt: row.updated_at
+    }))
+  }
+
+  upsertPluginGrant(grant: PluginGrant): PluginGrant {
+    const now = new Date().toISOString()
+    const grantedAt = grant.grantedAt || now
+    this.db.prepare(`
+      INSERT INTO plugin_grants (
+        plugin_id, contribution_id, permissions_json, account_ids_json, group_ids_json,
+        data_scopes_json, network_origins_json, granted_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(plugin_id, contribution_id) DO UPDATE SET
+        permissions_json = excluded.permissions_json,
+        account_ids_json = excluded.account_ids_json,
+        group_ids_json = excluded.group_ids_json,
+        data_scopes_json = excluded.data_scopes_json,
+        network_origins_json = excluded.network_origins_json,
+        updated_at = excluded.updated_at
+    `).run(
+      grant.pluginId,
+      grant.contributionId,
+      JSON.stringify([...new Set(grant.permissions)]),
+      JSON.stringify([...new Set(grant.accountIds)]),
+      JSON.stringify([...new Set(grant.groupIds)]),
+      JSON.stringify([...new Set(grant.dataScopes)]),
+      JSON.stringify([...new Set(grant.networkOrigins)]),
+      grantedAt,
+      now
+    )
+    return requireGrant(this.getPluginGrant(grant.pluginId, grant.contributionId))
+  }
+
+  getPluginGrant(pluginId: string, contributionId: string): PluginGrant | null {
+    const row = this.db.prepare(`
+      SELECT * FROM plugin_grants WHERE plugin_id = ? AND contribution_id = ?
+    `).get(pluginId, contributionId) as unknown as Record<string, unknown> | undefined
+    return row ? mapGrant(row) : null
+  }
+
+  savePluginConfig(record: Omit<PluginConfigRecord, 'updatedAt'>): PluginConfigRecord {
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO plugin_configs (
+        plugin_id, contribution_id, public_json, encrypted_secrets_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(plugin_id, contribution_id) DO UPDATE SET
+        public_json = excluded.public_json,
+        encrypted_secrets_json = excluded.encrypted_secrets_json,
+        updated_at = excluded.updated_at
+    `).run(
+      record.pluginId,
+      record.contributionId,
+      JSON.stringify(record.publicConfig),
+      JSON.stringify(record.encryptedSecrets),
+      now
+    )
+    return requirePluginConfig(this.getPluginConfig(record.pluginId, record.contributionId))
+  }
+
+  getPluginConfig(pluginId: string, contributionId: string): PluginConfigRecord | null {
+    const row = this.db.prepare(`
+      SELECT * FROM plugin_configs WHERE plugin_id = ? AND contribution_id = ?
+    `).get(pluginId, contributionId) as unknown as {
+      plugin_id: string
+      contribution_id: string
+      public_json: string
+      encrypted_secrets_json: string
+      updated_at: string
+    } | undefined
+    return row ? {
+      pluginId: row.plugin_id,
+      contributionId: row.contribution_id,
+      publicConfig: safeObject(row.public_json) ?? {},
+      encryptedSecrets: safeStringRecord(row.encrypted_secrets_json),
+      updatedAt: row.updated_at
+    } : null
+  }
+
+  createPluginSchedule(input: Omit<PluginSchedule, 'id' | 'createdAt' | 'updatedAt'>): PluginSchedule {
+    const id = randomUUID()
+    const now = new Date().toISOString()
+    this.db.prepare(`
+      INSERT INTO plugin_schedules (
+        id, plugin_id, contribution_id, account_ids_json, group_ids_json,
+        interval_minutes, enabled, next_run_at, last_run_at, consecutive_failures,
+        suspended_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.pluginId,
+      input.contributionId,
+      JSON.stringify([...new Set(input.accountIds)]),
+      JSON.stringify([...new Set(input.groupIds)]),
+      input.intervalMinutes,
+      input.enabled ? 1 : 0,
+      input.nextRunAt,
+      input.lastRunAt,
+      input.consecutiveFailures,
+      input.suspendedReason,
+      now,
+      now
+    )
+    return requireSchedule(this.getPluginSchedule(id))
+  }
+
+  getPluginSchedule(id: string): PluginSchedule | null {
+    const row = this.db.prepare('SELECT * FROM plugin_schedules WHERE id = ?').get(id) as unknown as PluginScheduleRow | undefined
+    return row ? mapSchedule(row) : null
+  }
+
+  listPluginSchedules(): PluginSchedule[] {
+    const rows = this.db.prepare('SELECT * FROM plugin_schedules ORDER BY created_at DESC').all() as unknown as PluginScheduleRow[]
+    return rows.map(mapSchedule)
+  }
+
+  updatePluginSchedule(id: string, patch: Partial<Pick<PluginSchedule,
+    'enabled' | 'nextRunAt' | 'lastRunAt' | 'consecutiveFailures' | 'suspendedReason'
+  >>): PluginSchedule {
+    const current = requireSchedule(this.getPluginSchedule(id))
+    this.db.prepare(`
+      UPDATE plugin_schedules SET enabled = ?, next_run_at = ?, last_run_at = ?,
+        consecutive_failures = ?, suspended_reason = ?, updated_at = ? WHERE id = ?
+    `).run(
+      (patch.enabled ?? current.enabled) ? 1 : 0,
+      patch.nextRunAt === undefined ? current.nextRunAt : patch.nextRunAt,
+      patch.lastRunAt === undefined ? current.lastRunAt : patch.lastRunAt,
+      patch.consecutiveFailures ?? current.consecutiveFailures,
+      patch.suspendedReason ?? current.suspendedReason,
+      new Date().toISOString(),
+      id
+    )
+    return requireSchedule(this.getPluginSchedule(id))
+  }
+
+  removePluginSchedule(id: string): void {
+    this.db.prepare('DELETE FROM plugin_schedules WHERE id = ?').run(id)
+  }
+
+  enqueuePluginEvent(event: PluginEventEnvelope): PluginEventEnvelope {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO plugin_events (
+        id, type, schema_version, source_plugin_id, account_id, content_id,
+        payload_json, occurred_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.id,
+      event.type,
+      event.schemaVersion,
+      event.source.pluginId,
+      event.subject.accountId,
+      event.subject.contentId,
+      JSON.stringify(event.data),
+      event.occurredAt,
+      new Date().toISOString()
+    )
+    return structuredClone(event)
+  }
+
+  listPluginEvents(limit = 500): PluginEventEnvelope[] {
+    const safeLimit = Number.isInteger(limit) ? Math.min(2_000, Math.max(1, limit)) : 500
+    const rows = this.db.prepare(`
+      SELECT * FROM plugin_events ORDER BY occurred_at ASC LIMIT ?
+    `).all(safeLimit) as unknown as PluginEventRow[]
+    return rows.map(mapPluginEvent)
+  }
+
+  listUndeliveredPluginEvents(
+    pluginId: string,
+    contributionId: string,
+    limit = 500
+  ): PluginEventEnvelope[] {
+    const safeLimit = Number.isInteger(limit) ? Math.min(2_000, Math.max(1, limit)) : 500
+    const rows = this.db.prepare(`
+      SELECT e.* FROM plugin_events e
+      WHERE NOT EXISTS (
+        SELECT 1 FROM plugin_event_deliveries d
+        WHERE d.event_id = e.id AND d.plugin_id = ? AND d.contribution_id = ?
+      )
+      ORDER BY e.occurred_at ASC
+      LIMIT ?
+    `).all(pluginId, contributionId, safeLimit) as unknown as PluginEventRow[]
+    return rows.map(mapPluginEvent)
+  }
+
+  ensurePluginEventDelivery(
+    eventId: string,
+    pluginId: string,
+    contributionId: string
+  ): PluginEventDelivery {
+    const existing = this.db.prepare(`
+      SELECT * FROM plugin_event_deliveries
+      WHERE event_id = ? AND plugin_id = ? AND contribution_id = ?
+    `).get(eventId, pluginId, contributionId) as unknown as PluginDeliveryRow | undefined
+    if (!existing) {
+      const now = new Date().toISOString()
+      this.db.prepare(`
+        INSERT INTO plugin_event_deliveries (
+          id, event_id, plugin_id, contribution_id, status, attempt,
+          next_attempt_at, error_code, error_message, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'pending', 0, ?, '', '', ?, ?)
+      `).run(randomUUID(), eventId, pluginId, contributionId, now, now, now)
+    }
+    const row = this.db.prepare(`
+      SELECT * FROM plugin_event_deliveries
+      WHERE event_id = ? AND plugin_id = ? AND contribution_id = ?
+    `).get(eventId, pluginId, contributionId) as unknown as PluginDeliveryRow
+    return mapPluginDelivery(row, requirePluginEvent(this.getPluginEvent(eventId)))
+  }
+
+  getPluginEvent(id: string): PluginEventEnvelope | null {
+    const row = this.db.prepare('SELECT * FROM plugin_events WHERE id = ?').get(id) as unknown as PluginEventRow | undefined
+    return row ? mapPluginEvent(row) : null
+  }
+
+  listDuePluginDeliveries(now: string, limit = 50): PluginEventDelivery[] {
+    const safeLimit = Number.isInteger(limit) ? Math.min(200, Math.max(1, limit)) : 50
+    const rows = this.db.prepare(`
+      SELECT * FROM plugin_event_deliveries
+      WHERE status IN ('pending', 'retry', 'running')
+        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+      ORDER BY COALESCE(next_attempt_at, created_at), created_at
+      LIMIT ?
+    `).all(now, safeLimit) as unknown as PluginDeliveryRow[]
+    return rows.flatMap((row) => {
+      const event = this.getPluginEvent(row.event_id)
+      return event ? [mapPluginDelivery(row, event)] : []
+    })
+  }
+
+  updatePluginDelivery(
+    id: string,
+    patch: Partial<Pick<PluginEventDelivery,
+      'status' | 'attempt' | 'nextAttemptAt' | 'errorCode' | 'errorMessage'
+    >>
+  ): PluginEventDelivery {
+    const row = this.db.prepare('SELECT * FROM plugin_event_deliveries WHERE id = ?').get(id) as unknown as PluginDeliveryRow | undefined
+    if (!row) throw new Error('插件事件投递不存在')
+    this.db.prepare(`
+      UPDATE plugin_event_deliveries SET status = ?, attempt = ?, next_attempt_at = ?,
+        error_code = ?, error_message = ?, updated_at = ? WHERE id = ?
+    `).run(
+      patch.status ?? row.status,
+      patch.attempt ?? row.attempt,
+      patch.nextAttemptAt === undefined ? row.next_attempt_at : patch.nextAttemptAt,
+      patch.errorCode ?? row.error_code,
+      (patch.errorMessage ?? row.error_message).slice(0, 500),
+      new Date().toISOString(),
+      id
+    )
+    const updated = this.db.prepare('SELECT * FROM plugin_event_deliveries WHERE id = ?').get(id) as unknown as PluginDeliveryRow
+    return mapPluginDelivery(updated, requirePluginEvent(this.getPluginEvent(updated.event_id)))
+  }
+
+  recoverInterruptedPluginRuns(finishedAt = new Date().toISOString()): void {
+    this.db.prepare(`
+      UPDATE plugin_runs SET status = 'interrupted', finished_at = ?,
+        error_code = 'APP_RESTARTED', error_message = '应用重启，运行已中断'
+      WHERE status = 'running'
+    `).run(finishedAt)
+  }
+
+  createPluginRun(run: ExtensionRunRecord): ExtensionRunRecord {
+    this.db.prepare(`
+      INSERT INTO plugin_runs (
+        id, plugin_id, contribution_id, trigger_kind, status, account_id, event_id,
+        attempt, result_json, started_at, finished_at, next_attempt_at,
+        error_code, error_message, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+    `).run(
+      run.id, run.pluginId, run.contributionId, run.trigger, run.status,
+      run.accountId, run.eventId, run.attempt, run.startedAt, run.finishedAt,
+      run.nextAttemptAt, run.errorCode, run.errorMessage, run.createdAt
+    )
+    return requireExtensionRun(this.getPluginRun(run.id))
+  }
+
+  getPluginRun(id: string): ExtensionRunRecord | null {
+    const row = this.db.prepare('SELECT * FROM plugin_runs WHERE id = ?').get(id) as unknown as PluginRunRow | undefined
+    return row ? mapExtensionRun(row) : null
+  }
+
+  updateExtensionRun(id: string, patch: Partial<Pick<ExtensionRunRecord,
+    'status' | 'attempt' | 'startedAt' | 'finishedAt' | 'nextAttemptAt' | 'errorCode' | 'errorMessage'
+  >>): ExtensionRunRecord {
+    const current = requireExtensionRun(this.getPluginRun(id))
+    this.db.prepare(`
+      UPDATE plugin_runs SET status = ?, attempt = ?, started_at = ?, finished_at = ?,
+        next_attempt_at = ?, error_code = ?, error_message = ? WHERE id = ?
+    `).run(
+      patch.status ?? current.status,
+      patch.attempt ?? current.attempt,
+      patch.startedAt === undefined ? current.startedAt : patch.startedAt,
+      patch.finishedAt === undefined ? current.finishedAt : patch.finishedAt,
+      patch.nextAttemptAt === undefined ? current.nextAttemptAt : patch.nextAttemptAt,
+      patch.errorCode ?? current.errorCode,
+      (patch.errorMessage ?? current.errorMessage).slice(0, 500),
+      id
+    )
+    return requireExtensionRun(this.getPluginRun(id))
+  }
+
+  listPluginRuns(limit = 200): ExtensionRunRecord[] {
+    const safeLimit = Number.isInteger(limit) ? Math.min(500, Math.max(1, limit)) : 200
+    const rows = this.db.prepare(`
+      SELECT * FROM plugin_runs ORDER BY created_at DESC LIMIT ?
+    `).all(safeLimit) as unknown as PluginRunRow[]
+    return rows.map(mapExtensionRun)
   }
 
   getSetting<T>(key: string): T | null
@@ -1315,8 +1851,7 @@ export class SocialDatabase {
       contentCount: this.count('contents'),
       contentSnapshotCount: this.count('content_snapshots'),
       accountSnapshotCount: this.count('account_snapshots'),
-      jobCount: this.count('jobs'),
-      importCount: this.count('import_batches')
+      jobCount: this.count('jobs')
     }
   }
 
@@ -1386,7 +1921,6 @@ export class SocialDatabase {
       FROM contents c JOIN accounts a ON a.id = c.account_id
     `).all() as unknown as ContentRow[]
     const contents = contentRows.map((row) => this.mapContent(row))
-    const imported = this.db.prepare('SELECT MAX(created_at) AS last_at FROM import_batches').get() as unknown as { last_at: string | null }
     const reminders: DashboardOverview['reminders'] = []
     for (const account of accounts) {
       const accountName = localAccountName(account)
@@ -1435,7 +1969,6 @@ export class SocialDatabase {
       contentCount: contents.length,
       views: sum(contents.map((content) => content.latestSnapshot?.views)),
       interactions: sum(contents.flatMap((content) => interactionValues(content.latestSnapshot))),
-      lastImportedAt: imported.last_at,
       reminders: reminders.slice(0, 20)
     }
   }
@@ -1528,7 +2061,7 @@ export class SocialDatabase {
     return result
   }
 
-  private count(table: 'accounts' | 'contents' | 'content_snapshots' | 'account_snapshots' | 'jobs' | 'import_batches'): number {
+  private count(table: 'accounts' | 'contents' | 'content_snapshots' | 'account_snapshots' | 'jobs'): number {
     const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as unknown as { count: number }
     return Number(row.count)
   }
@@ -1572,6 +2105,7 @@ function mapAccount(
   return {
     id: row.id,
     platformId: row.platform_id,
+    adapterContributionId: row.adapter_contribution_id,
     alias: row.alias,
     aliasCustomized: Boolean(row.alias_customized),
     remoteName: row.remote_name,
@@ -1601,6 +2135,12 @@ function mapAccount(
     updatedAt: row.updated_at,
     lastSyncedAt: row.last_synced_at
   }
+}
+
+function defaultAdapterContributionId(platformId: PlatformId): string | null {
+  if (platformId === 'xiaohongshu') return 'xiaohongshu-session-api.platform'
+  if (platformId === 'zhihu') return 'zhihu-session-api.platform'
+  return null
 }
 
 function mapAccountSnapshot(row: AccountSnapshotRow): AccountSnapshot {
@@ -1672,10 +2212,8 @@ function mapJob(row: JobRow): JobRecord {
   }
 }
 
-function mapPlugin(row: PluginRow): PluginInstallation {
-  const manifest = JSON.parse(row.manifest_json) as PluginManifest
+function mapPlugin(row: PluginRow): LegacyPluginState {
   return {
-    manifest,
     enabled: Boolean(row.enabled),
     availability: row.availability,
     installedAt: row.installed_at,
@@ -1686,19 +2224,152 @@ function mapPlugin(row: PluginRow): PluginInstallation {
   }
 }
 
-function validateImport(payload: NormalizedImportPayload, metadata: ImportCommitMetadata): void {
-  if (!metadata.accountId) throw new Error('缺少导入账号')
-  if (!metadata.pluginId) throw new Error('缺少导入插件')
-  if (!metadata.fileHash.trim()) throw new Error('缺少文件哈希')
-  if (!metadata.fileName.trim()) throw new Error('缺少文件名')
-  validateNormalizedPayload(payload)
+function mapInstalledPlugin(row: PluginPackageRow): InstalledPluginPackage {
+  return {
+    manifest: JSON.parse(row.package_manifest_json) as PluginManifestV2,
+    source: row.source,
+    status: row.package_status,
+    enabled: Boolean(row.enabled),
+    packageHash: row.package_hash,
+    publisherKeyId: row.publisher_key_id,
+    installedAt: row.installed_at ?? row.updated_at,
+    updatedAt: row.updated_at,
+    lastError: row.last_error,
+    updateAvailable: row.update_available,
+    development: Boolean(row.development)
+  }
+}
+
+function mapGrant(row: Record<string, unknown>): PluginGrant {
+  return {
+    pluginId: String(row.plugin_id ?? ''),
+    contributionId: String(row.contribution_id ?? ''),
+    permissions: safeStringArray(String(row.permissions_json ?? '[]')) as PluginGrant['permissions'],
+    accountIds: safeStringArray(String(row.account_ids_json ?? '[]')),
+    groupIds: safeStringArray(String(row.group_ids_json ?? '[]')),
+    dataScopes: safeStringArray(String(row.data_scopes_json ?? '[]')) as PluginGrant['dataScopes'],
+    networkOrigins: safeStringArray(String(row.network_origins_json ?? '[]')),
+    grantedAt: String(row.granted_at ?? ''),
+    updatedAt: String(row.updated_at ?? '')
+  }
+}
+
+function mapSchedule(row: PluginScheduleRow): PluginSchedule {
+  return {
+    id: row.id,
+    pluginId: row.plugin_id,
+    contributionId: row.contribution_id,
+    accountIds: safeStringArray(row.account_ids_json),
+    groupIds: safeStringArray(row.group_ids_json),
+    intervalMinutes: Number(row.interval_minutes),
+    enabled: Boolean(row.enabled),
+    nextRunAt: row.next_run_at,
+    lastRunAt: row.last_run_at,
+    consecutiveFailures: Number(row.consecutive_failures),
+    suspendedReason: row.suspended_reason,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function mapExtensionRun(row: PluginRunRow): ExtensionRunRecord {
+  return {
+    id: row.id,
+    pluginId: row.plugin_id,
+    contributionId: row.contribution_id,
+    trigger: row.trigger_kind,
+    status: row.status,
+    accountId: row.account_id,
+    eventId: row.event_id,
+    attempt: Number(row.attempt),
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    nextAttemptAt: row.next_attempt_at,
+    errorCode: row.error_code,
+    errorMessage: row.error_message,
+    createdAt: row.created_at
+  }
+}
+
+function mapPluginEvent(row: PluginEventRow): PluginEventEnvelope {
+  return {
+    id: row.id,
+    type: row.type,
+    schemaVersion: 1,
+    occurredAt: row.occurred_at,
+    source: { app: 'streamfold', pluginId: row.source_plugin_id },
+    subject: { accountId: row.account_id, contentId: row.content_id },
+    data: parseJsonValue(row.payload_json)
+  }
+}
+
+function mapPluginDelivery(row: PluginDeliveryRow, event: PluginEventEnvelope): PluginEventDelivery {
+  return {
+    id: row.id,
+    event,
+    pluginId: row.plugin_id,
+    contributionId: row.contribution_id,
+    status: row.status,
+    attempt: Number(row.attempt),
+    nextAttemptAt: row.next_attempt_at,
+    errorCode: row.error_code,
+    errorMessage: row.error_message,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function parseJsonValue(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown
+  } catch {
+    return null
+  }
+}
+
+function safeStringRecord(value: string): Record<string, string> {
+  const parsed = safeObject(value)
+  if (!parsed) return {}
+  return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => (
+    typeof entry[1] === 'string'
+  )))
+}
+
+function requireInstalledPlugin(value: InstalledPluginPackage | null): InstalledPluginPackage {
+  if (!value) throw new Error('插件包不存在')
+  return value
+}
+
+function requireGrant(value: PluginGrant | null): PluginGrant {
+  if (!value) throw new Error('插件授权不存在')
+  return value
+}
+
+function requirePluginConfig(value: PluginConfigRecord | null): PluginConfigRecord {
+  if (!value) throw new Error('插件配置不存在')
+  return value
+}
+
+function requireSchedule(value: PluginSchedule | null): PluginSchedule {
+  if (!value) throw new Error('插件计划不存在')
+  return value
+}
+
+function requireExtensionRun(value: ExtensionRunRecord | null): ExtensionRunRecord {
+  if (!value) throw new Error('插件运行记录不存在')
+  return value
+}
+
+function requirePluginEvent(value: PluginEventEnvelope | null): PluginEventEnvelope {
+  if (!value) throw new Error('插件事件不存在')
+  return value
 }
 
 function validateManagedSync(
-  payload: NormalizedImportPayload,
+  payload: StandardDataset,
   metadata: ManagedSyncCommitMetadata
 ): void {
-  validateNormalizedPayload(payload)
+  validateStandardDataset(payload)
   if (!payload.profile) throw new Error('受管同步结果缺少本人账号资料')
   if (!metadata.accountId.trim()) throw new Error('受管同步缺少本地账号')
   if (!metadata.pluginId.trim()) throw new Error('受管同步缺少插件')
@@ -1720,19 +2391,19 @@ function validateManagedSync(
   }
 }
 
-function validateNormalizedPayload(payload: NormalizedImportPayload): void {
-  if (!isIsoDate(payload.capturedAt)) throw new Error('导入采集时间无效')
-  if (payload.profile && !payload.profile.remoteId.trim()) throw new Error('导入身份缺少 remoteId')
+function validateStandardDataset(payload: StandardDataset): void {
+  if (!isIsoDate(payload.capturedAt)) throw new Error('数据集采集时间无效')
+  if (payload.profile && !payload.profile.remoteId.trim()) throw new Error('数据集身份缺少 remoteId')
   for (const content of payload.contents) {
-    if (!content.remoteId.trim()) throw new Error('导入内容缺少 remoteId')
+    if (!content.remoteId.trim()) throw new Error('数据集内容缺少 remoteId')
     for (const snapshot of content.snapshots) {
       if (!isIsoDate(snapshot.capturedAt)) throw new Error('内容快照时间无效')
     }
   }
 }
 
-function dedupeImportedContents(contents: NormalizedImportContent[]): NormalizedImportContent[] {
-  const result = new Map<string, NormalizedImportContent>()
+function dedupeStandardContents(contents: StandardContent[]): StandardContent[] {
+  const result = new Map<string, StandardContent>()
   for (const content of contents) {
     const previous = result.get(content.remoteId)
     const snapshots = new Map<string, ContentSnapshot>()
@@ -1741,11 +2412,6 @@ function dedupeImportedContents(contents: NormalizedImportContent[]): Normalized
     result.set(content.remoteId, { ...content, snapshots: [...snapshots.values()] })
   }
   return [...result.values()]
-}
-
-function safeFileName(value: string): string {
-  const parts = value.split(/[\\/]/)
-  return parts.at(-1)?.trim() || 'import'
 }
 
 function safeStringArray(value: string): string[] {
@@ -1791,11 +2457,6 @@ function requireJob(job: JobRecord | null): JobRecord {
   return job
 }
 
-function requirePlugin(plugin: PluginInstallation | null): PluginInstallation {
-  if (!plugin) throw new Error('插件不存在')
-  return plugin
-}
-
 function isActiveJob(status: JobStatus): boolean {
   return status === 'validating' || status === 'committing'
 }
@@ -1834,6 +2495,34 @@ function validateBackupDatabase(path: string): void {
   }
 }
 
+function sanitizePortablePluginState(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE')
+  try {
+    database.exec(`
+      UPDATE plugin_configs SET encrypted_secrets_json = '{}';
+      UPDATE plugin_installations
+      SET enabled = 0, package_status = 'disabled',
+        last_error = '恢复后需要从插件目录重新安装', update_available = NULL
+      WHERE source <> 'builtin';
+      UPDATE plugin_contributions
+      SET enabled = 0, suspended_reason = '恢复后需要重新安装插件或填写密钥'
+      WHERE plugin_id = 'streamfold.webhook' OR plugin_id IN (
+        SELECT plugin_id FROM plugin_installations WHERE source <> 'builtin'
+      );
+      UPDATE plugin_schedules
+      SET enabled = 0, next_run_at = NULL,
+        suspended_reason = '恢复后需要重新安装插件或填写密钥'
+      WHERE plugin_id = 'streamfold.webhook' OR plugin_id IN (
+        SELECT plugin_id FROM plugin_installations WHERE source <> 'builtin'
+      );
+    `)
+    database.exec('COMMIT')
+  } catch (error) {
+    try { database.exec('ROLLBACK') } catch {}
+    throw error
+  }
+}
+
 function removeSqliteSidecars(path: string): void {
   rmSync(`${path}-wal`, { force: true })
   rmSync(`${path}-shm`, { force: true })
@@ -1856,10 +2545,6 @@ function isTerminalJob(status: JobStatus): boolean {
 
 function clampInteger(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, Math.trunc(value)))
-}
-
-function safeCount(value: unknown): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
 }
 
 function nullableNumber(value: number | null): number | null {

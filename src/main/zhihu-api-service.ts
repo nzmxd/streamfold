@@ -9,8 +9,8 @@ import type {
 import type { ManagedSyncCommitMetadata, ManagedSyncCommitResult } from './database'
 import type { SessionApiPlatformService } from './platform-sync-service'
 import type { CachedProfileAvatar } from './profile-media'
-import type { NormalizedImportPayload } from './plugins/types'
-import type { PluginService } from './plugin-service'
+import type { StandardDataset } from './plugins/types'
+import type { SessionApiPluginGate } from './plugins/session-api-plugin-gate'
 import type { JobService } from './services/job-service'
 import {
   ZhihuApi,
@@ -64,7 +64,7 @@ interface ZhihuApiRepository {
   markManagedSyncStarted(accountId: string, startedAt: string): Account
   markManagedSyncFailed(accountId: string, message: string, failedAt: string): Account
   commitManagedSync(
-    payload: NormalizedImportPayload,
+    payload: StandardDataset,
     metadata: ManagedSyncCommitMetadata
   ): ManagedSyncCommitResult
 }
@@ -81,7 +81,7 @@ interface IdentityPreview {
 export interface ZhihuApiServiceOptions {
   repository: ZhihuApiRepository
   browser: ZhihuApiBrowser
-  plugins: PluginService
+  plugins: SessionApiPluginGate
   jobs: JobService
   clock?: () => Date
   createToken?: () => string
@@ -168,7 +168,7 @@ export class ZhihuApiService implements SessionApiPlatformService {
       let lease: ZhihuApiTransportLease | null = null
       try {
         const account = this.requireSyncableAccount(accountId)
-        const installation = this.options.plugins.requireEnabledSessionApi(ZHIHU_API_PLUGIN_ID)
+        const installation = this.options.plugins.requireEnabledSessionApi(ZHIHU_API_PLUGIN_ID, account.id)
         this.enforceInterval(account.id, 'sync', installation.manifest.minimumIntervalSeconds)
         const startedAt = this.now()
         job = await this.options.jobs.createManagedSync(account.id, ZHIHU_API_PLUGIN_ID)
@@ -252,7 +252,7 @@ export class ZhihuApiService implements SessionApiPlatformService {
     const account = this.options.repository.getAccount(accountId)
     if (!account) throw new Error('账号不存在')
     if (account.platformId !== 'zhihu') throw new Error('该平台的数据同步功能尚未开放')
-    this.options.plugins.requireEnabledSessionApi(ZHIHU_API_PLUGIN_ID)
+    this.options.plugins.requireEnabledSessionApi(ZHIHU_API_PLUGIN_ID, account.id)
     return account
   }
 
@@ -438,7 +438,7 @@ function toPayload(
   capturedAt: string,
   cachedAvatar: CachedProfileAvatar | null,
   mode: Exclude<SyncMode, 'disabled'>
-): NormalizedImportPayload {
+): StandardDataset {
   return {
     capturedAt,
     profile: {

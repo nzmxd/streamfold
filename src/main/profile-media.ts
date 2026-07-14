@@ -65,10 +65,12 @@ export class ProfileMediaStore {
   async cacheAvatar(
     accountId: string,
     sourceUrl: string,
-    fetcher: ProfileMediaFetcher
+    fetcher: ProfileMediaFetcher,
+    allowedHosts?: readonly string[]
   ): Promise<CachedProfileAvatar> {
     assertAccountId(accountId)
-    assertAvatarSourceUrl(sourceUrl)
+    const hostPolicy = normalizeAvatarHosts(allowedHosts)
+    assertAvatarSourceUrl(sourceUrl, undefined, hostPolicy)
     if (typeof fetcher !== 'function') throw new Error('头像下载器无效')
 
     const controller = new AbortController()
@@ -81,7 +83,7 @@ export class ProfileMediaStore {
     })
     try {
       return await Promise.race([
-        this.downloadAndStore(accountId, sourceUrl, fetcher, controller.signal),
+        this.downloadAndStore(accountId, sourceUrl, fetcher, controller.signal, hostPolicy),
         timeout
       ])
     } finally {
@@ -147,11 +149,11 @@ export class ProfileMediaStore {
     accountId: string,
     sourceUrl: string,
     fetcher: ProfileMediaFetcher,
-    signal: AbortSignal
+    signal: AbortSignal,
+    allowedHosts: ReadonlySet<string> | null
   ): Promise<CachedProfileAvatar> {
-    let current = assertAvatarSourceUrl(sourceUrl)
-    const sourceFamily = avatarSourceFamily(current.hostname)
-    if (!sourceFamily) throw new Error('头像地址不在允许的平台域名内')
+    let current = assertAvatarSourceUrl(sourceUrl, undefined, allowedHosts)
+    const sourceFamily = allowedHosts ? undefined : avatarSourceFamily(current.hostname) ?? undefined
     let response: Response | null = null
     for (let redirects = 0; ; redirects += 1) {
       if (signal.aborted) throw new Error('头像下载已取消')
@@ -167,7 +169,7 @@ export class ProfileMediaStore {
         signal
       })
       if (response.redirected) throw new Error('头像请求发生了未经核验的自动跳转')
-      if (response.url) assertAvatarSourceUrl(response.url, sourceFamily)
+      if (response.url) assertAvatarSourceUrl(response.url, sourceFamily, allowedHosts)
       if (!REDIRECT_STATUSES.has(response.status)) break
       await cancelBody(response)
       if (redirects >= MAX_REDIRECTS) throw new Error('头像重定向次数超过上限')
@@ -179,7 +181,7 @@ export class ProfileMediaStore {
       } catch {
         throw new Error('头像重定向地址无效')
       }
-      current = assertAvatarSourceUrl(next.href, sourceFamily)
+      current = assertAvatarSourceUrl(next.href, sourceFamily, allowedHosts)
     }
 
     if (!response || response.status !== 200) {
@@ -254,7 +256,11 @@ export class ProfileMediaStore {
   }
 }
 
-function assertAvatarSourceUrl(value: string, expectedFamily?: AvatarSourceFamily): URL {
+function assertAvatarSourceUrl(
+  value: string,
+  expectedFamily?: AvatarSourceFamily,
+  allowedHosts: ReadonlySet<string> | null = null
+): URL {
   if (typeof value !== 'string' || value.length < 1 || value.length > 2_048) {
     throw new Error('头像地址无效')
   }
@@ -268,12 +274,23 @@ function assertAvatarSourceUrl(value: string, expectedFamily?: AvatarSourceFamil
   const hasExplicitPort = /:\d+$/.test(authority)
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
   const family = avatarSourceFamily(hostname)
-  if (url.protocol !== 'https:' || !family || (expectedFamily && family !== expectedFamily) ||
+  const allowed = allowedHosts ? allowedHosts.has(hostname) : Boolean(family && (!expectedFamily || family === expectedFamily))
+  if (url.protocol !== 'https:' || !allowed ||
     url.username || url.password || url.port ||
     hasExplicitPort || url.hash) {
     throw new Error('头像地址不在允许的平台域名内')
   }
   return url
+}
+
+function normalizeAvatarHosts(value: readonly string[] | undefined): ReadonlySet<string> | null {
+  if (value === undefined) return null
+  const hosts = new Set(value.map((item) => item.toLowerCase().replace(/\.$/, '')))
+  if (hosts.size === 0 || [...hosts].some((host) => (
+    host.length > 253 || !/^[a-z0-9.-]+$/.test(host) || host.startsWith('.') ||
+    host.endsWith('.') || host.includes('..') || host === 'localhost'
+  ))) throw new Error('头像允许域名无效')
+  return hosts
 }
 
 function avatarSourceFamily(hostname: string): AvatarSourceFamily | null {

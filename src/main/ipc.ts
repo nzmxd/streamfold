@@ -4,9 +4,12 @@ import type { BrowserManager } from './browser-manager'
 import type { BackupService } from './backup-service'
 import type { SocialDatabase } from './database'
 import type { ExportService } from './export-service'
-import type { PluginService } from './plugin-service'
+import type { PluginHostService } from './plugins/plugin-host-service'
+import type { PluginAutomationService } from './plugins/automation-service'
+import type { PluginLifecycleService } from './plugins/plugin-lifecycle-service'
+import type { PlatformAdapterRegistryService } from './plugins/platform-adapter-registry'
 import type { PlatformSyncService } from './platform-sync-service'
-import { isOfficialContentUrl, listPlatforms } from './platforms'
+import { isOfficialContentUrl, listPlatforms, registerManifestPlatforms } from './platforms'
 import type { SettingsService } from './settings-service'
 import type { UpdateService } from './update-service'
 import { isTrustedShellUrl } from './shell-security'
@@ -15,6 +18,7 @@ import {
   parseBoolean,
   parseBulkUpdateAccounts,
   parseConfirmApiIdentity,
+  parseCreatePluginSchedule,
   parseCreateEncryptedBackup,
   parseContentQuery,
   parseCreateAccount,
@@ -22,6 +26,8 @@ import {
   parseExportData,
   parseId,
   parseMoveGroup,
+  parsePluginConfig,
+  parsePluginGrant,
   parseRestoreEncryptedBackup,
   parseUpdateContent,
   parseUpdateSettings,
@@ -30,7 +36,10 @@ import {
 } from './validation'
 
 export interface IpcServices {
-  plugins: PluginService
+  pluginHost: PluginHostService
+  pluginLifecycle: PluginLifecycleService
+  pluginAutomation: PluginAutomationService
+  adapterRegistry: PlatformAdapterRegistryService
   settings: SettingsService
   exporter: ExportService
   backup: BackupService
@@ -116,7 +125,17 @@ export function registerIpc(
 
   ipcMain.handle('platforms:list', trusted(() => listPlatforms()))
   ipcMain.handle('accounts:list', trusted(() => database.listAccounts()))
-  ipcMain.handle('accounts:create', trusted((_event, value) => database.createAccount(parseCreateAccount(value))))
+  ipcMain.handle('accounts:create', trusted((_event, value) => {
+    const input = parseCreateAccount(value)
+    if (!input.adapterContributionId) {
+      const candidates = services.pluginHost.listContributions().filter((item) => (
+        item.enabled && item.granted && !item.suspendedReason && item.contribution.kind === 'platform.adapter' &&
+        item.contribution.platform.id === input.platformId
+      ))
+      if (candidates.length === 1) input.adapterContributionId = candidates[0]!.contribution.id
+    }
+    return database.createAccount(input)
+  }))
   ipcMain.handle('accounts:update', trusted((_event, value) => database.updateAccount(parseUpdateAccount(value))))
   ipcMain.handle('accounts:bulk-update', trusted((_event, value) => (
     database.bulkUpdateAccounts(parseBulkUpdateAccounts(value))
@@ -177,6 +196,14 @@ export function registerIpc(
       notifyAccountsChanged()
     }
   }))
+  ipcMain.handle('accounts:list-adapters', trusted((_event, value) => (
+    services.adapterRegistry.listForAccount(parseId(value))
+  )))
+  ipcMain.handle('accounts:switch-adapter', trusted(async (_event, accountId, contributionId) => {
+    const account = await services.adapterRegistry.switchAdapter(parseId(accountId), parseId(contributionId))
+    notifyAccountsChanged()
+    return account
+  }))
   ipcMain.handle('groups:list', trusted(() => database.listGroups()))
   ipcMain.handle('groups:create', trusted((_event, value) => database.createGroup(parseCreateGroup(value))))
   ipcMain.handle('groups:update', trusted((_event, value) => database.updateGroup(parseUpdateGroup(value))))
@@ -209,10 +236,99 @@ export function registerIpc(
   }))
   ipcMain.handle('analytics:overview', trusted((_event, value) => database.getAnalytics(parseAnalyticsQuery(value))))
   ipcMain.handle('analytics:dashboard', trusted(() => database.getDashboard()))
-  ipcMain.handle('plugins:list', trusted(() => services.plugins.list()))
-  ipcMain.handle('plugins:set-enabled', trusted((_event, id, enabled) => (
-    services.plugins.setEnabled(parseId(id), parseBoolean(enabled, '插件开关'))
+  ipcMain.handle('plugins:packages', trusted(() => services.pluginHost.listPackages()))
+  ipcMain.handle('plugins:contributions', trusted(() => services.pluginHost.listContributions()))
+  ipcMain.handle('plugins:set-package-enabled', trusted((_event, id, enabled) => {
+    const pluginId = parseId(id)
+    const next = parseBoolean(enabled, '插件包开关')
+    if (!next) services.pluginLifecycle.stop(pluginId)
+    return services.pluginHost.setPackageEnabled(pluginId, next)
+  }))
+  ipcMain.handle('plugins:set-contribution-enabled', trusted((_event, pluginId, contributionId, enabled) => {
+    const parsedPluginId = parseId(pluginId)
+    const next = parseBoolean(enabled, '贡献点开关')
+    if (!next) services.pluginLifecycle.stop(parsedPluginId)
+    return services.pluginHost.setContributionEnabled(
+      parsedPluginId,
+      parseId(contributionId),
+      next
+    )
+  }))
+  ipcMain.handle('plugins:grant', trusted((_event, value) => (
+    services.pluginHost.grant(parsePluginGrant(value))
   )))
+  ipcMain.handle('plugins:get-config', trusted((_event, pluginId, contributionId) => (
+    services.pluginHost.getConfig(parseId(pluginId), parseId(contributionId))
+  )))
+  ipcMain.handle('plugins:save-config', trusted((_event, value) => (
+    services.pluginHost.saveConfig(parsePluginConfig(value))
+  )))
+  ipcMain.handle('plugins:schedules', trusted(() => services.pluginHost.listSchedules()))
+  ipcMain.handle('plugins:create-schedule', trusted((_event, value) => (
+    services.pluginHost.createSchedule(parseCreatePluginSchedule(value))
+  )))
+  ipcMain.handle('plugins:set-schedule-enabled', trusted((_event, id, enabled) => (
+    services.pluginHost.updateSchedule(parseId(id), parseBoolean(enabled, '计划开关'))
+  )))
+  ipcMain.handle('plugins:remove-schedule', trusted((_event, id) => (
+    services.pluginHost.removeSchedule(parseId(id))
+  )))
+  ipcMain.handle('plugins:runs', trusted(() => database.listPluginRuns()))
+  ipcMain.handle('plugins:get-grant', trusted((_event, pluginId, contributionId) => (
+    services.pluginHost.getGrant(parseId(pluginId), parseId(contributionId))
+  )))
+  ipcMain.handle('plugins:catalog', trusted(() => services.pluginLifecycle.getCatalog()))
+  ipcMain.handle('plugins:refresh-catalog', trusted(async () => {
+    const state = await services.pluginLifecycle.refreshCatalog()
+    services.adapterRegistry.reconcile()
+    return state
+  }))
+  ipcMain.handle('plugins:install-catalog', trusted(async (_event, pluginId) => {
+    const installed = await services.pluginLifecycle.installFromCatalog(parseId(pluginId))
+    registerNewManifestPlatforms(services.pluginHost)
+    services.adapterRegistry.reconcile()
+    return installed
+  }))
+  ipcMain.handle('plugins:install-development', trusted(async () => {
+    const installed = await services.pluginLifecycle.installDevelopment()
+    if (installed) {
+      registerNewManifestPlatforms(services.pluginHost)
+      services.adapterRegistry.reconcile()
+    }
+    return installed
+  }))
+  ipcMain.handle('plugins:update', trusted(async (_event, pluginId, confirmPermissionExpansion) => {
+    const installed = await services.pluginLifecycle.update(
+      parseId(pluginId),
+      confirmPermissionExpansion === undefined
+        ? false
+        : parseBoolean(confirmPermissionExpansion, '更新权限确认')
+    )
+    registerNewManifestPlatforms(services.pluginHost)
+    services.adapterRegistry.reconcile()
+    return installed
+  }))
+  ipcMain.handle('plugins:uninstall', trusted(async (_event, pluginId) => {
+    await services.pluginLifecycle.uninstall(parseId(pluginId))
+    registerNewManifestPlatforms(services.pluginHost)
+    services.adapterRegistry.reconcile()
+  }))
+  ipcMain.handle('plugins:get-developer-mode', trusted(() => services.pluginLifecycle.getDeveloperMode()))
+  ipcMain.handle('plugins:set-developer-mode', trusted((_event, enabled) => (
+    services.pluginLifecycle.setDeveloperMode(parseBoolean(enabled, '开发者模式'))
+  )))
+  ipcMain.handle('plugins:run', trusted((_event, pluginId, contributionId, accountId) => (
+    services.pluginAutomation.runManual(
+      parseId(pluginId),
+      parseId(contributionId),
+      accountId === undefined || accountId === null || accountId === '' ? null : parseId(accountId)
+    )
+  )))
+  ipcMain.handle('plugins:retry-run', trusted((_event, value) => {
+    const run = database.getPluginRun(parseId(value))
+    if (!run || (run.status !== 'failed' && run.status !== 'interrupted')) throw new Error('该运行记录不能重试')
+    return services.pluginAutomation.runManual(run.pluginId, run.contributionId, run.accountId)
+  }))
   ipcMain.handle('updates:get-state', trusted(() => services.updates.getState()))
   ipcMain.handle('updates:check', trusted(() => services.updates.check()))
   ipcMain.handle('updates:download', trusted(() => services.updates.download()))
@@ -295,6 +411,8 @@ export function unregisterIpc(): void {
     'accounts:verify-identity',
     'accounts:confirm-identity',
     'accounts:sync',
+    'accounts:list-adapters',
+    'accounts:switch-adapter',
     'groups:list',
     'groups:create',
     'groups:update',
@@ -308,8 +426,29 @@ export function unregisterIpc(): void {
     'content:clear-account',
     'analytics:overview',
     'analytics:dashboard',
-    'plugins:list',
-    'plugins:set-enabled',
+    'plugins:packages',
+    'plugins:contributions',
+    'plugins:set-package-enabled',
+    'plugins:set-contribution-enabled',
+    'plugins:grant',
+    'plugins:get-config',
+    'plugins:save-config',
+    'plugins:schedules',
+    'plugins:create-schedule',
+    'plugins:set-schedule-enabled',
+    'plugins:remove-schedule',
+    'plugins:runs',
+    'plugins:get-grant',
+    'plugins:catalog',
+    'plugins:refresh-catalog',
+    'plugins:install-catalog',
+    'plugins:install-development',
+    'plugins:update',
+    'plugins:uninstall',
+    'plugins:get-developer-mode',
+    'plugins:set-developer-mode',
+    'plugins:run',
+    'plugins:retry-run',
     'updates:get-state',
     'updates:check',
     'updates:download',
@@ -347,4 +486,17 @@ function assertTrustedSender(window: BrowserWindow, event: IpcMainInvokeEvent): 
   if (event.senderFrame !== window.webContents.mainFrame) throw new Error('拒绝来自子框架的请求')
 
   if (!isTrustedShellUrl(event.senderFrame.url)) throw new Error('管理界面来源无效')
+}
+
+function registerNewManifestPlatforms(host: PluginHostService): void {
+  registerManifestPlatforms(host.extensionRegistry().platformDefinitions().map((platform) => ({
+    id: platform.id,
+    name: platform.name,
+    shortName: platform.shortName,
+    loginUrl: platform.loginUrl,
+    homeUrl: platform.homeUrl,
+    officialHosts: platform.navigationHosts,
+    contentUrls: platform.contentUrls,
+    riskNote: platform.riskNote
+  })))
 }

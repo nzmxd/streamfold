@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SocialDatabase } from './database'
-import { PluginService } from './plugin-service'
+import { TestSessionApiPluginGate } from './plugins/session-api-plugin-gate.test-fixture'
 import { JobService } from './services/job-service'
 import {
   XiaohongshuApiService,
@@ -21,28 +21,29 @@ const cachedAvatar = { cacheKey: `${'a'.repeat(64)}.png`, mime: 'image/png' as c
 
 describe('XiaohongshuApiService', () => {
   let database: SocialDatabase
-  let plugins: PluginService
+  let plugins: TestSessionApiPluginGate
   let nowMs: number
   let jobSequence: number
 
   beforeEach(() => {
     database = new SocialDatabase(':memory:')
-    plugins = new PluginService(database)
-    plugins.initialize()
+    plugins = new TestSessionApiPluginGate(database, XIAOHONGSHU_API_PLUGIN_ID)
     nowMs = Date.parse('2026-07-13T08:00:00.000Z')
     jobSequence = 0
   })
 
   afterEach(() => database.close())
 
-  it('upgrades an existing user-confirmed remoteId through the API', async () => {
+  it('revalidates an existing remoteId through the API', async () => {
     enablePlugin()
     const account = createAccount('profile_only')
-    bindLegacyIdentity(account.id, ownerId, '旧的本地名称')
+    database.applyManagedIdentity(account.id, {
+      remoteId: ownerId, remoteName: '旧的本地名称'
+    }, isoNow())
     expect(database.getAccount(account.id)).toMatchObject({
       remoteId: ownerId,
-      ownershipStatus: 'user_confirmed',
-      connectionStatus: 'pending'
+      ownershipStatus: 'plugin_verified',
+      connectionStatus: 'ready'
     })
 
     const transport = createTransport()
@@ -134,7 +135,7 @@ describe('XiaohongshuApiService', () => {
   it('stops a previously bound account when the API identity mismatches', async () => {
     enablePlugin()
     const account = createAccount('profile_only')
-    bindLegacyIdentity(account.id, ownerId, ownerName)
+    database.applyManagedIdentity(account.id, { remoteId: ownerId, remoteName: ownerName }, isoNow())
     const transport = createTransport({ profiles: [['other-account', '另一个账号']] })
     const cacheAvatar = vi.fn(async () => cachedAvatar)
     const leaseHooks = { showForLogin: vi.fn(), release: vi.fn(), cacheAvatar }
@@ -182,8 +183,7 @@ describe('XiaohongshuApiService', () => {
       accountSnapshotCount: 1,
       contentCount: 0,
       contentSnapshotCount: 0,
-      jobCount: 1,
-      importCount: 0
+      jobCount: 1
     })
     expect(database.getAccount(account.id)).toMatchObject({
       syncStatus: 'idle',
@@ -220,11 +220,10 @@ describe('XiaohongshuApiService', () => {
       accountSnapshotCount: 1,
       contentCount: 2,
       contentSnapshotCount: 2,
-      jobCount: 1,
-      importCount: 0
+      jobCount: 1
     })
     expect(database.listJobs()[0]).toMatchObject({ status: 'succeeded', kind: 'managed_sync' })
-    expect(plugins.list().find((item) => item.manifest.id === XIAOHONGSHU_API_PLUGIN_ID))
+    expect(database.getPluginState(XIAOHONGSHU_API_PLUGIN_ID))
       .toMatchObject({ successCount: 1, failureCount: 0 })
   })
 
@@ -410,7 +409,7 @@ describe('XiaohongshuApiService', () => {
   })
 
   function enablePlugin(): void {
-    plugins.setEnabled(XIAOHONGSHU_API_PLUGIN_ID, true)
+    plugins.enable()
   }
 
   function createAccount(syncMode: 'profile_only' | 'recent_20' | 'recent_100') {
@@ -425,28 +424,6 @@ describe('XiaohongshuApiService', () => {
     const account = createAccount(syncMode)
     database.applyManagedIdentity(account.id, { remoteId, remoteName }, isoNow())
     return database.updateAccount({ id: account.id, syncEnabled: true })
-  }
-
-  function bindLegacyIdentity(accountId: string, remoteId: string, remoteName: string): void {
-    database.commitImport({
-      capturedAt: isoNow(),
-      profile: {
-        remoteId,
-        remoteName,
-        followers: 0,
-        following: 0,
-        contentCount: 0,
-        viewsTotal: 0
-      },
-      contents: [],
-      warnings: []
-    }, {
-      accountId,
-      pluginId: 'legacy-local-import',
-      fileName: 'legacy.json',
-      fileHash: `legacy-${accountId}`,
-      confirmOwnership: true
-    })
   }
 
   function createService(

@@ -1,0 +1,307 @@
+{
+  "schemaVersion": 2,
+  "id": "streamfold.webhook",
+  "name": "Webhook",
+  "version": "1.0.0",
+  "description": "将经过授权筛选的归页事件和数据发送到公网 HTTPS 地址。",
+  "license": "Apache-2.0",
+  "publisher": {
+    "id": "streamfold",
+    "name": "归页",
+    "keyId": "streamfold-official"
+  },
+  "minimumAppVersion": "0.5.0",
+  "sdkVersion": "1.0.0",
+  "contributions": [
+    {
+      "id": "streamfold.webhook.test",
+      "kind": "action",
+      "name": "测试 Webhook",
+      "description": "手动发送一条测试事件。",
+      "entry": "entries/webhook.js",
+      "runtime": "quickjs",
+      "permissions": [
+        "accounts.read",
+        "profiles.read",
+        "network.https"
+      ],
+      "configSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "hmacSecret"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Webhook 地址",
+            "description": "仅允许公网 HTTPS 地址，不跟随重定向。",
+            "format": "url",
+            "minLength": 9,
+            "maxLength": 2048
+          },
+          "authType": {
+            "type": "string",
+            "title": "鉴权方式",
+            "enum": [
+              "none",
+              "bearer",
+              "api-key"
+            ],
+            "default": "none"
+          },
+          "apiKeyHeader": {
+            "type": "string",
+            "title": "API Key 请求头",
+            "default": "X-Api-Key",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "authToken": {
+            "type": "string",
+            "title": "Bearer / API Key",
+            "format": "secret",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "hmacSecret": {
+            "type": "string",
+            "title": "HMAC-SHA256 密钥",
+            "format": "secret",
+            "minLength": 16,
+            "maxLength": 4096
+          },
+          "fields": {
+            "type": "array",
+            "title": "顶层数据字段",
+            "description": "留空发送授权范围内的全部字段。",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "maxItems": 64
+          },
+          "events": {
+            "type": "array",
+            "title": "订阅事件",
+            "description": "选择需要发送的业务事件。",
+            "items": {
+              "type": "string",
+              "enum": [
+                "sync.completed.v1",
+                "account.updated.v1",
+                "content.updated.v1"
+              ]
+            },
+            "default": [
+              "sync.completed.v1",
+              "account.updated.v1",
+              "content.updated.v1"
+            ],
+            "maxItems": 3
+          }
+        }
+      },
+      "placements": [
+        "plugin-center",
+        "account"
+      ]
+    },
+    {
+      "id": "streamfold.webhook.events",
+      "kind": "event.handler",
+      "name": "事件 Webhook",
+      "description": "在同步、账号或内容事务提交后发送事件。",
+      "entry": "entries/webhook.js",
+      "runtime": "quickjs",
+      "permissions": [
+        "accounts.read",
+        "profiles.read",
+        "contents.read",
+        "metrics.read",
+        "events.subscribe",
+        "network.https"
+      ],
+      "configSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "hmacSecret"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Webhook 地址",
+            "description": "仅允许公网 HTTPS 地址，不跟随重定向。",
+            "format": "url",
+            "minLength": 9,
+            "maxLength": 2048
+          },
+          "authType": {
+            "type": "string",
+            "title": "鉴权方式",
+            "enum": [
+              "none",
+              "bearer",
+              "api-key"
+            ],
+            "default": "none"
+          },
+          "apiKeyHeader": {
+            "type": "string",
+            "title": "API Key 请求头",
+            "default": "X-Api-Key",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "authToken": {
+            "type": "string",
+            "title": "Bearer / API Key",
+            "format": "secret",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "hmacSecret": {
+            "type": "string",
+            "title": "HMAC-SHA256 密钥",
+            "format": "secret",
+            "minLength": 16,
+            "maxLength": 4096
+          },
+          "fields": {
+            "type": "array",
+            "title": "顶层数据字段",
+            "description": "留空发送授权范围内的全部字段。",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "maxItems": 64
+          },
+          "events": {
+            "type": "array",
+            "title": "订阅事件",
+            "description": "选择需要发送的业务事件。",
+            "items": {
+              "type": "string",
+              "enum": [
+                "sync.completed.v1",
+                "account.updated.v1",
+                "content.updated.v1"
+              ]
+            },
+            "default": [
+              "sync.completed.v1",
+              "account.updated.v1",
+              "content.updated.v1"
+            ],
+            "maxItems": 3
+          }
+        }
+      },
+      "events": [
+        "sync.completed.v1",
+        "account.updated.v1",
+        "content.updated.v1"
+      ]
+    },
+    {
+      "id": "streamfold.webhook.schedule",
+      "kind": "scheduled.task",
+      "name": "定时 Webhook",
+      "description": "按计划发送授权账号的数据快照。",
+      "entry": "entries/webhook.js",
+      "runtime": "quickjs",
+      "permissions": [
+        "accounts.read",
+        "profiles.read",
+        "contents.read",
+        "metrics.read",
+        "scheduler.run",
+        "network.https"
+      ],
+      "configSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "hmacSecret"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Webhook 地址",
+            "description": "仅允许公网 HTTPS 地址，不跟随重定向。",
+            "format": "url",
+            "minLength": 9,
+            "maxLength": 2048
+          },
+          "authType": {
+            "type": "string",
+            "title": "鉴权方式",
+            "enum": [
+              "none",
+              "bearer",
+              "api-key"
+            ],
+            "default": "none"
+          },
+          "apiKeyHeader": {
+            "type": "string",
+            "title": "API Key 请求头",
+            "default": "X-Api-Key",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "authToken": {
+            "type": "string",
+            "title": "Bearer / API Key",
+            "format": "secret",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "hmacSecret": {
+            "type": "string",
+            "title": "HMAC-SHA256 密钥",
+            "format": "secret",
+            "minLength": 16,
+            "maxLength": 4096
+          },
+          "fields": {
+            "type": "array",
+            "title": "顶层数据字段",
+            "description": "留空发送授权范围内的全部字段。",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "maxItems": 64
+          },
+          "events": {
+            "type": "array",
+            "title": "订阅事件",
+            "description": "选择需要发送的业务事件。",
+            "items": {
+              "type": "string",
+              "enum": [
+                "sync.completed.v1",
+                "account.updated.v1",
+                "content.updated.v1"
+              ]
+            },
+            "default": [
+              "sync.completed.v1",
+              "account.updated.v1",
+              "content.updated.v1"
+            ],
+            "maxItems": 3
+          }
+        }
+      },
+      "minimumIntervalMinutes": 5,
+      "defaultIntervalMinutes": 1440
+    }
+  ]
+}
