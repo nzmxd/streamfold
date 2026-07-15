@@ -1,6 +1,6 @@
 # 开发与发布
 
-> 适用版本：归页 Streamfold 0.6.2
+> 适用版本：归页 Streamfold 0.6.3
 
 ## 1. 环境
 
@@ -137,7 +137,7 @@ git diff --check
 `.github/workflows/release.yml` 支持手动打包和版本标签发布：
 
 - 手动触发只生成保留 14 天的 Actions 构件，不创建 Release。
-- 标签必须是严格的稳定 SemVer，例如 `v0.6.2`，并与 `package.json` 版本一致。
+- 标签必须是严格的稳定 SemVer，例如 `v0.6.3`，并与 `package.json` 版本一致。
 - Windows、macOS、Linux 在各自原生 runner 上打包；三个任务都成功后才汇总 Release。
 - 每个平台打包后都会检查 `plugin-sandbox.js`、QuickJS 运行资源和官方签名 Webhook 包。
 - 已发布的同名 Release 拒绝覆盖；失败运行留下的同名 draft 会在重跑时删除并重新创建，完整上传后再标记为 latest。
@@ -149,7 +149,7 @@ git diff --check
 | 平台 | 用户构件 | 在线更新资产 | 应用内更新边界 |
 |---|---|---|---|
 | Windows | NSIS `.exe`、`.zip` | `latest.yml`、安装包和 blockmap | NSIS 安装版；ZIP 手动更新 |
-| macOS | `.dmg`、`.zip` | 无 | 0.6.2 未签名，使用 DMG/ZIP 手动更新；完成 Developer ID 签名与公证后再启用应用内更新 |
+| macOS | `.dmg`、`.zip` | 无 | 0.6.3 未签名，使用 DMG/ZIP 手动更新；完成 Developer ID 签名与公证后再启用应用内更新 |
 | Linux | `.AppImage`、`.tar.gz` | `latest-linux.yml`、AppImage | 仅 AppImage；`tar.gz` 手动更新 |
 
 工作流还生成 `SHA256SUMS.txt`。Windows/Linux 打包会解析 `latest*.yml`，逐项核对其引用文件、大小、SHA-512、blockmap，以及安装目录 `app-update.yml` 中的 GitHub owner/repo；不能只验证文件名存在。
@@ -191,4 +191,4 @@ git diff --check
 - Windows/macOS 正式签名、公证，macOS 应用内更新，以及从较低正式版本升级到后续版本的真实验收。
 - 媒体文件备份、XLSX 导出、分组拖拽和浏览器窗口位置恢复。
 
-优先顺序是先完成 0.6.2 的小红书、知乎真实多账号和连续快照验收，再基于动态指标增强分析，最后通过签名目录逐个平台开放新适配器。详细版本范围、技术改造和验收门槛见[产品路线图](roadmap.md)。
+优先顺序是先完成 0.6.3 的小红书、知乎真实多账号和连续快照验收，再基于动态指标增强分析，最后通过签名目录逐个平台开放新适配器。详细版本范围、技术改造和验收门槛见[产品路线图](roadmap.md)。

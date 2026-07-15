@@ -414,6 +414,45 @@ describe('Zhihu JSON API adapter', () => {
     expect(getJson.mock.calls.map(([endpoint]) => endpoint)).toEqual([first, second])
   })
 
+  it('prefers explicit analysis tokens and normalizes safe numeric response tokens', () => {
+    const endpoint = ZHIHU_API_ENDPOINTS.contentAnalysisList('article')
+    const parsed = parseZhihuContentAnalysisList(response(endpoint, {
+      data: [{
+        type: 'article',
+        content_token: 'official-token-42',
+        data: { id: 42, url_token: 'nested-token-42', title: '外层 token 的文章' },
+        reaction: analyticsMetrics()
+      }, {
+        content_type: 'article',
+        content_token: 43,
+        content_id: 43,
+        content_title: '数字 token 的文章',
+        ...analyticsMetrics()
+      }],
+      paging: { is_end: true, totals: 2, totals_real: 2, next: null }
+    }), 'article', endpoint)
+
+    expect(parsed.items).toEqual([
+      expect.objectContaining({ contentToken: 'official-token-42', contentId: '42' }),
+      expect.objectContaining({ contentToken: '43', contentId: '43' })
+    ])
+  })
+
+  it('rejects unsafe or malformed numeric analysis tokens', () => {
+    const endpoint = ZHIHU_API_ENDPOINTS.contentAnalysisList('article')
+    for (const contentToken of [Number.MAX_SAFE_INTEGER + 1, -1, 1.5, {}, 'bad token!']) {
+      expectCode(() => parseZhihuContentAnalysisList(response(endpoint, {
+        data: [{
+          content_type: 'article',
+          content_token: contentToken,
+          content_id: '42',
+          content_title: '非法 token 的文章'
+        }],
+        paging: { is_end: true, totals: 1, totals_real: 1, next: null }
+      }), 'article', endpoint), 'MALFORMED_RESPONSE')
+    }
+  })
+
   it('rejects analysis dates outside the request and unsafe content-list paging', () => {
     const endpoint = ZHIHU_API_ENDPOINTS.memberDaily('2026-07-01', '2026-07-02')
     expectCode(() => parseZhihuDailyAnalytics(response(endpoint, [

@@ -567,9 +567,14 @@ function analysisRow(
   id: string,
   metrics: Record<string, unknown>
 ): Record<string, unknown> {
+  const numericId = Number(id)
+  if (!Number.isSafeInteger(numericId) || numericId < 0) {
+    throw new Error(`analysis row id must be a safe non-negative integer: ${id}`)
+  }
   return {
     type,
-    data: { id, url_token: id, title: `${type}-${id}` },
+    content_token: `${type}-token-${id}`,
+    data: { id: numericId, title: `${type}-${id}` },
     reaction: metrics
   }
 }

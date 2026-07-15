@@ -932,9 +932,11 @@ function parseZhihuContentAnalysisItem(
   const rawType = firstPresent(item, ['type', 'content_type']) ?? expectedType
   const actualType = rawType === 'video' ? 'zvideo' : cleanAnalysisContentType(rawType)
   if (actualType !== expectedType) malformed('知乎内容分析列表返回了其他内容类型')
-  const contentToken = cleanContentToken(
-    firstPresent(data, ['url_token', 'content_token', 'token', 'id']) ??
-      firstPresent(item, ['content_token', 'token']),
+  const contentToken = cleanResponseContentToken(
+    firstPresent(item, ['content_token', 'token', 'url_token']) ??
+      firstPresent(data, ['content_token', 'token', 'url_token']) ??
+      firstPresent(data, ['content_id', 'id']) ??
+      firstPresent(item, ['content_id', 'id']),
     `${path}.content_token`
   )
   const idValue = firstPresent(data, ['content_id', 'id']) ?? firstPresent(item, ['content_id', 'id'])
@@ -945,15 +947,16 @@ function parseZhihuContentAnalysisItem(
     `${path}.title`,
     500
   )
+  const flatMetrics = data === item ? item : { ...data, ...item }
   const metricBase = item.metrics !== undefined && item.metrics !== null
     ? objectValue(item.metrics, `${path}.metrics`)
-    : item.reaction !== undefined && item.reaction !== null
+    : isObjectRecord(item.reaction)
       ? objectValue(item.reaction, `${path}.reaction`)
       : data.metrics !== undefined && data.metrics !== null
         ? objectValue(data.metrics, `${path}.data.metrics`)
-        : data.reaction !== undefined && data.reaction !== null
+        : isObjectRecord(data.reaction)
           ? objectValue(data.reaction, `${path}.data.reaction`)
-          : item
+          : flatMetrics
   const advancedValue = item.advanced ?? data.advanced
   const metricSource = advancedValue === undefined || advancedValue === null || metricBase.advanced !== undefined
     ? metricBase
@@ -1373,6 +1376,13 @@ function cleanContentToken(value: unknown, path = 'contentToken'): string {
   return token
 }
 
+function cleanResponseContentToken(value: unknown, path: string): string {
+  if (Number.isSafeInteger(value) && (value as number) >= 0) {
+    return cleanContentToken(String(value), path)
+  }
+  return cleanContentToken(value, path)
+}
+
 function analysisOffset(value: number): number {
   if (!Number.isInteger(value) || value < 0 || value > MAX_ANALYSIS_OFFSET || value % PAGE_SIZE !== 0) {
     malformed('知乎内容分析 offset 超出允许范围')
@@ -1396,8 +1406,12 @@ function decimalInteger(value: unknown, path: string): number {
 }
 
 function objectValue(value: unknown, path: string): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) malformed(`${path} 必须是对象`)
-  return value as Record<string, unknown>
+  if (!isObjectRecord(value)) malformed(`${path} 必须是对象`)
+  return value
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function analysisRows(value: unknown, path: string): unknown[] {
