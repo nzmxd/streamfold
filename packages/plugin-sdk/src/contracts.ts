@@ -26,6 +26,72 @@ export type JsonPrimitive = null | boolean | number | string
 export type JsonValue = JsonPrimitive | JsonValue[] | JsonObject
 export interface JsonObject { [key: string]: JsonValue }
 
+export type ContentType = 'article' | 'post' | 'image' | 'video' | 'answer'
+export type ContentMetricValueKind = 'count' | 'ratio' | 'duration'
+export type ContentMetricUnit = 'count' | 'ratio' | 'seconds'
+export type ContentMetricGroup = 'reach' | 'engagement' | 'conversion' | 'other'
+
+export interface ContentMetricDefinition {
+  id: string
+  label: string
+  valueKind: ContentMetricValueKind
+  unit: ContentMetricUnit
+  group: ContentMetricGroup
+  sortOrder: number
+}
+
+export interface StandardContentSnapshot {
+  views: number | null
+  likes: number | null
+  comments: number | null
+  shares: number | null
+  favorites: number | null
+  metrics: Record<string, number | null>
+  capturedAt: string
+}
+
+export interface StandardContent {
+  remoteId: string
+  type: ContentType
+  title: string
+  bodyExcerpt: string
+  url: string
+  publishedAt: string | null
+  snapshots: StandardContentSnapshot[]
+}
+
+export interface StandardProfile {
+  remoteId: string
+  remoteName: string
+  avatarUrl?: string
+  bio?: string
+  creatorLevel?: number | null
+  followers: number | null
+  following: number | null
+  contentCount: number | null
+  viewsTotal: number | null
+  likesAndFavoritesTotal?: number | null
+  views?: number | null
+  likes?: number | null
+  comments?: number | null
+  shares?: number | null
+  favorites?: number | null
+}
+
+export interface StandardDataset {
+  capturedAt: string
+  profile: StandardProfile | null
+  contentMetricDefinitions?: ContentMetricDefinition[]
+  contents: StandardContent[]
+  warnings: string[]
+}
+
+export interface PlatformAdapterIdentity {
+  remoteId: string
+  remoteName: string
+  profile?: JsonObject
+}
+
 export interface PluginPublisher {
   id: string
   name: string
@@ -202,10 +268,25 @@ export interface PluginContributionModule {
   [method: string]: (context: Readonly<PluginExecutionContext>, input: JsonValue) => JsonValue | Promise<JsonValue>
 }
 
+export interface PlatformAdapterContributionModule {
+  readIdentity(
+    context: Readonly<PluginExecutionContext>,
+    input: JsonValue
+  ): PlatformAdapterIdentity | Promise<PlatformAdapterIdentity>
+  collect(
+    context: Readonly<PluginExecutionContext>,
+    input: JsonValue
+  ): StandardDataset | Promise<StandardDataset>
+}
+
 declare global {
   const streamfold: StreamfoldPluginApi
 }
 
 export function defineContribution<const T extends PluginContributionModule>(contribution: T): T {
   return contribution
+}
+
+export function definePlatformAdapter<const T extends PlatformAdapterContributionModule>(adapter: T): T {
+  return adapter
 }

@@ -30,6 +30,7 @@ import type {
   AnalyticsOverview,
   AnalyticsQuery,
   ContentDetail,
+  ContentMetricDefinition,
   ContentQuery,
   ContentSnapshot,
   ContentSummary,
@@ -61,6 +62,7 @@ import type {
 import type {
   DatasetCommitStats,
   StandardContent,
+  StandardContentSnapshot,
   StandardDataset,
   StandardProfile
 } from './plugins/types'
@@ -208,7 +210,7 @@ interface ContentRow {
   tags_json: string
 }
 
-interface SnapshotRow {
+interface MetricSnapshotRow {
   views: number | null
   likes: number | null
   comments: number | null
@@ -217,7 +219,27 @@ interface SnapshotRow {
   captured_at: string
 }
 
-interface AccountSnapshotRow extends SnapshotRow {
+interface SnapshotRow extends MetricSnapshotRow {
+  id: string
+}
+
+interface ContentMetricDefinitionRow {
+  platform_id: string
+  metric_id: string
+  label: string
+  value_kind: ContentMetricDefinition['valueKind']
+  unit: ContentMetricDefinition['unit']
+  metric_group: ContentMetricDefinition['group']
+  sort_order: number
+}
+
+interface ContentSnapshotMetricRow {
+  snapshot_id: string
+  metric_id: string
+  value: number | null
+}
+
+interface AccountSnapshotRow extends MetricSnapshotRow {
   account_id: string
   followers: number | null
   following: number | null
@@ -944,7 +966,61 @@ export class SocialDatabase {
     if (!row) throw new Error('内容不存在')
     const summary = this.mapContent(row)
     const snapshots = this.listContentSnapshots(id, 'ASC')
-    return { ...summary, snapshots }
+    const metricDefinitions = this.listContentMetricDefinitions(row.platform_id)
+    return { ...summary, snapshots, metricDefinitions }
+  }
+
+  private listContentMetricDefinitions(platformId: PlatformId): ContentMetricDefinition[] {
+    const rows = this.db.prepare(`
+      SELECT platform_id, metric_id, label, value_kind, unit, metric_group, sort_order
+      FROM content_metric_definitions
+      WHERE platform_id = ?
+      ORDER BY sort_order ASC, metric_id ASC
+    `).all(platformId) as unknown as ContentMetricDefinitionRow[]
+    return rows.map(mapContentMetricDefinition)
+  }
+
+  private upsertContentMetricDefinitions(
+    platformId: PlatformId,
+    definitions: ContentMetricDefinition[],
+    updatedAt: string
+  ): ReadonlyMap<string, ContentMetricDefinition> {
+    validateContentMetricDefinitions(definitions)
+    const upsert = this.db.prepare(`
+      INSERT INTO content_metric_definitions (
+        platform_id, metric_id, label, value_kind, unit, metric_group, sort_order, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(platform_id, metric_id) DO UPDATE SET
+        label = excluded.label,
+        value_kind = excluded.value_kind,
+        unit = excluded.unit,
+        metric_group = excluded.metric_group,
+        sort_order = excluded.sort_order,
+        updated_at = excluded.updated_at
+    `)
+    for (const definition of definitions) {
+      upsert.run(
+        platformId,
+        definition.id,
+        definition.label,
+        definition.valueKind,
+        definition.unit,
+        definition.group,
+        definition.sortOrder,
+        updatedAt
+      )
+    }
+    return new Map(this.listContentMetricDefinitions(platformId).map((definition) => [definition.id, definition]))
+  }
+
+  private snapshotMetrics(snapshotId: string): Record<string, number | null> {
+    const rows = this.db.prepare(`
+      SELECT snapshot_id, metric_id, value
+      FROM content_snapshot_metrics
+      WHERE snapshot_id = ?
+      ORDER BY metric_id ASC
+    `).all(snapshotId) as unknown as ContentSnapshotMetricRow[]
+    return Object.fromEntries(rows.map((row) => [row.metric_id, nullableNumber(row.value)]))
   }
 
   updateContent(input: UpdateContentInput): ContentDetail {
@@ -1104,8 +1180,20 @@ export class SocialDatabase {
         now,
         account.id
       )
+      const metricDefinitions = this.upsertContentMetricDefinitions(
+        account.platformId,
+        payload.contentMetricDefinitions ?? [],
+        payload.capturedAt
+      )
       this.insertAccountSnapshot(account.id, profile, payload.capturedAt)
-      const stats = this.writeStandardContents(account.id, payload.contents, payload.capturedAt, now)
+      const stats = this.writeStandardContents(
+        account.id,
+        account.platformId,
+        payload.contents,
+        metricDefinitions,
+        payload.capturedAt,
+        now
+      )
       const resultJson = JSON.stringify({ ...stats, warnings: payload.warnings })
       const jobUpdate = this.db.prepare(`
         UPDATE jobs SET status = 'succeeded', progress = 100, stage = '只读同步完成',
@@ -1136,6 +1224,7 @@ export class SocialDatabase {
           adapterContributionId: account.adapterContributionId,
           capturedAt: payload.capturedAt,
           profile,
+          contentMetricDefinitions: payload.contentMetricDefinitions ?? [],
           contents: payload.contents,
           warnings: payload.warnings,
           stats
@@ -1166,7 +1255,9 @@ export class SocialDatabase {
 
   private writeStandardContents(
     accountId: string,
+    platformId: PlatformId,
     sourceContents: StandardContent[],
+    metricDefinitions: ReadonlyMap<string, ContentMetricDefinition>,
     firstCapturedAt: string,
     updatedAt: string
   ): DatasetCommitStats {
@@ -1192,8 +1283,13 @@ export class SocialDatabase {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(content_id, captured_at) DO NOTHING
     `)
+    const insertSnapshotMetric = this.db.prepare(`
+      INSERT INTO content_snapshot_metrics (
+        snapshot_id, platform_id, metric_id, value
+      ) VALUES (?, ?, ?, ?)
+    `)
     const findLatestSnapshot = this.db.prepare(`
-      SELECT views, likes, comments, shares, favorites, captured_at
+      SELECT id, views, likes, comments, shares, favorites, captured_at
       FROM content_snapshots
       WHERE content_id = ?
       ORDER BY captured_at DESC, id DESC
@@ -1218,16 +1314,23 @@ export class SocialDatabase {
       }
       for (const snapshot of content.snapshots) {
         const latest = findLatestSnapshot.get(contentId) as unknown as SnapshotRow | undefined
-        if (latest && sameSnapshotMetrics(latest, snapshot)) {
+        const normalizedMetrics = validateContentSnapshotMetrics(snapshot.metrics ?? {}, metricDefinitions)
+        const latestMetrics = latest ? this.snapshotMetrics(latest.id) : {}
+        if (latest && sameSnapshotMetrics(latest, latestMetrics, snapshot, normalizedMetrics)) {
           skippedSnapshotCount += 1
           continue
         }
+        const snapshotId = randomUUID()
         const result = insertSnapshot.run(
-          randomUUID(), contentId, snapshot.views, snapshot.likes, snapshot.comments,
+          snapshotId, contentId, snapshot.views, snapshot.likes, snapshot.comments,
           snapshot.shares, snapshot.favorites, snapshot.capturedAt
         )
-        if (Number(result.changes) === 1) snapshotCount += 1
-        else skippedSnapshotCount += 1
+        if (Number(result.changes) === 1) {
+          for (const [metricId, value] of Object.entries(normalizedMetrics)) {
+            insertSnapshotMetric.run(snapshotId, platformId, metricId, value)
+          }
+          snapshotCount += 1
+        } else skippedSnapshotCount += 1
       }
     }
 
@@ -2167,11 +2270,29 @@ export class SocialDatabase {
 
   private listContentSnapshots(contentId: string, order: 'ASC' | 'DESC', limit?: number): ContentSnapshot[] {
     const rows = this.db.prepare(`
-      SELECT views, likes, comments, shares, favorites, captured_at
+      SELECT id, views, likes, comments, shares, favorites, captured_at
       FROM content_snapshots WHERE content_id = ? ORDER BY captured_at ${order}
       ${limit === undefined ? '' : 'LIMIT ?'}
     `).all(...(limit === undefined ? [contentId] : [contentId, limit])) as unknown as SnapshotRow[]
-    return rows.map(mapSnapshot)
+    if (rows.length === 0) return []
+    const metricRows: ContentSnapshotMetricRow[] = []
+    for (let offset = 0; offset < rows.length; offset += 500) {
+      const snapshotIds = rows.slice(offset, offset + 500).map((row) => row.id)
+      const placeholders = snapshotIds.map(() => '?').join(', ')
+      metricRows.push(...this.db.prepare(`
+        SELECT snapshot_id, metric_id, value
+        FROM content_snapshot_metrics
+        WHERE snapshot_id IN (${placeholders})
+        ORDER BY snapshot_id, metric_id
+      `).all(...snapshotIds) as unknown as ContentSnapshotMetricRow[])
+    }
+    const metricsBySnapshot = new Map<string, Record<string, number | null>>()
+    for (const metric of metricRows) {
+      const metrics = metricsBySnapshot.get(metric.snapshot_id) ?? {}
+      metrics[metric.metric_id] = nullableNumber(metric.value)
+      metricsBySnapshot.set(metric.snapshot_id, metrics)
+    }
+    return rows.map((row) => mapSnapshot(row, metricsBySnapshot.get(row.id) ?? {}))
   }
 
   private assertRemoteIdentityAvailable(accountId: string, platformId: PlatformId, remoteId: string | null): void {
@@ -2188,12 +2309,12 @@ export class SocialDatabase {
         cs.favorites, cs.captured_at
       FROM content_snapshots cs JOIN contents c ON c.id = cs.content_id
       WHERE cs.captured_at >= ? ORDER BY cs.captured_at
-    `).all(start.toISOString()) as unknown as Array<SnapshotRow & { account_id: string; content_id: string }>
+    `).all(start.toISOString()) as unknown as Array<MetricSnapshotRow & { account_id: string; content_id: string }>
     const accountRows = this.db.prepare(`
       SELECT account_id, followers, captured_at FROM account_snapshots
       WHERE captured_at >= ? ORDER BY captured_at
     `).all(start.toISOString()) as unknown as Array<{ account_id: string; followers: number | null; captured_at: string }>
-    const latestContentPerDay = new Map<string, SnapshotRow>()
+    const latestContentPerDay = new Map<string, MetricSnapshotRow>()
     for (const row of contentRows) {
       if (!accountIds.has(row.account_id)) continue
       latestContentPerDay.set(`${row.content_id}:${row.captured_at.slice(0, 10)}`, row)
@@ -2242,14 +2363,28 @@ export class SocialDatabase {
 }
 
 function sameSnapshotMetrics(
-  previous: Pick<SnapshotRow, 'views' | 'likes' | 'comments' | 'shares' | 'favorites'>,
-  current: Pick<ContentSnapshot, 'views' | 'likes' | 'comments' | 'shares' | 'favorites'>
+  previous: Pick<MetricSnapshotRow, 'views' | 'likes' | 'comments' | 'shares' | 'favorites'>,
+  previousMetrics: Readonly<Record<string, number | null>>,
+  current: Pick<StandardContentSnapshot, 'views' | 'likes' | 'comments' | 'shares' | 'favorites'>,
+  currentMetrics: Readonly<Record<string, number | null>>
 ): boolean {
   return previous.views === current.views &&
     previous.likes === current.likes &&
     previous.comments === current.comments &&
     previous.shares === current.shares &&
-    previous.favorites === current.favorites
+    previous.favorites === current.favorites &&
+    sameDynamicMetrics(previousMetrics, currentMetrics)
+}
+
+function sameDynamicMetrics(
+  previous: Readonly<Record<string, number | null>>,
+  current: Readonly<Record<string, number | null>>
+): boolean {
+  const previousKeys = Object.keys(previous)
+  const currentKeys = Object.keys(current)
+  return previousKeys.length === currentKeys.length && previousKeys.every((key) => (
+    Object.prototype.hasOwnProperty.call(current, key) && previous[key] === current[key]
+  ))
 }
 
 function mapAccount(
@@ -2322,6 +2457,17 @@ function mapAccountSnapshot(row: AccountSnapshotRow): AccountSnapshot {
   }
 }
 
+function mapContentMetricDefinition(row: ContentMetricDefinitionRow): ContentMetricDefinition {
+  return {
+    id: row.metric_id,
+    label: row.label,
+    valueKind: row.value_kind,
+    unit: row.unit,
+    group: row.metric_group,
+    sortOrder: Number(row.sort_order)
+  }
+}
+
 function deriveAccountStatus(state: {
   connectionStatus: ConnectionStatus
   syncEnabled: boolean
@@ -2345,13 +2491,17 @@ function canEnableManagedSync(
     syncMode !== 'disabled'
 }
 
-function mapSnapshot(row: SnapshotRow): ContentSnapshot {
+function mapSnapshot(
+  row: SnapshotRow,
+  metrics: Record<string, number | null> = {}
+): ContentSnapshot {
   return {
     views: nullableNumber(row.views),
     likes: nullableNumber(row.likes),
     comments: nullableNumber(row.comments),
     shares: nullableNumber(row.shares),
     favorites: nullableNumber(row.favorites),
+    metrics,
     capturedAt: row.captured_at
   }
 }
@@ -2571,19 +2721,101 @@ function validateManagedSync(
 function validateStandardDataset(payload: StandardDataset): void {
   if (!isIsoDate(payload.capturedAt)) throw new Error('数据集采集时间无效')
   if (payload.profile && !payload.profile.remoteId.trim()) throw new Error('数据集身份缺少 remoteId')
+  validateContentMetricDefinitions(payload.contentMetricDefinitions ?? [])
   for (const content of payload.contents) {
     if (!content.remoteId.trim()) throw new Error('数据集内容缺少 remoteId')
     for (const snapshot of content.snapshots) {
       if (!isIsoDate(snapshot.capturedAt)) throw new Error('内容快照时间无效')
+      validateContentSnapshotMetricShape(snapshot.metrics ?? {})
     }
   }
+}
+
+const CONTENT_METRIC_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/
+const CONTENT_METRIC_VALUE_KINDS = new Set<ContentMetricDefinition['valueKind']>([
+  'count', 'ratio', 'duration'
+])
+const CONTENT_METRIC_UNITS = new Set<ContentMetricDefinition['unit']>([
+  'count', 'ratio', 'seconds'
+])
+const CONTENT_METRIC_GROUPS = new Set<ContentMetricDefinition['group']>([
+  'reach', 'engagement', 'conversion', 'other'
+])
+
+function validateContentMetricDefinitions(definitions: ContentMetricDefinition[]): void {
+  if (!Array.isArray(definitions) || definitions.length > 100) throw new Error('内容指标定义数量无效')
+  const ids = new Set<string>()
+  for (const definition of definitions) {
+    if (!definition || typeof definition !== 'object') throw new Error('内容指标定义无效')
+    if (!CONTENT_METRIC_ID_PATTERN.test(definition.id) || ids.has(definition.id)) {
+      throw new Error('内容指标定义 ID 无效或重复')
+    }
+    ids.add(definition.id)
+    if (typeof definition.label !== 'string' || definition.label.trim() !== definition.label ||
+      definition.label.length < 1 || definition.label.length > 40 ||
+      /[\u0000-\u001f\u007f]/u.test(definition.label)) {
+      throw new Error('内容指标定义标签无效')
+    }
+    if (!CONTENT_METRIC_VALUE_KINDS.has(definition.valueKind) ||
+      !CONTENT_METRIC_UNITS.has(definition.unit) ||
+      !CONTENT_METRIC_GROUPS.has(definition.group)) {
+      throw new Error('内容指标定义类型无效')
+    }
+    const expectedUnit: Record<ContentMetricDefinition['valueKind'], ContentMetricDefinition['unit']> = {
+      count: 'count',
+      ratio: 'ratio',
+      duration: 'seconds'
+    }
+    if (definition.unit !== expectedUnit[definition.valueKind]) throw new Error('内容指标定义单位无效')
+    if (!Number.isSafeInteger(definition.sortOrder) || definition.sortOrder < 0 || definition.sortOrder > 10_000) {
+      throw new Error('内容指标定义排序无效')
+    }
+  }
+}
+
+function validateContentSnapshotMetricShape(metrics: Record<string, number | null>): void {
+  if (!metrics || typeof metrics !== 'object' || Array.isArray(metrics) || Object.keys(metrics).length > 100) {
+    throw new Error('内容动态指标无效')
+  }
+  for (const [metricId, value] of Object.entries(metrics)) {
+    if (!CONTENT_METRIC_ID_PATTERN.test(metricId) ||
+      (value !== null && (typeof value !== 'number' || !Number.isFinite(value)))) {
+      throw new Error('内容动态指标无效')
+    }
+  }
+}
+
+function validateContentSnapshotMetrics(
+  metrics: Record<string, number | null>,
+  definitions: ReadonlyMap<string, ContentMetricDefinition>
+): Record<string, number | null> {
+  validateContentSnapshotMetricShape(metrics)
+  const normalized: Record<string, number | null> = {}
+  for (const metricId of Object.keys(metrics).sort()) {
+    const definition = definitions.get(metricId)
+    if (!definition) throw new Error(`内容动态指标缺少定义：${metricId}`)
+    const value = metrics[metricId] ?? null
+    if (value !== null) {
+      if (definition.valueKind === 'count' && (!Number.isSafeInteger(value) || value < 0)) {
+        throw new Error(`内容计数指标无效：${metricId}`)
+      }
+      if (definition.valueKind === 'ratio' && (value < 0 || value > 1)) {
+        throw new Error(`内容比率指标无效：${metricId}`)
+      }
+      if (definition.valueKind === 'duration' && value < 0) {
+        throw new Error(`内容时长指标无效：${metricId}`)
+      }
+    }
+    normalized[metricId] = value
+  }
+  return normalized
 }
 
 function dedupeStandardContents(contents: StandardContent[]): StandardContent[] {
   const result = new Map<string, StandardContent>()
   for (const content of contents) {
     const previous = result.get(content.remoteId)
-    const snapshots = new Map<string, ContentSnapshot>()
+    const snapshots = new Map<string, StandardContentSnapshot>()
     for (const snapshot of previous?.snapshots ?? []) snapshots.set(snapshot.capturedAt, snapshot)
     for (const snapshot of content.snapshots) snapshots.set(snapshot.capturedAt, snapshot)
     result.set(content.remoteId, { ...content, snapshots: [...snapshots.values()] })

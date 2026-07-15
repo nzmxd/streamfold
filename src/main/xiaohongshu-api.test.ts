@@ -96,11 +96,16 @@ function note(
     id,
     title: 'API 返回的测试笔记',
     post_time: Date.parse('2026-03-18T12:01:00.000Z'),
+    imp_count: 2_888,
     read_count: 521,
+    coverClickRate: 0.174,
     like_count: 18,
     fav_count: 10,
     comment_count: 7,
+    increase_fans_count: 3,
     share_count: 2,
+    view_time_avg: 16,
+    danmaku_count: 0,
     type: 1,
     ...overrides
   }
@@ -226,11 +231,16 @@ describe('XiaohongshuApi JSON-only adapter', () => {
         title: 'API 返回的测试笔记',
         bodyExcerpt: '',
         postTime: '2026-03-18T12:01:00.000Z',
+        impressions: 2888,
         readCount: 521,
+        coverClickRate: 0.174,
         likeCount: 18,
         favoriteCount: 10,
         commentCount: 7,
+        followersGained: 3,
         shareCount: 2,
+        averageViewDurationSeconds: 16,
+        danmaku: 0,
         type: 'image',
         url: 'https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa'
       }],
@@ -254,6 +264,46 @@ describe('XiaohongshuApi JSON-only adapter', () => {
   it('keeps a fresh note empty title without using a page fallback', () => {
     expect(parseAnalyzeCaptures([capture([note(undefined, { title: '', share_count: undefined })])], 1)[0])
       .toMatchObject({ title: '', shareCount: null })
+  })
+
+  it('maps every official note metric, normalizes both CTR scales and preserves missing values', () => {
+    const fractional = parseAnalyzeCaptures([capture([note()])], 1)[0]
+    expect(fractional).toMatchObject({
+      impressions: 2_888,
+      readCount: 521,
+      coverClickRate: 0.174,
+      likeCount: 18,
+      commentCount: 7,
+      favoriteCount: 10,
+      followersGained: 3,
+      shareCount: 2,
+      averageViewDurationSeconds: 16,
+      danmaku: 0
+    })
+
+    const percentage = parseAnalyzeCaptures([capture([note(undefined, {
+      coverClickRate: '17.4',
+      view_time_avg: '16.5'
+    })])], 1)[0]
+    expect(percentage).toMatchObject({
+      coverClickRate: 0.174,
+      averageViewDurationSeconds: 16.5
+    })
+
+    const missing = parseAnalyzeCaptures([capture([note(undefined, {
+      imp_count: undefined,
+      coverClickRate: undefined,
+      increase_fans_count: undefined,
+      view_time_avg: undefined,
+      danmaku_count: undefined
+    })])], 1)[0]
+    expect(missing).toMatchObject({
+      impressions: null,
+      coverClickRate: null,
+      followersGained: null,
+      averageViewDurationSeconds: null,
+      danmaku: null
+    })
   })
 
   it('stores the canonical public note URL and only preserves a validated xsec context', () => {

@@ -1,4 +1,8 @@
-import type { ContentSnapshot, ContentType } from '../../shared/content-contracts'
+import type {
+  ContentMetricDefinition,
+  ContentType,
+  MetricValues
+} from '../../shared/content-contracts'
 
 export interface StandardProfile {
   remoteId: string
@@ -21,6 +25,12 @@ export interface StandardProfile {
   favorites?: number | null
 }
 
+export interface StandardContentSnapshot extends MetricValues {
+  /** Optional on adapter input for compatibility; the host always returns a concrete record. */
+  metrics?: Record<string, number | null>
+  capturedAt: string
+}
+
 export interface StandardContent {
   remoteId: string
   type: ContentType
@@ -28,7 +38,7 @@ export interface StandardContent {
   bodyExcerpt: string
   url: string
   publishedAt: string | null
-  snapshots: ContentSnapshot[]
+  snapshots: StandardContentSnapshot[]
 }
 
 /** Platform-neutral dataset produced by a verified, read-only platform adapter. */
@@ -36,6 +46,7 @@ export interface StandardDataset {
   capturedAt: string
   profile: StandardProfile | null
   contents: StandardContent[]
+  contentMetricDefinitions?: ContentMetricDefinition[]
   warnings: string[]
 }
 

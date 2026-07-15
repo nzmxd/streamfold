@@ -116,11 +116,16 @@ export interface XiaohongshuContent {
   title: string
   bodyExcerpt: string
   postTime: string | null
+  impressions: number | null
   readCount: number | null
+  coverClickRate: number | null
   likeCount: number | null
   favoriteCount: number | null
   commentCount: number | null
+  followersGained: number | null
   shareCount: number | null
+  averageViewDurationSeconds: number | null
+  danmaku: number | null
   type: XiaohongshuContentType | null
   url: string
 }
@@ -193,7 +198,7 @@ export class XiaohongshuApi {
       'note_analyze_list',
       limit
     )
-    const analyzed = parseAnalyzeCaptures(analyzeResponses, limit, false)
+    const analyzed = parseAnalyzeCaptures(analyzeResponses, limit, true)
     const contents = mergeContents(posted, analyzed, limit).map((content) => {
       const existing = options.existingExcerpts?.get(content.id)
       return !content.bodyExcerpt && existing
@@ -568,11 +573,16 @@ function mergeContents(
       bodyExcerpt: content.bodyExcerpt || metrics.bodyExcerpt,
       postTime: content.postTime ?? metrics.postTime,
       type: content.type ?? metrics.type,
+      impressions: metrics.impressions,
       readCount: metrics.readCount,
+      coverClickRate: metrics.coverClickRate,
       likeCount: metrics.likeCount,
       favoriteCount: metrics.favoriteCount,
       commentCount: metrics.commentCount,
-      shareCount: metrics.shareCount
+      followersGained: metrics.followersGained,
+      shareCount: metrics.shareCount,
+      averageViewDurationSeconds: metrics.averageViewDurationSeconds,
+      danmaku: metrics.danmaku
     }
   })
   return result.slice(0, limit)
@@ -615,13 +625,18 @@ function parseContent(value: unknown): XiaohongshuContent {
     title: cleanString(item.title, 'note.title', 200, true),
     bodyExcerpt: safeExcerpt(item.desc),
     postTime: timestampValue(item.post_time, 'note.post_time'),
+    impressions: optionalCount(item.imp_count, 'note.imp_count'),
     readCount: countValue(item.read_count, 'note.read_count'),
+    coverClickRate: optionalCoverClickRate(item.coverClickRate),
     likeCount: countValue(item.like_count, 'note.like_count'),
     favoriteCount: countValue(item.fav_count, 'note.fav_count'),
     commentCount: countValue(item.comment_count, 'note.comment_count'),
+    followersGained: optionalCount(item.increase_fans_count, 'note.increase_fans_count'),
     shareCount: item.share_count === undefined || item.share_count === null
       ? null
       : countValue(item.share_count, 'note.share_count'),
+    averageViewDurationSeconds: optionalDurationSeconds(item.view_time_avg),
+    danmaku: optionalCount(item.danmaku_count, 'note.danmaku_count'),
     type: contentType(item.type ?? item.note_type),
     url: publicNoteUrl(id)
   }
@@ -646,7 +661,9 @@ function parsePostedContent(value: unknown): XiaohongshuContent {
       firstDefined(item, ['post_time', 'publish_time', 'published_at', 'create_time', 'createTime', 'time']),
       'posted_note.publish_time'
     ),
+    impressions: null,
     readCount: optionalCount(firstDefined(item, ['read_count', 'view_count', 'views']), 'posted_note.read_count'),
+    coverClickRate: null,
     likeCount: optionalCount(firstDefined(item, ['like_count', 'likes']), 'posted_note.like_count'),
     favoriteCount: optionalCount(
       firstDefined(item, ['fav_count', 'collect_count', 'collected_count', 'favorite_count']),
@@ -656,10 +673,13 @@ function parsePostedContent(value: unknown): XiaohongshuContent {
       firstDefined(item, ['comment_count', 'comments_count', 'comments']),
       'posted_note.comment_count'
     ),
+    followersGained: null,
     shareCount: optionalCount(
       firstDefined(item, ['share_count', 'shared_count', 'shares']),
       'posted_note.share_count'
     ),
+    averageViewDurationSeconds: null,
+    danmaku: null,
     type: contentType(firstDefined(item, ['type', 'note_type'])),
     url: publicNoteUrl(
       id,
@@ -845,6 +865,25 @@ function optionalCount(value: unknown, path: string): number | null {
   if (typeof value === 'string' && /^\d+$/.test(value)) value = Number(value)
   if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > MAX_COUNT) return null
   return value as number
+}
+
+function optionalCoverClickRate(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'string' && /^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value.trim())) {
+    value = Number(value)
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) return null
+  return value <= 1 ? value : value / 100
+}
+
+function optionalDurationSeconds(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'string' && /^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value.trim())) {
+    value = Number(value)
+  }
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 86_400
+    ? value
+    : null
 }
 
 function timestampValue(value: unknown, path: string): string {

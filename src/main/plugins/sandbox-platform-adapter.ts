@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Account, SyncMode } from '../../shared/contracts'
+import type { ContentMetricDefinition } from '../../shared/content-contracts'
 import type { JobRecord } from '../../shared/job-contracts'
 import type {
   ConfirmSessionApiIdentityInput,
@@ -342,6 +343,7 @@ function parseDataset(value: Record<string, unknown>, platformId: string): Stand
   const capturedAt = text(value.capturedAt, '采集时间', 10, 40)
   if (new Date(capturedAt).toISOString() !== capturedAt) throw new Error('插件采集时间无效')
   const profile = value.profile === null || value.profile === undefined ? null : parseProfile(record(value.profile))
+  const contentMetricDefinitions = parseContentMetricDefinitions(value.contentMetricDefinitions)
   if (!Array.isArray(value.contents) || value.contents.length > 5_000) throw new Error('插件内容数据集无效')
   const contents = value.contents.map((item) => {
     const content = record(item)
@@ -371,6 +373,7 @@ function parseDataset(value: Record<string, unknown>, platformId: string): Stand
           comments: nullableNumber(metrics.comments),
           shares: nullableNumber(metrics.shares),
           favorites: nullableNumber(metrics.favorites),
+          metrics: parseDynamicMetrics(metrics.metrics),
           capturedAt: text(metrics.capturedAt, '快照时间', 10, 40)
         }
       })
@@ -379,7 +382,66 @@ function parseDataset(value: Record<string, unknown>, platformId: string): Stand
   const warnings = Array.isArray(value.warnings)
     ? value.warnings.slice(0, 100).map((item) => text(item, '插件警告', 0, 500))
     : []
-  return { capturedAt, profile, contents, warnings }
+  return {
+    capturedAt,
+    profile,
+    contents,
+    ...(contentMetricDefinitions === undefined ? {} : { contentMetricDefinitions }),
+    warnings
+  }
+}
+
+function parseContentMetricDefinitions(value: unknown): ContentMetricDefinition[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value) || value.length > 100) throw new Error('插件内容指标定义无效')
+  const ids = new Set<string>()
+  return value.map((raw) => {
+    const definition = record(raw)
+    const id = text(definition.id, '内容指标 ID', 1, 64)
+    if (!/^[a-z][a-z0-9._-]{0,63}$/.test(id) || ids.has(id)) throw new Error('插件内容指标 ID 无效或重复')
+    ids.add(id)
+    const valueKind = text(definition.valueKind, '内容指标类型', 1, 16)
+    const unit = text(definition.unit, '内容指标单位', 1, 16)
+    const group = text(definition.group, '内容指标分组', 1, 16)
+    if (!['count', 'ratio', 'duration'].includes(valueKind) ||
+      !['count', 'ratio', 'seconds'].includes(unit) ||
+      !['reach', 'engagement', 'conversion', 'other'].includes(group)) {
+      throw new Error('插件内容指标定义无效')
+    }
+    if ((valueKind === 'count' && unit !== 'count') ||
+      (valueKind === 'ratio' && unit !== 'ratio') ||
+      (valueKind === 'duration' && unit !== 'seconds')) {
+      throw new Error('插件内容指标单位无效')
+    }
+    if (!Number.isSafeInteger(definition.sortOrder) || (definition.sortOrder as number) < 0 ||
+      (definition.sortOrder as number) > 10_000) {
+      throw new Error('插件内容指标排序无效')
+    }
+    return {
+      id,
+      label: text(definition.label, '内容指标名称', 1, 40),
+      valueKind: valueKind as ContentMetricDefinition['valueKind'],
+      unit: unit as ContentMetricDefinition['unit'],
+      group: group as ContentMetricDefinition['group'],
+      sortOrder: definition.sortOrder as number
+    }
+  })
+}
+
+function parseDynamicMetrics(value: unknown): Record<string, number | null> {
+  if (value === undefined || value === null) return {}
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('插件动态指标无效')
+  const input = value as Record<string, unknown>
+  if (Object.keys(input).length > 100) throw new Error('插件动态指标数量过多')
+  const result: Record<string, number | null> = {}
+  for (const [metricId, metricValue] of Object.entries(input)) {
+    if (!/^[a-z][a-z0-9._-]{0,63}$/.test(metricId) ||
+      (metricValue !== null && (typeof metricValue !== 'number' || !Number.isFinite(metricValue)))) {
+      throw new Error('插件动态指标无效')
+    }
+    result[metricId] = metricValue as number | null
+  }
+  return result
 }
 
 function parseProfile(value: Record<string, unknown>): StandardProfile {

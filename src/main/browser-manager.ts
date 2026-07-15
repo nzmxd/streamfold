@@ -1307,7 +1307,7 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 }
 
 async function captureXiaohongshuSignedJson(
-  contents: Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>,
+  contents: Pick<WebContents, 'debugger' | 'executeJavaScript' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>,
   route: string,
   kind: XiaohongshuCaptureKind,
   limit: number,
@@ -1319,6 +1319,7 @@ async function captureXiaohongshuSignedJson(
   const browserDebugger = contents.debugger
   if (browserDebugger.isAttached()) throw new Error('浏览器调试通道正被其他操作占用')
   let attached = false
+  let captured: readonly XiaohongshuJsonResponse[]
   try {
     browserDebugger.attach('1.3')
     attached = true
@@ -1326,13 +1327,16 @@ async function captureXiaohongshuSignedJson(
       maxResourceBufferSize: SIGNED_JSON_LIMIT_BYTES,
       maxTotalBufferSize: SIGNED_JSON_LIMIT_BYTES * 4
     })
-    return await waitForSignedResponses(contents, route, kind, limit, timeoutMs, quietMs)
+    captured = await waitForSignedResponses(contents, route, kind, limit, timeoutMs, quietMs)
   } finally {
     if (attached && browserDebugger.isAttached()) {
       try { await browserDebugger.sendCommand('Network.disable') } catch {}
       try { browserDebugger.detach() } catch {}
     }
   }
+  return kind === 'note_analyze_list'
+    ? fetchRemainingXiaohongshuAnalyzePages(contents, captured, limit, timeoutMs)
+    : captured
 }
 
 interface CapturedResponseMetadata {
@@ -1384,9 +1388,9 @@ function waitForSignedResponses(
       if (quietTimer) clearTimeout(quietTimer)
       quietTimer = null
       if (settled || pending.size > 0 || harvesting.size > 0) return
-      const shouldAdvance = kind === 'posted_notes' &&
-        postedCaptureNeedsMore([...results.values()], limit) &&
-        paginationAttempts < maximumPaginationAttempts
+      const needsMore = kind === 'posted_notes' &&
+        postedCaptureNeedsMore([...results.values()], limit)
+      const shouldAdvance = needsMore && paginationAttempts < maximumPaginationAttempts
       if (shouldAdvance) {
         quietTimer = setTimeout(() => {
           quietTimer = null
@@ -1662,6 +1666,203 @@ function postedCaptureNeedsMore(
   }
   if (!sawNotes || ids.size >= limit) return false
   return (total > 0 && ids.size < Math.min(total, limit)) || (total === 0 && lastHasMore)
+}
+
+function analyzeCaptureNeedsMore(
+  responses: readonly XiaohongshuJsonResponse[],
+  limit: number
+): boolean {
+  let total = 0
+  let sawAnalyzeResponse = false
+  const ids = new Set<string>()
+  for (const response of responses) {
+    if (!isNoteAnalyzeListUrl(response.url)) continue
+    const envelope = objectRecord(response.json)
+    const data = objectRecord(envelope.data)
+    if (!Array.isArray(data.note_infos)) continue
+    sawAnalyzeResponse = true
+    if (Number.isSafeInteger(data.total) && (data.total as number) >= 0) {
+      total = Math.max(total, data.total as number)
+    }
+    data.note_infos.forEach((value, index) => {
+      const note = objectRecord(value)
+      const id = note.id
+      ids.add(id === undefined || id === null || id === ''
+        ? `${response.url}#${index}`
+        : String(id))
+    })
+  }
+  if (!sawAnalyzeResponse || total === 0 || ids.size >= limit) return false
+  return ids.size < Math.min(total, limit)
+}
+
+async function fetchRemainingXiaohongshuAnalyzePages(
+  contents: Pick<WebContents, 'executeJavaScript' | 'isDestroyed'>,
+  initial: readonly XiaohongshuJsonResponse[],
+  limit: number,
+  timeoutMs: number
+): Promise<readonly XiaohongshuJsonResponse[]> {
+  const results = new Map(initial.map((response) => [response.url, response]))
+  const pageSize = analyzeCapturePageSize(initial, limit)
+  let attempts = 0
+  while (analyzeCaptureNeedsMore([...results.values()], limit) && attempts < 100) {
+    const before = analyzeCaptureIdCount([...results.values()])
+    const pageNum = Math.max(1, ...[...results.values()].map((response) => pageNumber(response.url))) + 1
+    if (pageNum > 100) break
+    const response = await fetchXiaohongshuAnalyzePage(contents, pageNum, pageSize, timeoutMs)
+    results.set(response.url, response)
+    attempts += 1
+    if (analyzeCaptureIdCount([...results.values()]) <= before) break
+  }
+  return [...results.values()].sort((left, right) => pageNumber(left.url) - pageNumber(right.url))
+}
+
+function analyzeCapturePageSize(
+  responses: readonly XiaohongshuJsonResponse[],
+  limit: number
+): number {
+  for (const response of responses) {
+    try {
+      const size = Number(new URL(response.url).searchParams.get('page_size') || '')
+      if (Number.isInteger(size) && size >= 1 && size <= 100) return size
+    } catch {}
+  }
+  return Math.min(10, limit)
+}
+
+function analyzeCaptureIdCount(responses: readonly XiaohongshuJsonResponse[]): number {
+  const ids = new Set<string>()
+  for (const response of responses) {
+    const notes = objectRecord(objectRecord(response.json).data).note_infos
+    if (!Array.isArray(notes)) continue
+    notes.forEach((value, index) => {
+      const id = objectRecord(value).id
+      ids.add(id === undefined || id === null || id === ''
+        ? `${response.url}#${index}`
+        : String(id))
+    })
+  }
+  return ids.size
+}
+
+async function fetchXiaohongshuAnalyzePage(
+  contents: Pick<WebContents, 'executeJavaScript' | 'isDestroyed'>,
+  pageNum: number,
+  pageSize: number,
+  timeoutMs: number
+): Promise<XiaohongshuJsonResponse> {
+  if (contents.isDestroyed()) throw new Error('浏览器页面已关闭')
+  if (!Number.isInteger(pageNum) || pageNum < 1 || pageNum > 100 ||
+    !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    throw new Error('小红书作品分析分页参数非法')
+  }
+  const target = new URL(XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList, 'https://creator.xiaohongshu.com')
+  target.searchParams.set('type', '0')
+  target.searchParams.set('page_size', String(pageSize))
+  target.searchParams.set('page_num', String(pageNum))
+  const source = `(async () => {
+    const target = ${JSON.stringify(target.toString())};
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ${timeoutMs});
+    try {
+      const response = await fetch(target, {
+        method: 'GET',
+        credentials: 'include',
+        redirect: 'manual',
+        headers: { Accept: 'application/json, text/plain, */*' },
+        signal: controller.signal
+      });
+      if (response.type === 'opaqueredirect' ||
+          (response.status >= 300 && response.status < 400)) {
+        return { error: 'AUTH_REDIRECT' };
+      }
+      if (response.status === 0) return { error: 'NETWORK' };
+      const contentType = response.headers.get('content-type') || '';
+      const declaredLength = Number(response.headers.get('content-length') || '0');
+      if (Number.isFinite(declaredLength) && declaredLength > ${SIGNED_JSON_LIMIT_BYTES}) {
+        controller.abort();
+        return { error: 'TOO_LARGE' };
+      }
+      if (!response.body) return { error: 'NO_BODY' };
+      const reader = response.body.getReader();
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const part = await reader.read();
+        if (part.done) break;
+        total += part.value.byteLength;
+        if (total > ${SIGNED_JSON_LIMIT_BYTES}) {
+          controller.abort();
+          return { error: 'TOO_LARGE' };
+        }
+        chunks.push(part.value);
+      }
+      const bytes = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      return {
+        status: response.status,
+        url: response.url || target,
+        redirected: response.redirected === true,
+        contentType,
+        text: new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      };
+    } catch {
+      return { error: controller.signal.aborted ? 'TIMEOUT' : 'NETWORK' };
+    } finally {
+      clearTimeout(timeout);
+    }
+  })()`
+  const raw = objectRecord(await withTimeout(
+    contents.executeJavaScript(source),
+    timeoutMs + 2_000,
+    '小红书作品分析分页请求超时'
+  ))
+  if (raw.error === 'TIMEOUT') throw new Error('小红书作品分析分页请求超时')
+  if (raw.error === 'TOO_LARGE') throw new Error('小红书作品分析响应超过 512 KiB')
+  if (raw.error === 'AUTH_REDIRECT') {
+    throw new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录状态已失效，请重新登录')
+  }
+  if (raw.error === 'NETWORK') throw new Error('小红书作品分析接口暂时无法连接')
+  if (raw.error) throw new Error('小红书作品分析接口请求失败')
+  if (!Number.isInteger(raw.status) || typeof raw.url !== 'string' || typeof raw.text !== 'string') {
+    throw new Error('小红书作品分析响应结构非法')
+  }
+  if (raw.redirected === true) throw new Error('小红书作品分析响应发生了未允许的重定向')
+  if (raw.status === 401 || raw.status === 403) {
+    throw new XiaohongshuApiError('AUTH_REQUIRED', '小红书登录状态已失效，请重新登录')
+  }
+  if (raw.status === 429 || raw.status === 461 || raw.status === 471) {
+    throw new XiaohongshuApiError('RISK_CONTROL', '小红书暂时限制了作品分析请求')
+  }
+  assertExactAnalyzePageUrl(raw.url, pageNum, pageSize)
+  assertJsonContentType(typeof raw.contentType === 'string' ? raw.contentType : '')
+  if (Buffer.byteLength(raw.text, 'utf8') > SIGNED_JSON_LIMIT_BYTES) {
+    throw new Error('小红书作品分析响应超过 512 KiB')
+  }
+  return { status: raw.status as number, url: raw.url, json: parseJson(raw.text) }
+}
+
+function assertExactAnalyzePageUrl(value: string, pageNum: number, pageSize: number): void {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error('小红书作品分析响应地址非法')
+  }
+  const allowed = new Set(['type', 'page_size', 'page_num'])
+  if (url.protocol !== 'https:' || url.hostname !== 'creator.xiaohongshu.com' ||
+    url.username || url.password || url.port || url.hash ||
+    url.pathname !== XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList ||
+    [...url.searchParams.keys()].some((key) => !allowed.has(key)) ||
+    url.searchParams.getAll('type').length !== 1 ||
+    url.searchParams.getAll('page_size').length !== 1 ||
+    url.searchParams.getAll('page_num').length !== 1 ||
+    url.searchParams.get('type') !== '0' ||
+    url.searchParams.get('page_size') !== String(pageSize) ||
+    url.searchParams.get('page_num') !== String(pageNum)) {
+    throw new Error('小红书作品分析响应地址不在白名单')
+  }
 }
 
 function pageNumber(value: string): number {

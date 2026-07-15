@@ -134,6 +134,36 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
     })
     expect(committed.profile).not.toHaveProperty('avatarUrl')
   })
+
+  it('accepts declared dynamic metrics while keeping decimal ratios intact', async () => {
+    const repository = repositoryFixture()
+    repository.commitManagedSync.mockReturnValue({
+      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
+      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
+    })
+    const payload = dataset('stable-owner')
+    payload.contentMetricDefinitions = [{
+      id: 'cover_click_rate', label: '封面点击率', valueKind: 'ratio', unit: 'ratio',
+      group: 'reach', sortOrder: 1
+    }]
+    const firstContent = (payload.contents as Array<Record<string, unknown>>)[0]!
+    const firstSnapshot = (firstContent.snapshots as Array<Record<string, unknown>>)[0]!
+    firstSnapshot.metrics = { cover_click_rate: 0.174 }
+    const runtime = runtimeSequence([identity('stable-owner'), payload, identity('stable-owner')])
+    const adapter = createAdapter(repository, runtime, jobsFixture())
+
+    await adapter.sync('account-1')
+
+    expect(repository.commitManagedSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentMetricDefinitions: [expect.objectContaining({ id: 'cover_click_rate' })],
+        contents: [expect.objectContaining({
+          snapshots: [expect.objectContaining({ metrics: { cover_click_rate: 0.174 } })]
+        })]
+      }),
+      expect.any(Object)
+    )
+  })
 })
 
 function createAdapter(

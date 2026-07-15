@@ -39,4 +39,22 @@ describe('CSV export safety', () => {
     expect(contents).toHaveLength(5_001)
     expect(offsets).toEqual([0, 5_000])
   })
+
+  it('exports dynamically declared snapshot metrics as stable columns', () => {
+    const content: ContentSummary = {
+      id: 'content', accountId: 'account', accountAlias: '账号', platformId: 'xiaohongshu',
+      remoteId: 'remote', type: 'image', title: '作品', bodyExcerpt: '', url: '',
+      publishedAt: null, firstCapturedAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z', note: '', tags: [], previousSnapshot: null,
+      latestSnapshot: {
+        views: 100, likes: 10, comments: 2, shares: 1, favorites: 3,
+        metrics: { impressions: 500, cover_click_rate: 0.2 },
+        capturedAt: '2026-01-01T00:00:00.000Z'
+      }
+    }
+
+    const csv = serializeContentCsv([content])
+    expect(csv).toContain('metric:cover_click_rate,metric:impressions')
+    expect(csv).toContain('"0.2","500"')
+  })
 })

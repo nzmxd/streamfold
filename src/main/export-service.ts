@@ -70,7 +70,7 @@ export class ExportService {
       .filter((group) => accounts.some((account) => account.groupIds.includes(group.id)))
     const details = contents.map((content) => this.database.getContentDetail(content.id))
     return `${JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       exportedAt: new Date().toISOString(),
       scope: accountId ? 'account' : 'all',
       accounts,

@@ -44,10 +44,12 @@ class FakeDebugger extends EventEmitter {
 }
 
 function fakeContents(
-  onLoad: (debuggerApi: FakeDebugger) => void
+  onLoad: (debuggerApi: FakeDebugger) => void,
+  executeJavaScript = vi.fn()
 ): {
-  contents: Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+  contents: Pick<WebContents, 'debugger' | 'executeJavaScript' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
   debuggerApi: FakeDebugger
+  executeJavaScript: ReturnType<typeof vi.fn>
   loadURL: ReturnType<typeof vi.fn>
   sendInputEvent: ReturnType<typeof vi.fn>
 } {
@@ -58,11 +60,12 @@ function fakeContents(
   const sendInputEvent = vi.fn()
   const contents = {
     debugger: debuggerApi,
+    executeJavaScript,
     isDestroyed: () => false,
     loadURL,
     sendInputEvent
-  } as unknown as Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
-  return { contents, debuggerApi, loadURL, sendInputEvent }
+  } as unknown as Pick<WebContents, 'debugger' | 'executeJavaScript' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+  return { contents, debuggerApi, executeJavaScript, loadURL, sendInputEvent }
 }
 
 function emitJsonCapture(
@@ -488,7 +491,7 @@ describe('BrowserManager Xiaohongshu API transport', () => {
       'Network.disable'
     ])
     expect(debuggerApi.attached).toBe(false)
-    expect(contents).not.toHaveProperty('executeJavaScript')
+    expect(contents.executeJavaScript).not.toHaveBeenCalled()
   })
 
   it('captures the official posted-note API from the note manager route', async () => {
@@ -629,7 +632,16 @@ describe('BrowserManager Xiaohongshu API transport', () => {
   it('keeps a slow second response pending beyond the first quiet window', async () => {
     const firstUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?page_num=1`
     const secondUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?page_num=2`
-    const secondJson = { code: 0, data: { total: 2, note_infos: [] } }
+    const secondJson = {
+      code: 0,
+      data: {
+        total: 2,
+        note_infos: [
+          { id: 'aaaaaaaaaaaaaaaaaaaaaaaa' },
+          { id: 'bbbbbbbbbbbbbbbbbbbbbbbb' }
+        ]
+      }
+    }
     const secondBody = JSON.stringify(secondJson)
     const { contents } = fakeContents((current) => {
       emitJsonCapture(current, firstUrl, 'application/json', 'request-1')
@@ -649,6 +661,89 @@ describe('BrowserManager Xiaohongshu API transport', () => {
     )
 
     expect(result.map((item) => item.url)).toEqual([firstUrl, secondUrl])
+  })
+
+  it('fetches remaining analyze pages with a fixed JSON GET and without reading page elements', async () => {
+    const firstUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?type=0&page_size=1&page_num=1`
+    const secondUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?type=0&page_size=1&page_num=2`
+    const thirdUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?type=0&page_size=1&page_num=3`
+    const firstJson = {
+      code: 0,
+      data: { total: 3, note_infos: [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaa' }] }
+    }
+    const secondJson = {
+      code: 0,
+      data: { total: 3, note_infos: [{ id: 'bbbbbbbbbbbbbbbbbbbbbbbb' }] }
+    }
+    const thirdJson = {
+      code: 0,
+      data: { total: 3, note_infos: [{ id: 'cccccccccccccccccccccccc' }] }
+    }
+    const executeJavaScript = vi.fn(async (source: string) => {
+      const thirdPage = source.includes('page_num=3')
+      return {
+        status: 200,
+        url: thirdPage ? thirdUrl : secondUrl,
+        redirected: false,
+        contentType: 'application/json',
+        text: JSON.stringify(thirdPage ? thirdJson : secondJson)
+      }
+    })
+    const { contents, sendInputEvent } = fakeContents(
+      (current) => emitJsonCapture(current, firstUrl, 'application/json', 'request-1', firstJson),
+      executeJavaScript
+    )
+
+    const result = await __xiaohongshuApiTransportTest.captureSignedJson(
+      contents,
+      XIAOHONGSHU_API_ROUTES.noteAnalytics,
+      'note_analyze_list',
+      3,
+      200,
+      5
+    )
+
+    expect(result.map((item) => item.url)).toEqual([firstUrl, secondUrl, thirdUrl])
+    expect(executeJavaScript).toHaveBeenCalledTimes(2)
+    const sources = executeJavaScript.mock.calls.map(([source]) => String(source))
+    expect(sources[0]).toContain('/api/galaxy/creator/datacenter/note/analyze/list')
+    expect(sources[0]).toContain('page_num=2')
+    expect(sources[1]).toContain('page_num=3')
+    expect(sources[0]).toContain("method: 'GET'")
+    expect(sources[0]).toContain("credentials: 'include'")
+    expect(sources.join('\n')).not.toMatch(/document|querySelector|cookie/i)
+    expect(sendInputEvent).not.toHaveBeenCalled()
+  })
+
+  it('rejects an analyze pagination response outside the exact HTTPS JSON whitelist', async () => {
+    const firstUrl = `${origin}${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?type=0&page_size=1&page_num=1`
+    const firstJson = {
+      code: 0,
+      data: { total: 2, note_infos: [{ id: 'aaaaaaaaaaaaaaaaaaaaaaaa' }] }
+    }
+    const executeJavaScript = vi.fn(async (_source: string) => ({
+      status: 200,
+      url: 'https://evil.example/api/galaxy/creator/datacenter/note/analyze/list?type=0&page_size=1&page_num=2',
+      redirected: false,
+      contentType: 'application/json',
+      text: JSON.stringify({
+        code: 0,
+        data: { total: 2, note_infos: [{ id: 'bbbbbbbbbbbbbbbbbbbbbbbb' }] }
+      })
+    }))
+    const { contents } = fakeContents(
+      (current) => emitJsonCapture(current, firstUrl, 'application/json', 'request-1', firstJson),
+      executeJavaScript
+    )
+
+    await expect(__xiaohongshuApiTransportTest.captureSignedJson(
+      contents,
+      XIAOHONGSHU_API_ROUTES.noteAnalytics,
+      'note_analyze_list',
+      2,
+      200,
+      5
+    )).rejects.toThrow('响应地址不在白名单')
   })
 
   it('drives posted-note pagination without reading page elements', async () => {

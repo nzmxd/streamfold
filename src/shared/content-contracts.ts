@@ -11,7 +11,21 @@ export interface MetricValues {
   favorites: number | null
 }
 
+export type ContentMetricValueKind = 'count' | 'ratio' | 'duration'
+export type ContentMetricUnit = 'count' | 'ratio' | 'seconds'
+export type ContentMetricGroup = 'reach' | 'engagement' | 'conversion' | 'other'
+
+export interface ContentMetricDefinition {
+  id: string
+  label: string
+  valueKind: ContentMetricValueKind
+  unit: ContentMetricUnit
+  group: ContentMetricGroup
+  sortOrder: number
+}
+
 export interface ContentSnapshot extends MetricValues {
+  metrics: Record<string, number | null>
   capturedAt: string
 }
 
@@ -36,6 +50,7 @@ export interface ContentSummary {
 
 export interface ContentDetail extends ContentSummary {
   snapshots: ContentSnapshot[]
+  metricDefinitions: ContentMetricDefinition[]
 }
 
 export interface ContentQuery {

@@ -1,6 +1,6 @@
 # 平台适配器
 
-> 适用版本：归页 Streamfold 0.6.0
+> 适用版本：归页 Streamfold 0.6.1
 >
 > 本文汇总当前可用平台的接口、字段和停止条件。共同的进程、数据库与安全边界见[运行架构](architecture.md)。
 
@@ -15,7 +15,7 @@
 - 同步前后复验稳定身份；账号切换、分页不完整或结构异常时整次事务不提交。
 - 未提供的指标保存为 `null`，不补成零；内容按账号和远端 ID 去重。
 
-同步范围统一为 `profile_only`、`recent_20` 和 `recent_100`。当前只支持用户主动触发，不提供后台定时或批量同步。
+同步范围统一为 `profile_only`、`recent_20` 和 `recent_100`。当前由用户主动发起单账号或账号/分组批量同步；平台账号自动同步计划尚未开放。
 
 ## 2. 小红书
 
@@ -29,10 +29,12 @@
 | 创作者资料 | `GET creator.xiaohongshu.com/api/galaxy/creator/home/personal_info` | 小红书号、关注、粉丝、累计获赞与收藏、创作等级 |
 | 账号指标 | `GET creator.xiaohongshu.com/api/galaxy/creator/data/note_detail_new` | 7/30 日浏览、互动和新增粉丝 |
 | 本人作品 | `/api/galaxy/v2/creator/note/user/posted` | ID、标题、时间、类型和基础指标 |
-| 作品分析 | `/api/galaxy/creator/datacenter/note/analyze/list` | 浏览、点赞、收藏、评论和分享 |
+| 作品分析 | `/api/galaxy/creator/datacenter/note/analyze/list` | 曝光、观看、封面点击率、点赞、评论、收藏、涨粉、分享、人均观看时长和弹幕 |
 | API 摘要 | `GET edith.xiaohongshu.com/web_api/sns/capa/postgw/note/detail` | 校验 `data.id` 后读取 `data.desc` |
 
-身份、资料和账号指标使用已登录创作中心页面中的固定同源请求。作品列表、分析和详情由平台页面产生请求上下文，`BrowserManager` 通过 Chromium DevTools Protocol 捕获精确主机、路径和 Fetch/XHR 类型的 JSON 响应。
+身份、资料和账号指标使用已登录创作中心页面中的固定同源请求。作品列表和详情由平台页面产生请求上下文，`BrowserManager` 通过 Chromium DevTools Protocol 捕获精确主机、路径和 Fetch/XHR 类型的 JSON 响应。作品分析先捕获页面首个 JSON 响应，再在同一官方页面上下文中按固定 `type=0`、`page_num`、`page_size` 发起只读 JSON `GET` 补齐目标页；不会读取页面 DOM、Cookie 或请求头。
+
+作品指标采用动态定义保存：原有观看、点赞、评论、分享和收藏继续保留兼容列，其余指标写入 v12 的 `content_metric_definitions` 与 `content_snapshot_metrics`。封面点击率统一保存为 0 到 1 的比例，人均观看时长以秒保存；平台缺失或仍在统计的值保持 `null`。内容详情会按指标定义展示全部可用指标，并可切换任意指标查看本地快照历史。
 
 摘要只取 JSON `data.desc`，清除控制字符、合并空白并截断到 500 个 Unicode 字符。已保存的非空摘要不重复请求；每次同步最多补取 10 条，相邻详情请求至少间隔 2 秒。公开原帖的签名参数不参与摘要请求。
 
@@ -42,7 +44,7 @@
 2. 用户在 5 分钟有效期内确认绑定后，适配器再次读取并交叉校验身份。
 3. 每次同步前后都复验远端 ID；任一次与本地绑定不一致即回滚。
 4. 作品管理列表是内容基线，分析结果只按同一作品 ID 合并。
-5. `total`、`has_more`、页码或 `tags[].notes_count` 显示仍有未捕获内容时，适配器继续进行有上限的分页；无法完成目标范围时返回 `INCOMPLETE_CAPTURE`。
+5. `total`、`has_more`、页码或 `tags[].notes_count` 显示仍有未捕获内容时，适配器继续进行有上限的分页；作品分析按 `data.total` 补齐目标范围。任一列表无法完成目标范围时返回 `INCOMPLETE_CAPTURE`，不会提交部分指标。
 
 单次最多保存 100 条作品。固定接口响应最多 256 KiB，单个捕获响应最多 512 KiB，捕获总量最多 2 MiB。头像只接受小红书或 `xhscdn.com` HTTPS 域名族，经逐跳重定向、MIME、文件头、长度和 512 KiB 上限校验后缓存。
 

@@ -146,11 +146,16 @@ module.exports = {
         views: null, likes: null, comments: null, shares: null, favorites: null,
         creatorLevel: null
       },
+      contentMetricDefinitions: [{
+        id: 'impressions', label: '曝光', valueKind: 'count', unit: 'count',
+        group: 'reach', sortOrder: 10
+      }],
       contents: [{
         remoteId: 'post-1', type: 'article', title: '标题', bodyExcerpt: '',
         url: 'https://www.example.com/posts/post-1', publishedAt: null,
         snapshots: [{
           views: null, likes: null, comments: null, shares: null, favorites: null,
+          metrics: { impressions: null },
           capturedAt: new Date().toISOString()
         }]
       }],
@@ -160,7 +165,7 @@ module.exports = {
 }
 ```
 
-内容类型只允许 `article`、`post`、`image`、`video`、`answer`。缺失指标使用 `null`；原帖 URL 必须匹配 Manifest 的 `contentUrls`。宿主统一执行本人确认、同步前后身份复验、账号互斥、同适配器串行、限频、任务状态和 SQLite 原子提交。切换适配器时，新适配器必须返回相同稳定账号 ID，历史数据不会迁移或重写。
+内容类型只允许 `article`、`post`、`image`、`video`、`answer`。五项通用指标继续使用快照固定字段；平台扩展指标必须先在 `contentMetricDefinitions` 中声明，再写入快照 `metrics`。定义包含稳定 ID、标签、值类型、单位、分组和排序，宿主会验证计数、0 到 1 的比例与秒制时长。缺失指标使用 `null`；原帖 URL 必须匹配 Manifest 的 `contentUrls`。宿主统一执行本人确认、同步前后身份复验、账号互斥、同适配器串行、限频、任务状态和 SQLite 原子提交。切换适配器时，新适配器必须返回相同稳定账号 ID，历史数据不会迁移或重写。
 
 ## 4. 宿主 API 与权限
 

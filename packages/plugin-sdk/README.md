@@ -51,6 +51,8 @@ module.exports = {
 
 QuickJS 环境不提供 `process`、`require`、`Buffer`、`fetch` 或 DOM。网络、平台 Session JSON 和本地数据访问只能通过声明权限后的宿主 API 完成。
 
+平台适配器可使用 `definePlatformAdapter()` 获得标准数据集类型检查。五项通用内容指标写入快照固定字段；其他平台指标先在 `contentMetricDefinitions` 中声明，再写入快照 `metrics`。比率统一为 `0..1`，时长单位为秒，缺失值使用 `null`。
+
 ## 测试宿主
 
 `createTestHost()` 用于单元测试可信的开发源码，可注入 `hostCall` 模拟平台和数据响应。它复刻公开 API，但不是安全沙箱；安全隔离仍由应用内的 QuickJS + utility process 宿主负责。

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 11
+export const CURRENT_SCHEMA_VERSION = 12
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -53,6 +53,10 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 11) {
     inTransaction(db, () => migrateV10ToV11(db))
+    version = 11
+  }
+  if (version < 12) {
+    inTransaction(db, () => migrateV11ToV12(db))
   }
 }
 
@@ -578,6 +582,42 @@ function migrateV10ToV11(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_jobs_retry_of
       ON jobs(retry_of_job_id, created_at DESC);
     PRAGMA user_version = 11;
+  `)
+}
+
+/** Adds platform-declared dynamic content metrics without rewriting the five legacy columns. */
+function migrateV11ToV12(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content_metric_definitions (
+      platform_id TEXT NOT NULL,
+      metric_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      value_kind TEXT NOT NULL CHECK (value_kind IN ('count', 'ratio', 'duration')),
+      unit TEXT NOT NULL CHECK (unit IN ('count', 'ratio', 'seconds')),
+      metric_group TEXT NOT NULL CHECK (
+        metric_group IN ('reach', 'engagement', 'conversion', 'other')
+      ),
+      sort_order INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (platform_id, metric_id)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS content_snapshot_metrics (
+      snapshot_id TEXT NOT NULL REFERENCES content_snapshots(id) ON DELETE CASCADE,
+      platform_id TEXT NOT NULL,
+      metric_id TEXT NOT NULL,
+      value REAL,
+      PRIMARY KEY (snapshot_id, metric_id),
+      FOREIGN KEY (platform_id, metric_id)
+        REFERENCES content_metric_definitions(platform_id, metric_id)
+        ON UPDATE CASCADE ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_content_metric_definitions_platform_order
+      ON content_metric_definitions(platform_id, sort_order, metric_id);
+    CREATE INDEX IF NOT EXISTS idx_content_snapshot_metrics_metric
+      ON content_snapshot_metrics(platform_id, metric_id, snapshot_id);
+    PRAGMA user_version = 12;
   `)
 }
 

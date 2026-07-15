@@ -4,7 +4,8 @@ import { TestSessionApiPluginGate } from './plugins/session-api-plugin-gate.test
 import { JobService } from './services/job-service'
 import {
   XiaohongshuApiService,
-  XIAOHONGSHU_API_PLUGIN_ID
+  XIAOHONGSHU_API_PLUGIN_ID,
+  XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS
 } from './xiaohongshu-api-service'
 import {
   XIAOHONGSHU_API_ENDPOINTS,
@@ -216,6 +217,20 @@ describe('XiaohongshuApiService', () => {
       .toEqual(['aaaaaaaaaaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbbbbbbbbbb'])
     expect(database.listContents({ accountId: account.id }).map((item) => item.bodyExcerpt).sort())
       .toEqual(['正文：第一篇', '正文：第二篇'])
+    const firstContent = database.listContents({ accountId: account.id })
+      .find((item) => item.remoteId === 'aaaaaaaaaaaaaaaaaaaaaaaa')!
+    expect(database.getContentDetail(firstContent.id)).toMatchObject({
+      metricDefinitions: XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS,
+      latestSnapshot: {
+        metrics: {
+          impressions: 2_888,
+          cover_click_rate: 0.174,
+          followers_gained: 3,
+          average_view_duration: 16,
+          danmaku: 0
+        }
+      }
+    })
     expect(database.getStorageCounts()).toMatchObject({
       accountSnapshotCount: 1,
       contentCount: 2,
@@ -225,6 +240,20 @@ describe('XiaohongshuApiService', () => {
     expect(database.listJobs()[0]).toMatchObject({ status: 'succeeded', kind: 'managed_sync' })
     expect(database.getPluginState(XIAOHONGSHU_API_PLUGIN_ID))
       .toMatchObject({ successCount: 1, failureCount: 0 })
+  })
+
+  it('rejects an incomplete analyze capture without committing any partial metrics', async () => {
+    enablePlugin()
+    const account = createSyncableAccount('recent_20')
+    const transport = createTransport({ analyzeTotal: 2, notes: [note()] })
+
+    await expect(createService(() => transport).sync(account.id)).rejects.toMatchObject({
+      code: 'INCOMPLETE_CAPTURE'
+    })
+
+    expect(database.listContents({ accountId: account.id })).toEqual([])
+    expect(database.listAccountSnapshots(account.id)).toEqual([])
+    expect(database.listJobs()[0]).toMatchObject({ status: 'failed', errorCode: 'INCOMPLETE_CAPTURE' })
   })
 
   it('does not request an existing excerpt again and preserves it on later syncs', async () => {
@@ -471,6 +500,7 @@ function createTransport(options: {
   descriptions?: Record<string, string>
   detailFailure?: Error
   detailStatus?: number
+  analyzeTotal?: number
 } = {}) {
   const profiles = [...(options.profiles ?? [[ownerId, ownerName] as [string, string]])]
   let currentIdentity = profiles[0]!
@@ -513,7 +543,7 @@ function createTransport(options: {
     }
     if (kind === 'note_analyze_list') return [response(
       `${XIAOHONGSHU_API_ENDPOINTS.noteAnalyzeList}?type=0&page_size=20&page_num=1`,
-      { code: 0, data: { total: notes.length, note_infos: notes } }
+      { code: 0, data: { total: options.analyzeTotal ?? notes.length, note_infos: notes } }
     )]
     if (options.detailFailure) throw options.detailFailure
     const id = new URL(route).searchParams.get('id')!
@@ -599,11 +629,16 @@ function note(
     id,
     title,
     post_time: Date.parse('2026-03-18T12:01:00.000Z'),
+    imp_count: 2_888,
     read_count: 521,
+    coverClickRate: 0.174,
     like_count: 18,
     fav_count: 10,
     comment_count: 7,
+    increase_fans_count: 3,
     share_count: 2,
+    view_time_avg: 16,
+    danmaku_count: 0,
     type: 1,
     ...overrides
   }

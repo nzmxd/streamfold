@@ -281,6 +281,118 @@ describe('SocialDatabase', () => {
     expect(database.getContentDetail(content.id).snapshots).toHaveLength(1)
   })
 
+  it('persists platform metric definitions and dynamic snapshot values', () => {
+    const account = createManagedAccount(database, 'dynamic-owner', '动态指标账号')
+    const payload = standardDataset('dynamic-owner', 'dynamic-content')
+    payload.contentMetricDefinitions = dynamicMetricDefinitions()
+    payload.contents[0]!.snapshots[0]!.metrics = {
+      impressions: 2_888,
+      cover_click_rate: 0.174,
+      followers_gained: 0,
+      average_view_duration: 16,
+      danmaku: null
+    }
+
+    expect(commitManagedDataset(database, account.id, payload)).toMatchObject({ snapshotCount: 1 })
+
+    const content = database.listContents({ accountId: account.id })[0]!
+    expect(database.getContentDetail(content.id)).toMatchObject({
+      metricDefinitions: dynamicMetricDefinitions(),
+      latestSnapshot: {
+        metrics: {
+          impressions: 2_888,
+          cover_click_rate: 0.174,
+          followers_gained: 0,
+          average_view_duration: 16,
+          danmaku: null
+        }
+      },
+      snapshots: [{
+        metrics: {
+          impressions: 2_888,
+          cover_click_rate: 0.174,
+          followers_gained: 0,
+          average_view_duration: 16,
+          danmaku: null
+        }
+      }]
+    })
+
+    const definitionUpdate: StandardDataset = {
+      ...payload,
+      capturedAt: '2026-07-14T08:00:00.000Z',
+      contents: [],
+      contentMetricDefinitions: dynamicMetricDefinitions().map((definition) => (
+        definition.id === 'impressions'
+          ? { ...definition, label: '曝光次数', sortOrder: 99 }
+          : definition
+      ))
+    }
+    commitManagedDataset(database, account.id, definitionUpdate, '2026-07-14T08:00:01.000Z')
+    expect(database.getContentDetail(content.id).metricDefinitions.find(({ id }) => id === 'impressions'))
+      .toMatchObject({ label: '曝光次数', sortOrder: 99 })
+  })
+
+  it('creates a new snapshot when only a dynamic metric changes and compacts it otherwise', () => {
+    const account = createManagedAccount(database, 'dynamic-history-owner', '动态历史账号')
+    const first = standardDataset('dynamic-history-owner', 'dynamic-history-content')
+    first.contentMetricDefinitions = dynamicMetricDefinitions()
+    first.contents[0]!.snapshots[0]!.metrics = { impressions: 100 }
+    commitManagedDataset(database, account.id, first)
+
+    const changedAt = '2026-07-14T08:00:00.000Z'
+    const changed: StandardDataset = {
+      ...first,
+      capturedAt: changedAt,
+      contents: first.contents.map((content) => ({
+        ...content,
+        snapshots: content.snapshots.map((snapshot) => ({
+          ...snapshot,
+          metrics: { impressions: 101 },
+          capturedAt: changedAt
+        }))
+      }))
+    }
+    expect(commitManagedDataset(database, account.id, changed, '2026-07-14T08:00:01.000Z'))
+      .toMatchObject({ snapshotCount: 1, skippedSnapshotCount: 0 })
+
+    const unchangedAt = '2026-07-15T08:00:00.000Z'
+    const unchanged: StandardDataset = {
+      ...changed,
+      capturedAt: unchangedAt,
+      contents: changed.contents.map((content) => ({
+        ...content,
+        snapshots: content.snapshots.map((snapshot) => ({ ...snapshot, capturedAt: unchangedAt }))
+      }))
+    }
+    expect(commitManagedDataset(database, account.id, unchanged, '2026-07-15T08:00:01.000Z'))
+      .toMatchObject({ snapshotCount: 0, skippedSnapshotCount: 1 })
+
+    const content = database.listContents({ accountId: account.id })[0]!
+    expect(database.getContentDetail(content.id).snapshots.map((snapshot) => snapshot.metrics.impressions))
+      .toEqual([100, 101])
+  })
+
+  it('rolls back metric definitions and business rows when a dynamic metric is invalid', () => {
+    const account = createManagedAccount(database, 'invalid-metric-owner', '非法指标账号')
+    const invalid = standardDataset('invalid-metric-owner', 'invalid-metric-content')
+    invalid.contentMetricDefinitions = dynamicMetricDefinitions()
+    invalid.contents[0]!.snapshots[0]!.metrics = { cover_click_rate: 17.4 }
+
+    expect(() => commitManagedDataset(database, account.id, invalid)).toThrow('内容比率指标无效')
+    expect(database.listContents({ accountId: account.id })).toEqual([])
+    expect(database.listAccountSnapshots(account.id)).toEqual([])
+
+    const withoutDefinitions = standardDataset('invalid-metric-owner', 'invalid-metric-content')
+    withoutDefinitions.contents[0]!.snapshots[0]!.metrics = { impressions: 100 }
+    expect(() => commitManagedDataset(
+      database,
+      account.id,
+      withoutDefinitions,
+      '2026-07-13T08:01:01.000Z'
+    )).toThrow('内容动态指标缺少定义')
+  })
+
   it('attaches only the newest account snapshot when listing accounts', () => {
     const account = createManagedAccount(database, 'snapshot-owner', '账号快照')
     const first = standardDataset('snapshot-owner', 'snapshot-content')
@@ -1023,6 +1135,55 @@ describe('SocialDatabase migrations', () => {
     ])
     inspected.close()
   })
+
+  it('migrates v11 snapshots to v12 with empty dynamic metrics and preserves legacy values', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v11.sqlite')
+    database = new SocialDatabase(path)
+    const account = createManagedAccount(database, 'legacy-metric-owner', '旧指标账号')
+    commitManagedDataset(database, account.id, standardDataset('legacy-metric-owner', 'legacy-metric-content'))
+    const contentId = database.listContents({ accountId: account.id })[0]!.id
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    previous.exec(`
+      DROP TABLE content_snapshot_metrics;
+      DROP TABLE content_metric_definitions;
+      PRAGMA user_version = 11;
+    `)
+    previous.close()
+
+    database = new SocialDatabase(path)
+
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
+    expect(database.getContentDetail(contentId)).toMatchObject({
+      metricDefinitions: [],
+      snapshots: [{
+        views: 120,
+        likes: 10,
+        comments: 2,
+        shares: 1,
+        favorites: 3,
+        metrics: {}
+      }]
+    })
+
+    database.close()
+    database = null
+    const inspected = new DatabaseSync(path, { readOnly: true })
+    const tables = inspected.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name IN (
+        'content_metric_definitions', 'content_snapshot_metrics'
+      ) ORDER BY name
+    `).all() as unknown as Array<{ name: string }>
+    expect(tables.map(({ name }) => name)).toEqual([
+      'content_metric_definitions',
+      'content_snapshot_metrics'
+    ])
+    inspected.close()
+  })
 })
 
 describe('SocialDatabase backup images', () => {
@@ -1223,4 +1384,14 @@ function standardDataset(remoteAccountId: string, remoteContentId: string): Stan
     }],
     warnings: []
   }
+}
+
+function dynamicMetricDefinitions(): NonNullable<StandardDataset['contentMetricDefinitions']> {
+  return [
+    { id: 'impressions', label: '曝光', valueKind: 'count', unit: 'count', group: 'reach', sortOrder: 1 },
+    { id: 'cover_click_rate', label: '封面点击率', valueKind: 'ratio', unit: 'ratio', group: 'conversion', sortOrder: 2 },
+    { id: 'followers_gained', label: '涨粉', valueKind: 'count', unit: 'count', group: 'conversion', sortOrder: 3 },
+    { id: 'average_view_duration', label: '人均观看时长', valueKind: 'duration', unit: 'seconds', group: 'engagement', sortOrder: 4 },
+    { id: 'danmaku', label: '弹幕', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 5 }
+  ]
 }

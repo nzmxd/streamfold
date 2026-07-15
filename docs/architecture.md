@@ -1,6 +1,6 @@
 # 运行架构
 
-> 适用版本：归页 Streamfold 0.6.0
+> 适用版本：归页 Streamfold 0.6.1
 >
 > 更新日期：2026-07-15
 >
@@ -14,7 +14,7 @@
 | 管理界面 | Vue 3 + TypeScript | `src/renderer/src/App.vue` |
 | 构建 | electron-vite 5、Vite 7 | `electron.vite.config.ts` |
 | 本地数据库 | Node.js `node:sqlite` | `src/main/database.ts` |
-| 数据库迁移 | `PRAGMA user_version`，当前 v11 | `src/main/storage/migrations.ts` |
+| 数据库迁移 | `PRAGMA user_version`，当前 v12 | `src/main/storage/migrations.ts` |
 | 安装包 | electron-builder | `package.json` 的 `build` 配置 |
 | 在线更新 | electron-updater | `src/main/update-service.ts` |
 | 测试 | Vitest + 源码/安装目录 Electron smoke | `*.test.ts`、`scripts/smoke*.mjs` |
@@ -161,7 +161,7 @@ sequenceDiagram
 
 SQLite 以 `DatabaseSync` 打开，关闭扩展加载并启用 defensive、外键与 WAL。主要账号从表使用 `ON DELETE CASCADE`；Chromium Partition 和头像文件由主进程服务另行清理。
 
-schema 通过 `PRAGMA user_version` 逐版迁移，当前为 v11。迁移在 `BEGIN IMMEDIATE` 事务中执行；数据库版本高于应用支持版本时拒绝打开。v9 增加开放插件数据，v10 删除不可达的文件导入批次表，v11 新增 `job_batches` 及任务贡献点、触发来源、尝试、重试和同步范围字段。既有账号、内容、快照和任务历史不删除。
+schema 通过 `PRAGMA user_version` 逐版迁移，当前为 v12。迁移在 `BEGIN IMMEDIATE` 事务中执行；数据库版本高于应用支持版本时拒绝打开。v9 增加开放插件数据，v10 删除不可达的文件导入批次表，v11 新增任务批次与重试元数据，v12 新增平台动态内容指标定义和快照值表。既有账号、内容、快照和任务历史不删除；旧快照没有采集过的扩展指标保持未知。
 
 `raw_retention_days` 目前没有原始平台响应存储或清理消费者，也不代表支持 JSON/CSV 平台数据导入。
 

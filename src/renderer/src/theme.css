@@ -263,6 +263,9 @@ legend, .muted { color: var(--text-tertiary); }
 .tabs button:hover { background: var(--surface-hover); }
 .tabs button.active { color: var(--brand); background: var(--brand-soft); }
 .metric-grid article, .workflow-card, .content-metric-grid article, .snapshot-section, .metadata-form, .account-content-list { background: var(--surface); border-color: var(--border); }
+.content-metric-grid span em, .snapshot-controls > span { color: var(--text-secondary); background: var(--surface-subtle); }
+.content-metric-grid article[data-metric-group="engagement"] span em,
+.content-metric-grid article[data-metric-group="conversion"] span em { color: var(--text-secondary); background: var(--surface-subtle); }
 .steps li, .content-excerpt, .reminder-row { background: var(--surface-subtle); }
 .steps li > b { color: var(--text-secondary); background: var(--surface-hover); }
 .browser-launch-card { background: linear-gradient(135deg, var(--surface-subtle), var(--surface)); border-color: var(--border); }
@@ -306,7 +309,7 @@ legend, .muted { color: var(--text-tertiary); }
 .reminder-row small, .recent-row small, .recent-row > b, .filter-bar label,
 .content-row-main small, .content-row-main em, .content-row-metric small,
 .content-detail-head p, .snapshot-time, .content-excerpt, .content-metric-grid span,
-.content-metric-grid small, .snapshot-row, .chart-legend, .chart-axis,
+.content-metric-grid small, .snapshot-row, .snapshot-controls label, .chart-legend, .chart-axis,
 .analytics-table-wrap th, .analytics-table-wrap td small, .distribution-row small,
 .generated-at, .plugin-card header p, .plugin-card .title-line span,
 .manifest-list dt, .manifest-list dd, .plugin-card > footer, .retention-form label,

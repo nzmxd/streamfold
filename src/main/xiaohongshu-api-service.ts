@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { Account, SyncMode } from '../shared/contracts'
-import type { ContentQuery, ContentSummary } from '../shared/content-contracts'
+import type {
+  ContentMetricDefinition,
+  ContentQuery,
+  ContentSummary
+} from '../shared/content-contracts'
 import type {
   ApiIdentityCheckResult,
   ConfirmApiIdentityInput,
@@ -23,6 +27,18 @@ import {
 } from './xiaohongshu-api'
 
 export const XIAOHONGSHU_API_PLUGIN_ID = 'xiaohongshu-session-api'
+export const XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS: ContentMetricDefinition[] = [
+  { id: 'impressions', label: '曝光', valueKind: 'count', unit: 'count', group: 'reach', sortOrder: 1 },
+  { id: 'views', label: '观看', valueKind: 'count', unit: 'count', group: 'reach', sortOrder: 2 },
+  { id: 'cover_click_rate', label: '封面点击率', valueKind: 'ratio', unit: 'ratio', group: 'conversion', sortOrder: 3 },
+  { id: 'likes', label: '点赞', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 4 },
+  { id: 'comments', label: '评论', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 5 },
+  { id: 'favorites', label: '收藏', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 6 },
+  { id: 'followers_gained', label: '涨粉', valueKind: 'count', unit: 'count', group: 'conversion', sortOrder: 7 },
+  { id: 'shares', label: '分享', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 8 },
+  { id: 'average_view_duration', label: '人均观看时长', valueKind: 'duration', unit: 'seconds', group: 'engagement', sortOrder: 9 },
+  { id: 'danmaku', label: '弹幕', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 10 }
+]
 const PREVIEW_TTL_MS = 5 * 60_000
 const MAX_PREVIEWS = 50
 
@@ -450,6 +466,7 @@ function toPayload(
   const metrics = snapshot.accountMetrics.thirty
   return {
     capturedAt,
+    contentMetricDefinitions: XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS,
     profile: {
       remoteId: snapshot.profile.remoteId,
       remoteName: snapshot.profile.remoteName,
@@ -482,7 +499,14 @@ function toPayload(
         likes: content.likeCount,
         comments: content.commentCount,
         shares: content.shareCount,
-        favorites: content.favoriteCount
+        favorites: content.favoriteCount,
+        metrics: {
+          impressions: content.impressions,
+          cover_click_rate: content.coverClickRate,
+          followers_gained: content.followersGained,
+          average_view_duration: content.averageViewDurationSeconds,
+          danmaku: content.danmaku
+        }
       }]
     })),
     warnings: snapshot.warnings

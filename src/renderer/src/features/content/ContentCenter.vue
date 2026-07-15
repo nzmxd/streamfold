@@ -3,22 +3,25 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type {
   Account,
   ContentDetail,
+  ContentMetricDefinition,
   ContentSnapshot,
   ContentSummary,
   ContentType,
   PlatformId
 } from '../../../../shared/contracts'
 import { accountDisplayName } from '../accounts/presentation'
-import { contentTypeLabel, delta, deltaLabel, formatDate, formatNumber, messageOf, platformLabel } from '../shared/format'
+import { contentTypeLabel, formatDate, formatNumber, messageOf, platformLabel } from '../shared/format'
 import {
-  contentMetricLabel,
-  preferredSnapshotMetricKey,
+  availableContentMetricDefinitions,
+  contentMetricDelta,
+  contentMetricValue,
+  formatContentMetric,
+  formatContentMetricDelta,
   primaryContentMetric,
-  type ContentMetricKey
+  resolveContentMetricDefinitions,
+  type ContentMetricId
 } from './metrics'
 import { contentQueryFromFilters, reconcileContentSelection } from './query'
-
-type MetricKey = ContentMetricKey
 
 const accounts = ref<Account[]>([])
 const items = ref<ContentSummary[]>([])
@@ -37,21 +40,21 @@ const type = ref<'' | ContentType>('')
 const from = ref('')
 const to = ref('')
 const edit = reactive({ note: '', tags: '' })
+const selectedHistoryMetricId = ref<ContentMetricId | null>(null)
 let loadSequence = 0
 let detailSequence = 0
 let saveSequence = 0
 let removeContentListener: (() => void) | null = null
 
-const metricFields: Array<{ key: MetricKey; label: string }> = [
-  { key: 'views', label: '浏览' },
-  { key: 'likes', label: '点赞' },
-  { key: 'comments', label: '评论' },
-  { key: 'shares', label: '分享' },
-  { key: 'favorites', label: '收藏' }
-]
-
 const selectedSummary = computed(() => items.value.find((item) => item.id === selectedId.value) ?? null)
-const historyMetricKey = computed(() => preferredSnapshotMetricKey(detail.value?.snapshots ?? []))
+const metricDefinitions = computed(() => resolveContentMetricDefinitions(detail.value?.metricDefinitions ?? []))
+const historyMetricDefinitions = computed(() => availableContentMetricDefinitions(
+  detail.value?.metricDefinitions ?? [],
+  detail.value?.snapshots ?? []
+))
+const historyMetricDefinition = computed(() => historyMetricDefinitions.value.find((definition) => (
+  definition.id === selectedHistoryMetricId.value
+)) ?? null)
 
 async function loadItems(): Promise<void> {
   const sequence = ++loadSequence
@@ -134,35 +137,43 @@ async function openOriginal(): Promise<void> {
   }
 }
 
-function metricValue(item: ContentSummary, key: MetricKey): number | null {
-  return item.latestSnapshot?.[key] ?? null
+function metricValue(item: ContentSummary, metricId: ContentMetricId): number | null {
+  return contentMetricValue(item.latestSnapshot, metricId)
 }
 
-function metricDelta(item: ContentSummary, key: MetricKey): number | null {
-  return delta(item.latestSnapshot?.[key], item.previousSnapshot?.[key])
+function metricDelta(item: ContentSummary, metricId: ContentMetricId): number | null {
+  return contentMetricDelta(item.latestSnapshot, item.previousSnapshot, metricId)
 }
 
 function snapshotMetricWidth(
   snapshot: ContentSnapshot,
-  key: ContentMetricKey,
+  metricId: ContentMetricId,
   value: ContentDetail
 ): number {
-  const current = snapshot[key]
+  const current = contentMetricValue(snapshot, metricId)
   if (current === null || current <= 0) return 0
-  const maximum = Math.max(0, ...value.snapshots.map((item) => item[key] ?? 0))
+  const maximum = Math.max(0, ...value.snapshots.map((item) => contentMetricValue(item, metricId) ?? 0))
   return maximum > 0 ? Math.max(2, (current / maximum) * 100) : 0
 }
 
-function snapshotSecondaryLabel(snapshot: ContentSnapshot, primary: ContentMetricKey | null): string {
-  const values = metricFields
-    .filter((field) => field.key !== primary && snapshot[field.key] !== null)
+function snapshotSecondaryLabel(snapshot: ContentSnapshot, primary: ContentMetricId | null): string {
+  const values = metricDefinitions.value
+    .filter((definition) => definition.id !== primary && contentMetricValue(snapshot, definition.id) !== null)
     .slice(0, 2)
-    .map((field) => `${formatNumber(snapshot[field.key])} ${field.label}`)
+    .map((definition) => `${formatContentMetric(contentMetricValue(snapshot, definition.id), definition)} ${definition.label}`)
   return values.join(' · ') || '暂无其他指标'
+}
+
+function metricGroupLabel(group: ContentMetricDefinition['group']): string {
+  return { reach: '流量', engagement: '互动', conversion: '转化', other: '其他' }[group]
 }
 
 watch(selectedId, (id) => void loadDetail(id))
 watch([accountId, platformId, type, from, to], () => void loadItems())
+watch(historyMetricDefinitions, (definitions) => {
+  if (definitions.some((definition) => definition.id === selectedHistoryMetricId.value)) return
+  selectedHistoryMetricId.value = definitions[0]?.id ?? null
+}, { immediate: true })
 
 async function refreshContent(): Promise<void> {
   await loadItems()
@@ -252,20 +263,27 @@ onBeforeUnmount(() => {
           <p v-if="detail.bodyExcerpt" class="content-excerpt">{{ detail.bodyExcerpt }}</p>
 
           <section class="content-metric-grid">
-            <article v-for="field in metricFields" :key="field.key">
-              <span>{{ field.label }}</span><strong>{{ formatNumber(metricValue(detail, field.key)) }}</strong>
-              <small :class="{ positive: (metricDelta(detail, field.key) ?? 0) > 0 }">{{ deltaLabel(metricDelta(detail, field.key)) }}</small>
+            <article v-for="definition in metricDefinitions" :key="definition.id" :data-metric-group="definition.group">
+              <span>{{ definition.label }}<em>{{ metricGroupLabel(definition.group) }}</em></span>
+              <strong>{{ formatContentMetric(metricValue(detail, definition.id), definition) }}</strong>
+              <small :class="{ positive: (metricDelta(detail, definition.id) ?? 0) > 0 }">{{ formatContentMetricDelta(metricDelta(detail, definition.id), definition) }}</small>
             </article>
           </section>
 
           <section class="snapshot-section">
-            <div class="feature-card-head"><div><h3>快照历史</h3><p>每次同步只记录发生变化的指标</p></div><span>{{ detail.snapshots.length }} 次</span></div>
+            <div class="feature-card-head snapshot-section-head">
+              <div><h3>快照历史</h3><p>每次同步只记录发生变化的指标</p></div>
+              <div class="snapshot-controls">
+                <label v-if="historyMetricDefinitions.length > 0">查看指标<select v-model="selectedHistoryMetricId"><option v-for="definition in historyMetricDefinitions" :key="definition.id" :value="definition.id">{{ definition.label }}</option></select></label>
+                <span>{{ detail.snapshots.length }} 次</span>
+              </div>
+            </div>
             <div v-if="detail.snapshots.length === 0" class="compact-empty"><span>暂无指标快照</span></div>
             <div v-for="snapshot in detail.snapshots.slice().reverse()" :key="snapshot.capturedAt" class="snapshot-row">
               <span>{{ formatDate(snapshot.capturedAt, true) }}</span>
-              <i><b v-if="historyMetricKey && snapshot[historyMetricKey] !== null" :style="{ width: `${snapshotMetricWidth(snapshot, historyMetricKey, detail)}%` }"></b></i>
-              <strong v-if="historyMetricKey">{{ formatNumber(snapshot[historyMetricKey]) }} {{ contentMetricLabel(historyMetricKey) }}</strong><strong v-else>暂无可用指标</strong>
-              <small>{{ snapshotSecondaryLabel(snapshot, historyMetricKey) }}</small>
+              <i><b v-if="historyMetricDefinition && contentMetricValue(snapshot, historyMetricDefinition.id) !== null" :style="{ width: `${snapshotMetricWidth(snapshot, historyMetricDefinition.id, detail)}%` }"></b></i>
+              <strong v-if="historyMetricDefinition">{{ formatContentMetric(contentMetricValue(snapshot, historyMetricDefinition.id), historyMetricDefinition) }} {{ historyMetricDefinition.label }}</strong><strong v-else>暂无可用指标</strong>
+              <small>{{ snapshotSecondaryLabel(snapshot, historyMetricDefinition?.id ?? null) }}</small>
             </div>
           </section>
 

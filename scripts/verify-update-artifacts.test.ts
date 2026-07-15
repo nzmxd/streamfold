@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +10,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 const execute = promisify(execFile)
 const verifierPath = fileURLToPath(new URL('./verify-update-artifacts.mjs', import.meta.url))
+const packageVersion = (JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8')
+) as { version: string }).version
 const temporaryDirectories: string[] = []
 
 afterEach(async () => {
@@ -46,12 +50,12 @@ async function createFixture(options: { externalBlockmap: boolean }) {
   const root = await mkdtemp(join(tmpdir(), 'streamfold-update-artifacts-'))
   temporaryDirectories.push(root)
 
-  const artifactName = 'Streamfold-0.6.0-linux-x86_64.AppImage'
+  const artifactName = `Streamfold-${packageVersion}-linux-x86_64.AppImage`
   const artifact = Buffer.alloc(1_024, 0x41)
   const blockmap = Buffer.alloc(128, 0x42)
   const sha512 = createHash('sha512').update(artifact).digest('base64')
   const manifest = {
-    version: '0.6.0',
+    version: packageVersion,
     files: [{ url: artifactName, sha512, size: artifact.byteLength, blockMapSize: blockmap.byteLength }],
     path: artifactName,
     sha512

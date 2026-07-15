@@ -19,9 +19,13 @@ export function collectAllContents(source: ContentPageSource, accountId?: string
 }
 
 export function serializeContentCsv(contents: ContentSummary[]): string {
+  const dynamicMetricIds = [...new Set(contents.flatMap((content) => (
+    Object.keys(content.latestSnapshot?.metrics ?? {})
+  )))].sort()
   const header = [
     'platform_id', 'account_alias', 'remote_id', 'type', 'title', 'body_excerpt', 'url',
     'published_at', 'captured_at', 'views', 'likes', 'comments', 'shares', 'favorites',
+    ...dynamicMetricIds.map((id) => `metric:${id}`),
     'note', 'tags'
   ]
   const rows = contents.map((content) => {
@@ -41,6 +45,7 @@ export function serializeContentCsv(contents: ContentSummary[]): string {
       metrics?.comments ?? '',
       metrics?.shares ?? '',
       metrics?.favorites ?? '',
+      ...dynamicMetricIds.map((id) => metrics?.metrics?.[id] ?? ''),
       content.note,
       content.tags.join('|')
     ].map(csvCell).join(',')

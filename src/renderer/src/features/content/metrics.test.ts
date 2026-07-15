@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { ContentSnapshot, ContentSummary } from '../../../../shared/contracts'
-import { preferredSnapshotMetricKey, primaryContentMetric } from './metrics'
+import {
+  contentMetricValue,
+  formatContentMetric,
+  preferredContentMetricId,
+  preferredSnapshotMetricKey,
+  primaryContentMetric,
+  resolveContentMetricDefinitions
+} from './metrics'
 
 describe('content metric presentation', () => {
   it('uses views when the platform provides them', () => {
@@ -22,6 +29,32 @@ describe('content metric presentation', () => {
     })
     expect(preferredSnapshotMetricKey([snapshot({ views: null, likes: 3 })])).toBe('likes')
   })
+
+  it('merges declared metrics into the history without renderer platform enums', () => {
+    const definitions = resolveContentMetricDefinitions([{
+      id: 'cover_click_rate',
+      label: '封面点击率',
+      valueKind: 'ratio',
+      unit: 'ratio',
+      group: 'reach',
+      sortOrder: 30
+    }])
+    const item = snapshot({ metrics: { cover_click_rate: 0.174 } })
+
+    expect(definitions.map((definition) => definition.id)).toEqual([
+      'views', 'cover_click_rate', 'likes', 'comments', 'favorites', 'shares'
+    ])
+    expect(contentMetricValue(item, 'cover_click_rate')).toBe(0.174)
+    expect(preferredContentMetricId(definitions, [item])).toBe('cover_click_rate')
+    expect(formatContentMetric(0.174, definitions[1]!)).toBe('17.4%')
+  })
+
+  it('formats duration metrics using their declared unit', () => {
+    expect(formatContentMetric(75.5, {
+      valueKind: 'duration',
+      unit: 'seconds'
+    })).toBe('1 分 15.5 秒')
+  })
 })
 
 function snapshot(overrides: Partial<ContentSnapshot>): ContentSnapshot {
@@ -31,6 +64,7 @@ function snapshot(overrides: Partial<ContentSnapshot>): ContentSnapshot {
     comments: null,
     shares: null,
     favorites: null,
+    metrics: {},
     capturedAt: '2026-07-14T00:00:00.000Z',
     ...overrides
   }
