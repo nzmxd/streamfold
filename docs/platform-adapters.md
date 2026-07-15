@@ -1,6 +1,6 @@
 # 平台适配器
 
-> 适用版本：归页 Streamfold 0.6.3
+> 适用版本：归页 Streamfold 0.7.0
 >
 > 本文汇总当前可用平台的接口、字段和停止条件。共同的进程、数据库与安全边界见[运行架构](architecture.md)。
 
@@ -19,7 +19,7 @@
 
 ## 2. 小红书
 
-插件 ID：`xiaohongshu-session-api`，最小同步间隔 60 秒。
+插件 ID：`xiaohongshu-session-api`，版本 0.4.0，最小同步间隔 60 秒。
 
 ### 接口与数据
 
@@ -63,7 +63,7 @@
 
 ## 3. 知乎
 
-插件 ID：`zhihu-session-api`，版本 0.4.1，最小同步间隔 300 秒。
+插件 ID：`zhihu-session-api`，版本 0.5.0，最小同步间隔 300 秒。
 
 ### 接口与数据
 

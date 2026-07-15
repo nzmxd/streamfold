@@ -81,8 +81,7 @@ module.exports = {
     "keyId": "community.publisher.main"
   },
   "minimumAppVersion": "0.5.0",
-  "maximumAppVersion": "0.5.99",
-  "sdkVersion": "1.0.0",
+  "sdkVersion": "1.1.0",
   "contributions": []
 }
 ```
@@ -274,7 +273,6 @@ streamfold-plugin verify plugin.signed.streamfold-plugin --public-key .keys/publ
     "publisherKeyId": "community.publisher.main",
     "publisherPublicKey": "BASE64_ED25519_SPKI_DER",
     "minimumAppVersion": "0.5.0",
-    "maximumAppVersion": "0.5.99",
     "revoked": false
   }],
   "signature": "BASE64_ED25519_SIGNATURE"

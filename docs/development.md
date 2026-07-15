@@ -1,6 +1,6 @@
 # 开发与发布
 
-> 适用版本：归页 Streamfold 0.6.3
+> 适用版本：归页 Streamfold 0.7.0
 
 ## 1. 环境
 
@@ -44,7 +44,7 @@ pnpm dev
 
 ### 10 万条内容基准
 
-`pnpm benchmark:content-search` 使用确定性内存数据集，排除建库时间，记录而不硬编码跨设备阈值。2026-07-15 的 Windows 开发环境以 10 万条内容、20 万条观察和快照运行：普通 FTS 关键词首屏 5 次中位数 `2.11 ms`；20 页内部批量分页读取为 `5528.08 ms`；约 `22.37 MB` CSV 序列化为 `382.58 ms`；全量可靠指标摘要为 `7065.87 ms`。这些数字只用于同环境回归对比，发布验收仍需结合真实磁盘数据库、更多动态指标和目标机器。
+`pnpm benchmark:content-search` 使用确定性内存数据集，排除建库时间，记录而不硬编码跨设备阈值。2026-07-15 的 Windows 最终发布验证以 10 万条内容、20 万条观察和快照运行：普通 FTS 关键词首屏 5 次中位数 `1.54 ms`；20 页内部批量分页读取为 `3671.91 ms`；约 `22.37 MB` CSV 序列化为 `288.60 ms`；全量可靠指标摘要为 `5919.52 ms`。这些数字只用于同环境回归对比，发布验收仍需结合真实磁盘数据库、更多动态指标和目标机器。
 
 ## 3. 源码地图
 
@@ -117,8 +117,8 @@ pnpm dev
 - 纯解析：平台端点、字段、分页、原帖 URL、异常响应和大小限制。
 - 浏览器传输：CDP 事件、请求匹配、响应正文、后台 workspace lease 与 Session 隔离。
 - 服务：插件启用、身份预览、互斥、限频、错误状态、任务和头像缓存。
-- 任务：批次原子创建、分组解析、临时范围、同适配器串行、跨适配器并行、取消、重试和重启恢复。
-- 数据库：迁移、约束、事务、快照去重、分析、备份恢复和账号隔离。
+- 任务：批次原子创建、分组解析、临时范围、同适配器串行、跨适配器并行、取消、重试、失败处置、日历 cadence 和重启恢复。
+- 数据库：v0 → v16 迁移、约束、事务、快照/观察、FTS、可靠分析、备份恢复和账号隔离。
 - Renderer：展示映射、筛选、图表、排版、侧栏和弹窗行为。
 - Electron smoke：`app://` 页面、preload API、主题、更新 API、两个账号 Partition 隔离、浏览器 User-Agent 和图标。
 - Electron UI 回归：任务中心最小窗口、批量同步预览、矮窗口设置卡片、Webhook 权限与配置弹窗、复选框/开关状态、弹窗滚动和 `Esc` 关闭、浅色/深色主题。
@@ -127,9 +127,13 @@ pnpm dev
 
 ```powershell
 pnpm test
+pnpm sdk:test
 pnpm typecheck
 pnpm build
+pnpm test:ui
+pnpm benchmark:content-search
 pnpm test:smoke
+pnpm plugin:official-webhook:verify
 git diff --check
 ```
 
@@ -137,12 +141,12 @@ git diff --check
 
 ## 9. CI、打包与发布
 
-`.github/workflows/ci.yml` 在 `master`、`main` 的推送与 Pull Request 上使用 Node.js 22.21.1、pnpm 10.24.0 和冻结锁文件执行测试、类型检查与生产构建。该最低补丁版本规避了 Windows 上旧版实验性 `node:sqlite` 关闭后仍占用 WAL/数据库文件的问题。
+`.github/workflows/ci.yml` 在 `master`、`main` 的推送与 Pull Request 上使用 Node.js 22.21.1、pnpm 10.24.0 和冻结锁文件执行应用与 SDK 测试、官方 Webhook 校验、类型检查、生产构建和 Electron UI 回归。该最低补丁版本规避了 Windows 上旧版实验性 `node:sqlite` 关闭后仍占用 WAL/数据库文件的问题。
 
 `.github/workflows/release.yml` 支持手动打包和版本标签发布：
 
 - 手动触发只生成保留 14 天的 Actions 构件，不创建 Release。
-- 标签必须是严格的稳定 SemVer，例如 `v0.6.3`，并与 `package.json` 版本一致。
+- 标签必须是严格的稳定 SemVer，例如 `v0.7.0`，并与 `package.json` 版本一致。
 - Windows、macOS、Linux 在各自原生 runner 上打包；三个任务都成功后才汇总 Release。
 - 每个平台打包后都会检查 `plugin-sandbox.js`、QuickJS 运行资源和官方签名 Webhook 包。
 - 已发布的同名 Release 拒绝覆盖；失败运行留下的同名 draft 会在重跑时删除并重新创建，完整上传后再标记为 latest。
@@ -154,7 +158,7 @@ git diff --check
 | 平台 | 用户构件 | 在线更新资产 | 应用内更新边界 |
 |---|---|---|---|
 | Windows | NSIS `.exe`、`.zip` | `latest.yml`、安装包和 blockmap | NSIS 安装版；ZIP 手动更新 |
-| macOS | `.dmg`、`.zip` | 无 | 0.6.3 未签名，使用 DMG/ZIP 手动更新；完成 Developer ID 签名与公证后再启用应用内更新 |
+| macOS | `.dmg`、`.zip` | 无 | 当前构件未签名，使用 DMG/ZIP 手动更新；完成 Developer ID 签名与公证后再启用应用内更新 |
 | Linux | `.AppImage`、`.tar.gz` | `latest-linux.yml`、AppImage | 仅 AppImage；`tar.gz` 手动更新 |
 
 工作流还生成 `SHA256SUMS.txt`。Windows/Linux 打包会解析 `latest*.yml`，逐项核对其引用文件、大小、SHA-512、blockmap，以及安装目录 `app-update.yml` 中的 GitHub owner/repo；不能只验证文件名存在。
@@ -168,9 +172,9 @@ git diff --check
 ### 正式发布清单
 
 1. 提升 `package.json` 版本；已经分发过的版本号不得复用。
-2. 执行 `pnpm test`、`pnpm typecheck`、`pnpm build`、`pnpm test:smoke` 与 `git diff --check`。
+2. 执行 `pnpm test`、`pnpm sdk:test`、`pnpm typecheck`、`pnpm build`、`pnpm test:ui`、`pnpm benchmark:content-search`、`pnpm test:smoke`、`pnpm plugin:official-webhook:verify` 与 `git diff --check`。
 3. 确认没有提交 `.env`、证书、密钥、SQLite、Session、真实响应或个人数据。
-4. 提交代码并创建与版本完全一致的稳定标签。
+4. 使用 `git commit -S` 创建签名提交，并使用 `git tag -s` 创建与版本完全一致的签名稳定标签。
 5. 核对三个平台构件、Windows/Linux `latest*.yml`、blockmap、校验和及 draft Release，再正式发布。
 6. 使用两个不同版本的正式安装包完成一次真实在线更新验收。
 
@@ -182,9 +186,10 @@ git diff --check
 
 - 多账号隔离 Session、独立账号浏览器、后台 workspace lease 与登录失效提升窗口。
 - 小红书、知乎本人身份、资料、内容、指标与官方原帖链接同步。
-- 账号整理、内容检索、趋势分析、JSON/CSV 导出和加密数据库备份恢复。
-- v0 → v13 数据库迁移、自动化测试、生产构建与 Electron smoke。
-- 账号/分组批量同步、持久排队与重试链、账号和适配器互斥、统一任务中心与托盘任务摘要。
+- 账号整理、FTS5 内容检索、收藏与批量标签、筛选导出、可靠趋势分析和加密数据库备份恢复。
+- v0 → v16 数据库迁移、自动化测试、生产构建与 Electron smoke。
+- 账号/分组批量同步、持久排队与重试链、账号和适配器互斥、失败处置、统一任务中心与托盘任务摘要。
+- 插件间隔/每天/每周/每月计划、本地时区执行、错过周期合并和连续失败熔断。
 - Manifest v2、签名包/目录、QuickJS Utility Process、权限代理、事件 Outbox、计划队列、真实签名 Webhook 资源和 SDK/CLI。
 - 三平台构建配置、GitHub CI/Release 工作流和客户端在线更新状态机。
 
@@ -196,4 +201,4 @@ git diff --check
 - Windows/macOS 正式签名、公证，macOS 应用内更新，以及从较低正式版本升级到后续版本的真实验收。
 - 媒体文件备份、XLSX 导出、分组拖拽和浏览器窗口位置恢复。
 
-优先顺序是先完成 0.6.3 的小红书、知乎真实多账号和连续快照验收，再基于动态指标增强分析，最后通过签名目录逐个平台开放新适配器。详细版本范围、技术改造和验收门槛见[产品路线图](roadmap.md)。
+下一阶段优先完成小红书、知乎真实多账号与长时间运行验收，建立签名插件目录并验证第三个平台，再补齐安装包代码签名和跨版本在线升级验收。详细版本范围、技术改造和验收门槛见[产品路线图](roadmap.md)。

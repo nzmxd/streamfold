@@ -8,7 +8,7 @@ import {
   type PlatformContentUrlDeclaration
 } from './contracts.js'
 
-export const STREAMFOLD_PLUGIN_SDK_VERSION = '1.0.0'
+export const STREAMFOLD_PLUGIN_SDK_VERSION = '1.1.0'
 
 export type PluginManifestInput = Omit<PluginManifestV2, 'schemaVersion' | 'sdkVersion'> & {
   schemaVersion?: 2

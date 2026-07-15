@@ -1,6 +1,6 @@
 # @streamfold/plugin-sdk
 
-归页第三方插件 SDK，提供 v2 TypeScript 合同、Manifest 构建与校验、轻量测试宿主和打包签名 CLI。
+归页第三方插件 SDK，当前版本为 `1.1.0`，提供 v2 TypeScript 合同、Manifest 构建与校验、轻量测试宿主和打包签名 CLI。1.1.0 新增内容指标测量语义与标准指标映射，旧 1.x Manifest 保持兼容。
 
 ## 构建
 
