@@ -24,6 +24,50 @@ export interface ContentMetricDefinition {
   sortOrder: number
 }
 
+export const accountMetricPeriods = [
+  'daily',
+  'last_7_days',
+  'last_14_days',
+  'last_30_days',
+  'lifetime'
+] as const
+export type AccountMetricPeriod = (typeof accountMetricPeriods)[number]
+
+export interface AccountMetricDefinition {
+  id: string
+  label: string
+  valueKind: ContentMetricValueKind
+  unit: ContentMetricUnit
+  group: ContentMetricGroup
+  sortOrder: number
+}
+
+export interface AccountMetricSnapshot {
+  accountId: string
+  period: AccountMetricPeriod
+  periodStart: string | null
+  periodEnd: string
+  status: string | null
+  metrics: Record<string, number | null>
+  capturedAt: string
+}
+
+export interface AccountMetricQuery {
+  accountId: string
+  period?: AccountMetricPeriod
+  from?: string
+  to?: string
+  limit?: number
+  offset?: number
+}
+
+export interface AccountMetricHistory {
+  accountId: string
+  platformId: PlatformId
+  metricDefinitions: AccountMetricDefinition[]
+  snapshots: AccountMetricSnapshot[]
+}
+
 export interface ContentSnapshot extends MetricValues {
   metrics: Record<string, number | null>
   capturedAt: string

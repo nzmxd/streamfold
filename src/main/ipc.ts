@@ -17,6 +17,7 @@ import type { SettingsService } from './settings-service'
 import type { UpdateService } from './update-service'
 import { isTrustedShellUrl } from './shell-security'
 import {
+  parseAccountMetricQuery,
   parseAnalyticsQuery,
   parseBoolean,
   parseBulkUpdateAccounts,
@@ -276,6 +277,9 @@ export function registerIpc(
     return result
   }))
   ipcMain.handle('analytics:overview', trusted((_event, value) => database.getAnalytics(parseAnalyticsQuery(value))))
+  ipcMain.handle('analytics:account-metrics', trusted((_event, value) => (
+    database.getAccountMetricHistory(parseAccountMetricQuery(value))
+  )))
   ipcMain.handle('analytics:dashboard', trusted(() => database.getDashboard()))
   ipcMain.handle('tasks:summary', trusted((_event, value) => (
     services.tasks.summary(parseTaskQuery(value))
@@ -541,6 +545,7 @@ export function unregisterIpc(): void {
     'content:update',
     'content:clear-account',
     'analytics:overview',
+    'analytics:account-metrics',
     'analytics:dashboard',
     'tasks:summary',
     'tasks:list',

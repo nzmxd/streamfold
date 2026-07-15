@@ -16,6 +16,7 @@ import AccountContentWidget from '../content/AccountContentWidget.vue'
 import { formatNumber } from '../shared/format'
 import { confirmDialog } from '../../ui/dialog'
 import AccountAvatar from './AccountAvatar.vue'
+import AccountMetricsPanel from './AccountMetricsPanel.vue'
 import {
   accountDisplayName,
   connectionStatusLabel,
@@ -338,6 +339,12 @@ async function purgeAccount(): Promise<void> {
             <div v-else><dt>累计获赞与收藏</dt><dd>{{ formatNumber(account.latestSnapshot?.likesAndFavoritesTotal) }}</dd></div>
           </dl>
         </section>
+
+        <AccountMetricsPanel
+          v-if="account.platformId === 'zhihu'"
+          :account-id="account.id"
+          :refresh-key="account.lastSyncedAt"
+        />
 
         <div class="metric-grid account-status-grid">
           <article>

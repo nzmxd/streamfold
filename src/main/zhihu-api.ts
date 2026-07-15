@@ -18,19 +18,30 @@ const ANSWERS_INCLUDE = 'data[*].voteup_count,comment_count,created_time,updated
 const ARTICLES_INCLUDE = 'data[*].voteup_count,comment_count,created,updated,excerpt'
 const CREATOR_CONTENT_PATH = '/api/v4/creators/creations/v2/all'
 const CREATOR_SORT_TYPE = 'created'
+const MEMBER_AGGREGATE_PATH = '/api/v4/creators/analysis/realtime/member/aggr'
+const MEMBER_DAILY_PATH = '/api/v4/creators/analysis/realtime/member/daily'
+const CONTENT_ANALYSIS_LIST_PATH = '/api/v4/creators/analysis/realtime/content/list'
+const CONTENT_AGGREGATE_PATH = '/api/v4/creators/analysis/realtime/content/aggr'
+const CONTENT_DAILY_PATH = '/api/v4/creators/analysis/realtime/content/daily'
+const ANALYSIS_TAB = 'all'
 
 const PAGE_SIZE = 20
 const MAX_CONTENTS = 100
 const MAX_PAGES = 5
 const MAX_PAGING_OFFSET = 100
+const MAX_ANALYSIS_OFFSET = 80
+const MAX_ANALYTICS_DAYS = 90
 const MAX_COUNT = 1_000_000_000_000
 const MAX_DIRECT_RESPONSE_BYTES = 256 * 1024
 const MAX_LIST_RESPONSE_BYTES = 512 * 1024
 const MAX_LIST_TOTAL_BYTES = 2 * 1024 * 1024
 const HANDLE_RE = /^[A-Za-z0-9_-]{1,128}$/
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/
+const CONTENT_TOKEN_RE = /^[A-Za-z0-9._~-]{1,256}$/
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
 type ZhihuListKind = 'answers' | 'articles' | 'pins'
+export type ZhihuAnalysisContentType = 'answer' | 'article' | 'pin' | 'zvideo'
 
 function creatorContentsEndpoint(offset: number): string {
   return canonicalEndpoint(CREATOR_CONTENT_PATH, {
@@ -40,6 +51,56 @@ function creatorContentsEndpoint(offset: number): string {
     offset: String(offset),
     need_co_creation: '1',
     sort_type: CREATOR_SORT_TYPE
+  })
+}
+
+function memberAggregateEndpoint(start?: string, end?: string): string {
+  const query: Record<string, string> = { tab: ANALYSIS_TAB }
+  if (start !== undefined || end !== undefined) {
+    const range = analyticsDateRange(start, end)
+    query.start = range.start
+    query.end = range.end
+  }
+  return canonicalEndpoint(MEMBER_AGGREGATE_PATH, query)
+}
+
+function memberDailyEndpoint(start: string, end: string): string {
+  const range = analyticsDateRange(start, end)
+  return canonicalEndpoint(MEMBER_DAILY_PATH, {
+    tab: ANALYSIS_TAB,
+    start: range.start,
+    end: range.end
+  })
+}
+
+function contentAnalysisListEndpoint(type: ZhihuAnalysisContentType, offset: number): string {
+  const cleanOffset = analysisOffset(offset)
+  return canonicalEndpoint(CONTENT_ANALYSIS_LIST_PATH, {
+    type: cleanAnalysisContentType(type),
+    limit: String(PAGE_SIZE),
+    offset: String(cleanOffset)
+  })
+}
+
+function contentAggregateEndpoint(type: ZhihuAnalysisContentType, token: string): string {
+  return canonicalEndpoint(CONTENT_AGGREGATE_PATH, {
+    type: cleanAnalysisContentType(type),
+    token: cleanContentToken(token)
+  })
+}
+
+function contentDailyEndpoint(
+  type: ZhihuAnalysisContentType,
+  token: string,
+  start: string,
+  end: string
+): string {
+  const range = analyticsDateRange(start, end)
+  return canonicalEndpoint(CONTENT_DAILY_PATH, {
+    type: cleanAnalysisContentType(type),
+    token: cleanContentToken(token),
+    start: range.start,
+    end: range.end
   })
 }
 
@@ -66,6 +127,14 @@ export const ZHIHU_API_ENDPOINTS = Object.freeze({
   identity: '/api/v4/me?include=url_token',
   profile: memberEndpoint,
   creatorContents: (offset = 0) => creatorContentsEndpoint(offset),
+  memberAggregate: (start?: string, end?: string) => memberAggregateEndpoint(start, end),
+  memberDaily: (start: string, end: string) => memberDailyEndpoint(start, end),
+  contentAnalysisList: (type: ZhihuAnalysisContentType, offset = 0) =>
+    contentAnalysisListEndpoint(type, offset),
+  contentAggregate: (type: ZhihuAnalysisContentType, token: string) =>
+    contentAggregateEndpoint(type, token),
+  contentDaily: (type: ZhihuAnalysisContentType, token: string, start: string, end: string) =>
+    contentDailyEndpoint(type, token, start, end),
   answers: (handle: string, offset = 0) => listEndpoint('answers', handle, offset),
   articles: (handle: string, offset = 0) => listEndpoint('articles', handle, offset),
   pins: (handle: string, offset = 0) => listEndpoint('pins', handle, offset)
@@ -130,7 +199,7 @@ export interface ZhihuProfile extends ZhihuIdentity {
   likesAndFavoritesTotal: number | null
 }
 
-export type ZhihuContentType = 'answer' | 'article' | 'post'
+export type ZhihuContentType = 'answer' | 'article' | 'post' | 'video'
 
 export interface ZhihuContent {
   /** Namespaced stable key suitable for persistence across content kinds. */
@@ -143,11 +212,74 @@ export interface ZhihuContent {
   url: string
   publishedAt: string | null
   updatedAt: string | null
+  impressionCount: number | null
   readCount: number | null
+  playCount: number | null
+  voteUpCount: number | null
   likeCount: number | null
   commentCount: number | null
   shareCount: number | null
   favoriteCount: number | null
+  repostCount: number | null
+}
+
+export interface ZhihuAdvancedMetrics {
+  positiveInteractionRate: number | null
+  followerConversion: number | null
+  status: string | null
+}
+
+export interface ZhihuAnalyticsMetrics {
+  views: number | null
+  impressions: number | null
+  plays: number | null
+  upvotes: number | null
+  likes: number | null
+  comments: number | null
+  favorites: number | null
+  shares: number | null
+  reactions: number | null
+  reposts: number | null
+  likesAndReactions: number | null
+  newUpvotes: number | null
+  newLikes: number | null
+  upvoteIncreases: number | null
+  upvoteDecreases: number | null
+  likeIncreases: number | null
+  likeDecreases: number | null
+  publishCount: number | null
+  clickRate: number | null
+  readCompletionRate: number | null
+  playCompletionRate: number | null
+  advanced: ZhihuAdvancedMetrics
+}
+
+export interface ZhihuMemberAggregate {
+  metrics: ZhihuAnalyticsMetrics
+  today: ZhihuAnalyticsMetrics | null
+  yesterday: ZhihuAnalyticsMetrics | null
+  updatedAt: string | null
+}
+
+export interface ZhihuDailyAnalytics extends ZhihuAnalyticsMetrics {
+  date: string
+}
+
+export interface ZhihuContentAnalysisItem {
+  contentType: ZhihuAnalysisContentType
+  contentToken: string
+  contentId: string | null
+  title: string
+  metrics: ZhihuAnalyticsMetrics
+}
+
+export interface ZhihuContentAnalysisList {
+  contentType: ZhihuAnalysisContentType
+  items: ZhihuContentAnalysisItem[]
+  isEnd: boolean
+  next: string | null
+  total: number
+  totalReal: number
 }
 
 export interface ZhihuApiSnapshot {
@@ -234,6 +366,55 @@ export function normalizeZhihuApiEndpoint(value: string): string {
     return creatorContentsEndpoint(offset)
   }
 
+  if (path === MEMBER_AGGREGATE_PATH) {
+    if (isLegacyHttpPagingUrl) malformed('知乎 API 地址不在只读白名单')
+    const keys = Object.keys(query)
+    if (query.tab !== ANALYSIS_TAB || (keys.length !== 1 && keys.length !== 3)) {
+      malformed('知乎账号聚合指标查询参数不在白名单')
+    }
+    if (keys.length === 1) return memberAggregateEndpoint()
+    assertExactKeys(query, ['tab', 'start', 'end'], '知乎账号聚合指标')
+    const range = analyticsDateRange(query.start, query.end)
+    return memberAggregateEndpoint(range.start, range.end)
+  }
+
+  if (path === MEMBER_DAILY_PATH) {
+    if (isLegacyHttpPagingUrl) malformed('知乎 API 地址不在只读白名单')
+    assertExactKeys(query, ['tab', 'start', 'end'], '知乎账号日趋势')
+    if (query.tab !== ANALYSIS_TAB) malformed('知乎账号日趋势 tab 参数不在白名单')
+    const range = analyticsDateRange(query.start, query.end)
+    return memberDailyEndpoint(range.start, range.end)
+  }
+
+  if (path === CONTENT_ANALYSIS_LIST_PATH) {
+    if (isLegacyHttpPagingUrl) malformed('知乎 API 地址不在只读白名单')
+    assertExactKeys(query, ['type', 'limit', 'offset'], '知乎内容分析列表')
+    if (query.limit !== String(PAGE_SIZE)) malformed('知乎内容分析列表分页大小必须固定为 20')
+    const offset = analysisOffset(decimalInteger(query.offset, '知乎内容分析列表 offset'))
+    return contentAnalysisListEndpoint(cleanAnalysisContentType(query.type), offset)
+  }
+
+  if (path === CONTENT_AGGREGATE_PATH) {
+    if (isLegacyHttpPagingUrl) malformed('知乎 API 地址不在只读白名单')
+    assertExactKeys(query, ['type', 'token'], '知乎单内容聚合指标')
+    return contentAggregateEndpoint(
+      cleanAnalysisContentType(query.type),
+      cleanContentToken(query.token)
+    )
+  }
+
+  if (path === CONTENT_DAILY_PATH) {
+    if (isLegacyHttpPagingUrl) malformed('知乎 API 地址不在只读白名单')
+    assertExactKeys(query, ['type', 'token', 'start', 'end'], '知乎单内容日趋势')
+    const range = analyticsDateRange(query.start, query.end)
+    return contentDailyEndpoint(
+      cleanAnalysisContentType(query.type),
+      cleanContentToken(query.token),
+      range.start,
+      range.end
+    )
+  }
+
   const matched = /^\/api\/v4\/members\/([^/]+)(?:\/(answers|articles|pins))?$/.exec(path)
   if (!matched?.[1]) malformed('知乎 API 路径不在只读白名单')
   const handle = cleanHandle(decodeSegment(matched[1]))
@@ -276,6 +457,103 @@ export class ZhihuApi {
       await this.request(ZHIHU_API_ENDPOINTS.profile(current.remoteHandle)),
       current
     )
+  }
+
+  async getMemberAggregate(start?: string, end?: string): Promise<ZhihuMemberAggregate> {
+    const endpoint = memberAggregateEndpoint(start, end)
+    return parseZhihuMemberAggregate(await this.request(endpoint), endpoint)
+  }
+
+  async getMemberDaily(start: string, end: string): Promise<ZhihuDailyAnalytics[]> {
+    const endpoint = memberDailyEndpoint(start, end)
+    return parseZhihuDailyAnalytics(await this.request(endpoint), endpoint)
+  }
+
+  async getContentAnalysisList(
+    type: ZhihuAnalysisContentType,
+    offset = 0
+  ): Promise<ZhihuContentAnalysisList> {
+    const endpoint = contentAnalysisListEndpoint(type, offset)
+    return parseZhihuContentAnalysisList(await this.request(endpoint), type, endpoint)
+  }
+
+  async getContentAnalysisItems(
+    type: ZhihuAnalysisContentType,
+    limit = 20
+  ): Promise<ZhihuContentAnalysisItem[]> {
+    const cleanType = cleanAnalysisContentType(type)
+    assertLimit(limit)
+    const items: ZhihuContentAnalysisItem[] = []
+    const tokens = new Set<string>()
+    const visited = new Set<string>()
+    let endpoint = contentAnalysisListEndpoint(cleanType, 0)
+    let expectedTotal: number | null = null
+    let expectedTotalReal: number | null = null
+    let aggregateBytes = 0
+
+    for (let pageNumber = 1; pageNumber <= MAX_PAGES; pageNumber += 1) {
+      if (visited.has(endpoint)) malformed('知乎内容分析列表返回了重复的下一页地址')
+      visited.add(endpoint)
+      const page = parseZhihuContentAnalysisList(await this.request(endpoint), cleanType, endpoint)
+      aggregateBytes += jsonBytes(page)
+      if (aggregateBytes > MAX_LIST_TOTAL_BYTES) tooLarge('知乎内容分析分页响应总量超过 2 MiB')
+      if (expectedTotal === null) {
+        expectedTotal = page.total
+        expectedTotalReal = page.totalReal
+      } else if (page.total !== expectedTotal || page.totalReal !== expectedTotalReal) {
+        malformed('知乎内容分析分页总数在采集期间发生变化')
+      }
+      if (items.length + page.items.length > page.total) {
+        malformed('知乎内容分析分页数量超过接口声明总数')
+      }
+
+      for (const item of page.items) {
+        if (tokens.has(item.contentToken)) {
+          throw new ZhihuApiError('DUPLICATE_CONTENT', `知乎内容分析 token 重复：${item.contentToken}`)
+        }
+        tokens.add(item.contentToken)
+        items.push(item)
+        if (items.length >= limit) return items
+      }
+      if (page.isEnd) {
+        if (items.length !== Math.min(page.total, limit)) {
+          throw new ZhihuApiError(
+            'INCOMPLETE_PAGINATION',
+            `知乎内容分析分页结束时仅返回 ${items.length} / ${Math.min(page.total, limit)} 条数据`
+          )
+        }
+        return items
+      }
+      if (pageNumber === MAX_PAGES) break
+      const currentUrl = new URL(endpoint, ZHIHU_ORIGIN)
+      const currentOffset = Number(currentUrl.searchParams.get('offset'))
+      const nextEndpoint = page.next
+        ? normalizeZhihuApiEndpoint(page.next)
+        : contentAnalysisListEndpoint(cleanType, currentOffset + PAGE_SIZE)
+      assertNextContentAnalysisPage(endpoint, nextEndpoint, cleanType)
+      if (visited.has(nextEndpoint)) malformed('知乎内容分析列表返回了重复的下一页地址')
+      endpoint = nextEndpoint
+    }
+
+    throw new ZhihuApiError('INCOMPLETE_PAGINATION', '知乎内容分析在安全分页上限内未返回足够数据')
+  }
+
+  async getContentAggregate(
+    type: ZhihuAnalysisContentType,
+    token: string
+  ): Promise<ZhihuAnalyticsMetrics> {
+    const endpoint = contentAggregateEndpoint(type, token)
+    return parseZhihuContentAggregate(await this.request(endpoint), type, token)
+  }
+
+  async getContentDaily(
+    type: ZhihuAnalysisContentType,
+    token: string,
+    start: string,
+    end: string
+  ): Promise<ZhihuDailyAnalytics[]> {
+    const endpoint = contentDailyEndpoint(type, token, start, end)
+    return parseZhihuDailyAnalytics(await this.request(endpoint), endpoint)
   }
 
   async getAnswers(remoteHandle: string, limit = 20): Promise<ZhihuContent[]> {
@@ -476,6 +754,219 @@ export function parseZhihuProfile(
   }
 }
 
+export function parseZhihuMemberAggregate(
+  response: ZhihuJsonResponse,
+  expectedEndpoint = normalizeZhihuApiEndpoint(response.url)
+): ZhihuMemberAggregate {
+  const data = responseObject(response, expectedEndpoint, MAX_DIRECT_RESPONSE_BYTES)
+  return {
+    metrics: parseZhihuAnalyticsMetrics(data, 'member.aggr'),
+    today: optionalAnalyticsBlock(data.today, 'member.aggr.today'),
+    yesterday: optionalAnalyticsBlock(data.yesterday, 'member.aggr.yesterday'),
+    updatedAt: optionalAnalyticsUpdatedAt(data.updated, 'member.aggr.updated')
+  }
+}
+
+export function parseZhihuDailyAnalytics(
+  response: ZhihuJsonResponse,
+  expectedEndpoint = normalizeZhihuApiEndpoint(response.url)
+): ZhihuDailyAnalytics[] {
+  const result = validatedResponse(response, expectedEndpoint, MAX_LIST_RESPONSE_BYTES)
+  const rows = analysisRows(result.json, 'daily.response')
+  if (rows.length > MAX_ANALYTICS_DAYS) malformed('知乎日趋势响应超过 90 条')
+  const normalizedEndpoint = normalizeZhihuApiEndpoint(expectedEndpoint)
+  const endpointUrl = new URL(normalizedEndpoint, ZHIHU_ORIGIN)
+  const expectedStart = endpointUrl.searchParams.get('start')
+  const expectedEnd = endpointUrl.searchParams.get('end')
+  const dates = new Set<string>()
+  const parsed = rows.map((value, index) => {
+    const item = objectValue(value, `daily.data[${index}]`)
+    const date = cleanAnalyticsDate(
+      firstPresent(item, ['p_date', 'date', 'day', 'stat_date']),
+      `daily.data[${index}].date`
+    )
+    if (expectedStart && expectedEnd && (date < expectedStart || date > expectedEnd)) {
+      malformed('知乎日趋势返回了请求日期范围之外的数据')
+    }
+    if (dates.has(date)) malformed(`知乎日趋势日期重复：${date}`)
+    dates.add(date)
+    return { date, ...parseZhihuAnalyticsMetrics(item, `daily.data[${index}]`) }
+  })
+  return parsed.sort((left, right) => left.date.localeCompare(right.date))
+}
+
+export function parseZhihuContentAggregate(
+  response: ZhihuJsonResponse,
+  type: ZhihuAnalysisContentType,
+  token: string
+): ZhihuAnalyticsMetrics {
+  const endpoint = contentAggregateEndpoint(type, token)
+  const data = responseObject(response, endpoint, MAX_DIRECT_RESPONSE_BYTES)
+  const metricSource = data.data === undefined || data.data === null
+    ? data
+    : objectValue(data.data, 'content.aggr.data')
+  return parseZhihuAnalyticsMetrics(metricSource, 'content.aggr')
+}
+
+export function parseZhihuContentAnalysisList(
+  response: ZhihuJsonResponse,
+  type: ZhihuAnalysisContentType,
+  expectedEndpoint = normalizeZhihuApiEndpoint(response.url)
+): ZhihuContentAnalysisList {
+  const cleanType = cleanAnalysisContentType(type)
+  const result = validatedResponse(response, expectedEndpoint, MAX_LIST_RESPONSE_BYTES)
+  const data = objectValue(result.json, 'content.list.response')
+  if (!Array.isArray(data.data)) malformed('知乎内容分析列表 data 必须是数组')
+  if (data.data.length > PAGE_SIZE) malformed('知乎内容分析列表单页数量超过 20 条')
+  const paging = objectValue(data.paging, 'content.list.paging')
+  if (typeof paging.is_end !== 'boolean') malformed('知乎内容分析列表 paging.is_end 必须是布尔值')
+  const total = optionalCount(paging.totals, 'content.list.paging.totals')
+  const totalReal = optionalCount(paging.totals_real, 'content.list.paging.totals_real')
+  if (total === null || totalReal === null) malformed('知乎内容分析列表缺少分页总数')
+  let next: string | null = null
+  if (!paging.is_end) {
+    if (paging.next !== undefined && paging.next !== null && paging.next !== '') {
+      if (typeof paging.next !== 'string') malformed('知乎内容分析列表 paging.next 类型非法')
+      next = normalizeZhihuApiEndpoint(paging.next)
+      assertNextContentAnalysisPage(expectedEndpoint, next, cleanType)
+    }
+  } else if (paging.next !== undefined && paging.next !== null && typeof paging.next !== 'string') {
+    malformed('知乎内容分析列表 paging.next 类型非法')
+  }
+  return {
+    contentType: cleanType,
+    items: data.data.map((item, index) => parseZhihuContentAnalysisItem(item, cleanType, index)),
+    isEnd: paging.is_end,
+    next,
+    total,
+    totalReal
+  }
+}
+
+export function parseZhihuAnalyticsMetrics(
+  value: unknown,
+  path = 'metrics'
+): ZhihuAnalyticsMetrics {
+  const item = objectValue(value, path)
+  const advanced = item.advanced === undefined || item.advanced === null
+    ? {}
+    : objectValue(item.advanced, `${path}.advanced`)
+  const advancedStatus = optionalAdvancedStatus(
+    firstPresent(advanced, ['status']) ?? firstPresent(item, ['advanced_status']),
+    `${path}.advanced.status`
+  )
+  const unavailable = isExplicitUnavailableAdvancedStatus(advancedStatus)
+  return {
+    views: optionalCount(firstPresent(item, ['pv', 'read_count', 'view_count']), `${path}.pv`),
+    impressions: optionalCount(firstPresent(item, ['show', 'show_count', 'impression_count']), `${path}.show`),
+    plays: optionalCount(firstPresent(item, ['play', 'play_count']), `${path}.play`),
+    upvotes: optionalCount(firstPresent(item, ['upvote', 'vote_up_count', 'voteup_count']), `${path}.upvote`),
+    likes: optionalCount(firstPresent(item, ['like', 'like_count']), `${path}.like`),
+    comments: optionalCount(firstPresent(item, ['comment', 'comment_count']), `${path}.comment`),
+    favorites: optionalCount(firstPresent(item, ['collect', 'collect_count', 'favorite_count']), `${path}.collect`),
+    shares: optionalCount(firstPresent(item, ['share', 'share_count']), `${path}.share`),
+    reactions: optionalCount(firstPresent(item, ['reaction', 'reaction_count']), `${path}.reaction`),
+    reposts: optionalCount(firstPresent(item, ['re_pin', 'repin_count']), `${path}.re_pin`),
+    likesAndReactions: optionalCount(
+      firstPresent(item, ['like_and_reaction']),
+      `${path}.like_and_reaction`
+    ),
+    newUpvotes: optionalCount(firstPresent(item, ['new_upvote']), `${path}.new_upvote`),
+    newLikes: optionalCount(firstPresent(item, ['new_like']), `${path}.new_like`),
+    upvoteIncreases: optionalCount(
+      firstPresent(item, ['new_incr_upvote_num']),
+      `${path}.new_incr_upvote_num`
+    ),
+    upvoteDecreases: optionalCount(
+      firstPresent(item, ['new_desc_upvote_num']),
+      `${path}.new_desc_upvote_num`
+    ),
+    likeIncreases: optionalCount(
+      firstPresent(item, ['new_incr_like_num']),
+      `${path}.new_incr_like_num`
+    ),
+    likeDecreases: optionalCount(
+      firstPresent(item, ['new_desc_like_num']),
+      `${path}.new_desc_like_num`
+    ),
+    publishCount: optionalCount(firstPresent(item, ['publish_cnt']), `${path}.publish_cnt`),
+    clickRate: optionalRate(firstPresent(item, ['click_rate']), `${path}.click_rate`),
+    readCompletionRate: optionalRate(
+      firstPresent(item, ['read_finished_rate']),
+      `${path}.read_finished_rate`
+    ),
+    playCompletionRate: optionalRate(
+      firstPresent(item, ['play_finished_rate']),
+      `${path}.play_finished_rate`
+    ),
+    advanced: {
+      positiveInteractionRate: unavailable
+        ? null
+        : optionalPercentRate(
+            firstPresent(advanced, ['positive_interact_percent']) ??
+              firstPresent(item, ['positive_interact_percent']),
+            `${path}.advanced.positive_interact_percent`
+          ),
+      followerConversion: unavailable
+        ? null
+        : optionalSignedCount(
+            firstPresent(advanced, ['follower_translate']) ??
+              firstPresent(item, ['follower_translate']),
+            `${path}.advanced.follower_translate`
+          ),
+      status: advancedStatus
+    }
+  }
+}
+
+function parseZhihuContentAnalysisItem(
+  value: unknown,
+  expectedType: ZhihuAnalysisContentType,
+  index: number
+): ZhihuContentAnalysisItem {
+  const path = `content.list.data[${index}]`
+  const item = objectValue(value, path)
+  const data = item.data === undefined || item.data === null
+    ? item
+    : objectValue(item.data, `${path}.data`)
+  const rawType = firstPresent(item, ['type', 'content_type']) ?? expectedType
+  const actualType = rawType === 'video' ? 'zvideo' : cleanAnalysisContentType(rawType)
+  if (actualType !== expectedType) malformed('知乎内容分析列表返回了其他内容类型')
+  const contentToken = cleanContentToken(
+    firstPresent(data, ['url_token', 'content_token', 'token', 'id']) ??
+      firstPresent(item, ['content_token', 'token']),
+    `${path}.content_token`
+  )
+  const idValue = firstPresent(data, ['content_id', 'id']) ?? firstPresent(item, ['content_id', 'id'])
+  const contentId = idValue === undefined ? null : cleanId(idValue, `${path}.content_id`)
+  const title = optionalString(
+    firstPresent(data, ['title', 'content_title', 'excerpt_title']) ??
+      firstPresent(item, ['title', 'content_title']),
+    `${path}.title`,
+    500
+  )
+  const metricBase = item.metrics !== undefined && item.metrics !== null
+    ? objectValue(item.metrics, `${path}.metrics`)
+    : item.reaction !== undefined && item.reaction !== null
+      ? objectValue(item.reaction, `${path}.reaction`)
+      : data.metrics !== undefined && data.metrics !== null
+        ? objectValue(data.metrics, `${path}.data.metrics`)
+        : data.reaction !== undefined && data.reaction !== null
+          ? objectValue(data.reaction, `${path}.data.reaction`)
+          : item
+  const advancedValue = item.advanced ?? data.advanced
+  const metricSource = advancedValue === undefined || advancedValue === null || metricBase.advanced !== undefined
+    ? metricBase
+    : { ...metricBase, advanced: advancedValue }
+  return {
+    contentType: actualType,
+    contentToken,
+    contentId,
+    title,
+    metrics: parseZhihuAnalyticsMetrics(metricSource, `${path}.metrics`)
+  }
+}
+
 export function parseZhihuAnswer(value: unknown): ZhihuContent {
   const item = objectValue(value, 'answers.data[]')
   const answerId = cleanId(item.id, 'answer.id')
@@ -490,11 +981,15 @@ export function parseZhihuAnswer(value: unknown): ZhihuContent {
     url: `${ZHIHU_ORIGIN}/question/${encodeURIComponent(questionId)}/answer/${encodeURIComponent(answerId)}`,
     publishedAt: optionalTimestamp(firstPresent(item, ['created_time', 'created']), 'answer.created_time'),
     updatedAt: optionalTimestamp(firstPresent(item, ['updated_time', 'updated']), 'answer.updated_time'),
+    impressionCount: null,
     readCount: null,
-    likeCount: contentLikeCount(item, ['voteup_count', 'reaction_count'], 'answer'),
+    playCount: null,
+    voteUpCount: optionalCount(firstPresent(item, ['voteup_count', 'reaction_count']), 'answer.voteup_count'),
+    likeCount: contentLikeCount(item, ['like_count'], 'answer'),
     commentCount: optionalCount(item.comment_count, 'answer.comment_count'),
     shareCount: null,
-    favoriteCount: null
+    favoriteCount: null,
+    repostCount: null
   }
 }
 
@@ -513,11 +1008,15 @@ export function parseZhihuArticle(value: unknown): ZhihuContent {
       'article.created'
     ),
     updatedAt: optionalTimestamp(firstPresent(item, ['updated', 'updated_time']), 'article.updated'),
+    impressionCount: null,
     readCount: null,
-    likeCount: contentLikeCount(item, ['voteup_count'], 'article'),
+    playCount: null,
+    voteUpCount: optionalCount(item.voteup_count, 'article.voteup_count'),
+    likeCount: contentLikeCount(item, ['like_count'], 'article'),
     commentCount: optionalCount(item.comment_count, 'article.comment_count'),
     shareCount: null,
-    favoriteCount: null
+    favoriteCount: null,
+    repostCount: null
   }
 }
 
@@ -536,11 +1035,15 @@ export function parseZhihuPin(value: unknown): ZhihuContent {
     url: `${ZHIHU_ORIGIN}/pin/${encodeURIComponent(id)}`,
     publishedAt: optionalTimestamp(firstPresent(item, ['created', 'created_time']), 'pin.created'),
     updatedAt: optionalTimestamp(firstPresent(item, ['updated', 'updated_time']), 'pin.updated'),
+    impressionCount: null,
     readCount: null,
+    playCount: null,
+    voteUpCount: optionalCount(item.voteup_count, 'pin.voteup_count'),
     likeCount: contentLikeCount(item, ['like_count', 'reaction_count'], 'pin'),
     commentCount: optionalCount(item.comment_count, 'pin.comment_count'),
     shareCount: optionalCount(item.repin_count, 'pin.repin_count'),
-    favoriteCount: null
+    favoriteCount: null,
+    repostCount: optionalCount(item.repin_count, 'pin.repin_count')
   }
 }
 
@@ -548,11 +1051,14 @@ export function parseZhihuPin(value: unknown): ZhihuContent {
 export function parseZhihuCreatorContent(value: unknown): ZhihuContent {
   const row = objectValue(value, 'creator.data[]')
   const kind = cleanString(row.type, 'creator.data[].type', 40, false)
-  if (kind !== 'answer' && kind !== 'article') {
+  if (kind !== 'answer' && kind !== 'article' && kind !== 'pin' &&
+    kind !== 'zvideo' && kind !== 'video') {
     malformed(`知乎创作内容类型暂不支持：${kind}`)
   }
   const data = objectValue(row.data, `creator.${kind}.data`)
-  const reaction = objectValue(row.reaction, `creator.${kind}.reaction`)
+  const reaction = row.reaction === undefined || row.reaction === null
+    ? {}
+    : objectValue(row.reaction, `creator.${kind}.reaction`)
   const id = cleanId(data.id, `creator.${kind}.data.id`)
   const publishedAt = optionalTimestamp(
     firstPresent(data, ['created_time', 'created']),
@@ -562,17 +1068,34 @@ export function parseZhihuCreatorContent(value: unknown): ZhihuContent {
     firstPresent(data, ['updated_time', 'updated']),
     `creator.${kind}.data.updated_time`
   )
+  const bodyExcerpt = creatorApiExcerpt(data, kind)
+  const titleValue = firstPresent(data, ['title', 'excerpt_title'])
+  const title = titleValue === undefined
+    ? kind === 'pin' ? (bodyExcerpt || '无标题想法')
+      : kind === 'zvideo' || kind === 'video' ? '无标题视频'
+        : malformed(`creator.${kind}.data.title 缺失`)
+    : cleanString(titleValue, `creator.${kind}.data.title`, 500, false)
   const common = {
     platformContentId: id,
-    title: cleanString(data.title, `creator.${kind}.data.title`, 500, false),
-    bodyExcerpt: apiExcerpt(data.excerpt, `creator.${kind}.data.excerpt`),
+    title,
+    bodyExcerpt,
     publishedAt,
     updatedAt,
+    impressionCount: optionalCount(
+      firstPresent(reaction, ['show_count', 'impression_count']),
+      `creator.${kind}.reaction.show_count`
+    ),
     readCount: optionalCount(reaction.read_count, `creator.${kind}.reaction.read_count`),
-    likeCount: optionalCount(reaction.vote_up_count, `creator.${kind}.reaction.vote_up_count`),
+    playCount: optionalCount(reaction.play_count, `creator.${kind}.reaction.play_count`),
+    voteUpCount: optionalCount(reaction.vote_up_count, `creator.${kind}.reaction.vote_up_count`),
+    likeCount: optionalCount(reaction.like_count, `creator.${kind}.reaction.like_count`),
     commentCount: optionalCount(reaction.comment_count, `creator.${kind}.reaction.comment_count`),
-    shareCount: null,
-    favoriteCount: optionalCount(reaction.collect_count, `creator.${kind}.reaction.collect_count`)
+    shareCount: optionalCount(reaction.share_count, `creator.${kind}.reaction.share_count`),
+    favoriteCount: optionalCount(reaction.collect_count, `creator.${kind}.reaction.collect_count`),
+    repostCount: optionalCount(
+      firstPresent(reaction, ['re_pin', 'repin_count']),
+      `creator.${kind}.reaction.re_pin`
+    )
   }
 
   if (kind === 'answer') {
@@ -584,11 +1107,27 @@ export function parseZhihuCreatorContent(value: unknown): ZhihuContent {
       url: `${ZHIHU_ORIGIN}/question/${encodeURIComponent(questionId)}/answer/${encodeURIComponent(id)}`
     }
   }
+  if (kind === 'article') {
+    return {
+      ...common,
+      id: `article:${id}`,
+      type: 'article',
+      url: `https://zhuanlan.zhihu.com/p/${encodeURIComponent(id)}`
+    }
+  }
+  if (kind === 'pin') {
+    return {
+      ...common,
+      id: `pin:${id}`,
+      type: 'post',
+      url: `${ZHIHU_ORIGIN}/pin/${encodeURIComponent(id)}`
+    }
+  }
   return {
     ...common,
-    id: `article:${id}`,
-    type: 'article',
-    url: `https://zhuanlan.zhihu.com/p/${encodeURIComponent(id)}`
+    id: `zvideo:${id}`,
+    type: 'video',
+    url: `${ZHIHU_ORIGIN}/zvideo/${encodeURIComponent(id)}`
   }
 }
 
@@ -669,6 +1208,20 @@ function validatedResponse(
   }
   const bytes = jsonBytes(record.json)
   if (bytes > maximumBytes) tooLarge(`知乎接口 ${endpoint} 响应超过大小上限`)
+  const responseRecord = record.json && typeof record.json === 'object' && !Array.isArray(record.json)
+    ? record.json as Record<string, unknown>
+    : null
+  const responseCode = responseRecord?.code
+  const responseMessage = responseRecord
+    ? firstPresent(responseRecord, ['msg', 'message'])
+    : undefined
+  const authCode = responseCode === 401 || responseCode === 403 ||
+    responseCode === '401' || responseCode === '403'
+  const authMessage = typeof responseMessage === 'string' &&
+    /(?:no\s*auth|unauth|登录|login|auth|session)/i.test(responseMessage)
+  if (authCode || authMessage) {
+    throw new ZhihuApiError('AUTH_REQUIRED', '知乎登录已失效，请重新登录')
+  }
   const possibleError = record.json && typeof record.json === 'object' && !Array.isArray(record.json)
     ? (record.json as Record<string, unknown>).error
     : undefined
@@ -730,6 +1283,23 @@ function assertNextCreatorPage(currentEndpoint: string, nextEndpoint: string): v
   }
 }
 
+function assertNextContentAnalysisPage(
+  currentEndpoint: string,
+  nextEndpoint: string,
+  type: ZhihuAnalysisContentType
+): void {
+  const current = new URL(currentEndpoint, ZHIHU_ORIGIN)
+  const next = new URL(nextEndpoint, ZHIHU_ORIGIN)
+  const currentOffset = Number(current.searchParams.get('offset'))
+  const nextOffset = Number(next.searchParams.get('offset'))
+  if (next.pathname !== CONTENT_ANALYSIS_LIST_PATH ||
+    next.searchParams.get('type') !== type ||
+    next.searchParams.get('limit') !== String(PAGE_SIZE) ||
+    nextOffset !== currentOffset + PAGE_SIZE) {
+    malformed('知乎内容分析下一页地址未按固定步长前进')
+  }
+}
+
 function compareContentsNewestFirst(left: ZhihuContent, right: ZhihuContent): number {
   const leftTime = left.publishedAt ? Date.parse(left.publishedAt) : -1
   const rightTime = right.publishedAt ? Date.parse(right.publishedAt) : -1
@@ -753,6 +1323,63 @@ function assertExactQuery(
   }
 }
 
+function assertExactKeys(
+  actual: Record<string, string>,
+  expectedKeys: readonly string[],
+  label: string
+): void {
+  const actualKeys = Object.keys(actual)
+  if (actualKeys.length !== expectedKeys.length ||
+    expectedKeys.some((key) => !Object.prototype.hasOwnProperty.call(actual, key))) {
+    malformed(`${label}查询参数不在白名单`)
+  }
+}
+
+function analyticsDateRange(
+  startValue: unknown,
+  endValue: unknown
+): { start: string; end: string } {
+  const start = cleanAnalyticsDate(startValue, 'start')
+  const end = cleanAnalyticsDate(endValue, 'end')
+  const startTime = Date.parse(`${start}T00:00:00.000Z`)
+  const endTime = Date.parse(`${end}T00:00:00.000Z`)
+  const dayCount = Math.floor((endTime - startTime) / 86_400_000) + 1
+  if (dayCount < 1 || dayCount > MAX_ANALYTICS_DAYS) {
+    malformed('知乎指标日期范围必须为 1 到 90 天')
+  }
+  return { start, end }
+}
+
+function cleanAnalyticsDate(value: unknown, path: string): string {
+  if (typeof value !== 'string' || !ISO_DATE_RE.test(value)) malformed(`${path} 必须是 YYYY-MM-DD`)
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`)
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== value) {
+    malformed(`${path} 不是有效日期`)
+  }
+  return value
+}
+
+function cleanAnalysisContentType(value: unknown): ZhihuAnalysisContentType {
+  if (value === 'answer' || value === 'article' || value === 'pin' || value === 'zvideo') {
+    return value
+  }
+  malformed('知乎内容分析类型不在白名单')
+}
+
+function cleanContentToken(value: unknown, path = 'contentToken'): string {
+  if (typeof value !== 'string') malformed(`${path} 必须是字符串`)
+  const token = value.trim()
+  if (!CONTENT_TOKEN_RE.test(token)) malformed(`${path} 格式非法`)
+  return token
+}
+
+function analysisOffset(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > MAX_ANALYSIS_OFFSET || value % PAGE_SIZE !== 0) {
+    malformed('知乎内容分析 offset 超出允许范围')
+  }
+  return value
+}
+
 function decodeSegment(value: string): string {
   try {
     return decodeURIComponent(value)
@@ -771,6 +1398,13 @@ function decimalInteger(value: unknown, path: string): number {
 function objectValue(value: unknown, path: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) malformed(`${path} 必须是对象`)
   return value as Record<string, unknown>
+}
+
+function analysisRows(value: unknown, path: string): unknown[] {
+  if (Array.isArray(value)) return value
+  const record = objectValue(value, path)
+  if (!Array.isArray(record.data)) malformed(`${path}.data 必须是数组`)
+  return record.data
 }
 
 function firstPresent(record: Record<string, unknown>, names: readonly string[]): unknown {
@@ -793,6 +1427,67 @@ function optionalString(value: unknown, path: string, maximum: number): string {
   return cleanString(value, path, maximum, true)
 }
 
+function optionalAnalyticsBlock(value: unknown, path: string): ZhihuAnalyticsMetrics | null {
+  if (value === undefined || value === null) return null
+  return parseZhihuAnalyticsMetrics(value, path)
+}
+
+function optionalAnalyticsUpdatedAt(value: unknown, path: string): string | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'number') return optionalTimestamp(value, path)
+  return cleanString(value, path, 100, false)
+}
+
+function optionalAdvancedStatus(value: unknown, path: string): string | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'string') return cleanString(value, path, 100, false)
+  if (typeof value === 'boolean') return String(value)
+  if (Number.isSafeInteger(value)) return String(value)
+  malformed(`${path} 类型非法`)
+}
+
+function isExplicitUnavailableAdvancedStatus(status: string | null): boolean {
+  return status !== null && /(?:unavailable|insufficient|updating|locked|disabled|forbidden|unnormal|level|(?:^|_)pv(?:_|$)|read|不可用|不足|更新中|未开放|无权限)/i.test(status)
+}
+
+function optionalRate(value: unknown, path: string): number | null {
+  if (value === undefined || value === null || value === '') return null
+  let percentage = false
+  if (typeof value === 'string') {
+    const text = value.trim()
+    percentage = text.endsWith('%')
+    const numeric = percentage ? text.slice(0, -1).trim() : text
+    if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(numeric)) malformed(`${path} 必须是百分比`)
+    value = Number(numeric)
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) {
+    malformed(`${path} 必须在 0 到 100 之间`)
+  }
+  return percentage || value > 1 ? value / 100 : value
+}
+
+function optionalPercentRate(value: unknown, path: string): number | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'string') {
+    const numeric = value.trim().replace(/%$/, '').trim()
+    if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(numeric)) malformed(`${path} 必须是百分比`)
+    value = Number(numeric)
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 100) {
+    malformed(`${path} 必须在 0 到 100 之间`)
+  }
+  return value / 100
+}
+
+function optionalSignedCount(value: unknown, path: string): number | null {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'string' && /^-?(?:0|[1-9]\d*)$/.test(value)) value = Number(value)
+  if (!Number.isSafeInteger(value) || Math.abs(value as number) > MAX_COUNT) {
+    malformed(`${path} 必须是安全整数`)
+  }
+  return value as number
+}
+
 function apiExcerpt(value: unknown, path: string): string {
   const raw = optionalString(value, path, 5_000)
   if (!raw) return ''
@@ -801,6 +1496,25 @@ function apiExcerpt(value: unknown, path: string): string {
     .replace(/<\/?(?:p|div|li|ul|ol|blockquote|h[1-6])(?:\s[^>]*)?>/gi, ' ')
     .replace(/<\/?[a-z][^>]*>/gi, '')
   return decodeApiTextEntities(withoutTags).replace(/\s+/gu, ' ').trim()
+}
+
+function creatorApiExcerpt(data: Record<string, unknown>, kind: string): string {
+  const direct = firstPresent(data, ['excerpt', 'excerpt_title'])
+  if (direct !== undefined) return apiExcerpt(direct, `creator.${kind}.data.excerpt`)
+  if (kind !== 'pin' || data.content === undefined || data.content === null) return ''
+  // These are API JSON text blocks; no page document or DOM state is accessed.
+  if (!Array.isArray(data.content) || data.content.length > 100) {
+    malformed('creator.pin.data.content 必须是最多 100 项的 JSON 数组')
+  }
+  const text = data.content.flatMap((value, index) => {
+    const block = objectValue(value, `creator.pin.data.content[${index}]`)
+    if (block.type !== 'text') return []
+    const content = firstPresent(block, ['own_text', 'content'])
+    return content === undefined
+      ? []
+      : [optionalString(content, `creator.pin.data.content[${index}].text`, 5_000)]
+  }).join(' ')
+  return apiExcerpt(text, 'creator.pin.data.content.text')
 }
 
 function decodeApiTextEntities(value: string): string {

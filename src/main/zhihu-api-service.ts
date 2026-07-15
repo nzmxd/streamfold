@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { Account, SyncMode } from '../shared/contracts'
+import type {
+  AccountMetricDefinition,
+  AccountMetricPeriod,
+  ContentMetricDefinition
+} from '../shared/content-contracts'
 import type { JobRecord } from '../shared/job-contracts'
 import type {
   ConfirmSessionApiIdentityInput,
@@ -16,9 +21,14 @@ import type { JobService } from './services/job-service'
 import {
   ZhihuApi,
   ZhihuApiError,
+  type ZhihuAnalysisContentType,
+  type ZhihuAnalyticsMetrics,
   type ZhihuApiSnapshot,
   type ZhihuApiTransport,
+  type ZhihuContent,
+  type ZhihuDailyAnalytics,
   type ZhihuIdentity,
+  type ZhihuMemberAggregate,
   type ZhihuProfile
 } from './zhihu-api'
 
@@ -26,6 +36,65 @@ export const ZHIHU_API_PLUGIN_ID = 'zhihu-session-api'
 
 const PREVIEW_TTL_MS = 5 * 60_000
 const MAX_PREVIEWS = 50
+
+const ZHIHU_ACCOUNT_METRIC_DEFINITIONS: readonly AccountMetricDefinition[] = [
+  countMetric('views', '浏览量', 'reach', 10),
+  countMetric('impressions', '曝光量', 'reach', 20),
+  countMetric('plays', '播放量', 'reach', 30),
+  countMetric('upvotes', '赞同', 'engagement', 40),
+  countMetric('content_likes', '喜欢', 'engagement', 45),
+  countMetric('comments', '评论', 'engagement', 50),
+  countMetric('favorites', '收藏', 'engagement', 60),
+  countMetric('shares', '分享', 'engagement', 70),
+  countMetric('reactions', '互动', 'engagement', 80),
+  countMetric('reposts', '转发', 'engagement', 90),
+  countMetric('likes_and_reactions', '喜欢与互动', 'engagement', 100),
+  countMetric('new_upvotes', '新增赞同', 'engagement', 110),
+  countMetric('new_likes', '新增喜欢', 'engagement', 120),
+  countMetric('upvote_increases', '赞同增加', 'engagement', 130),
+  countMetric('upvote_decreases', '赞同减少', 'engagement', 140),
+  countMetric('like_increases', '喜欢增加', 'engagement', 150),
+  countMetric('like_decreases', '喜欢减少', 'engagement', 160),
+  countMetric('publish_count', '发布内容', 'other', 170),
+  ratioMetric('click_rate', '点击率', 'conversion', 180),
+  ratioMetric('read_completion_rate', '阅读完成率', 'conversion', 190),
+  ratioMetric('play_completion_rate', '播放完成率', 'conversion', 200),
+  ratioMetric('positive_interaction_rate', '正向互动率', 'conversion', 210),
+  countMetric('follower_conversion', '关注者转化', 'conversion', 220)
+]
+
+const ZHIHU_CONTENT_METRIC_DEFINITIONS: readonly ContentMetricDefinition[] = [
+  countMetric('likes', '赞同', 'engagement', 40),
+  countMetric('impressions', '曝光量', 'reach', 20),
+  countMetric('plays', '播放量', 'reach', 30),
+  countMetric('content_likes', '喜欢', 'engagement', 45),
+  countMetric('reactions', '互动', 'engagement', 80),
+  countMetric('reposts', '转发', 'engagement', 90),
+  countMetric('likes_and_reactions', '喜欢与互动', 'engagement', 100),
+  countMetric('new_upvotes', '新增赞同', 'engagement', 110),
+  countMetric('new_likes', '新增喜欢', 'engagement', 120),
+  countMetric('upvote_increases', '赞同增加', 'engagement', 130),
+  countMetric('upvote_decreases', '赞同减少', 'engagement', 140),
+  countMetric('like_increases', '喜欢增加', 'engagement', 150),
+  countMetric('like_decreases', '喜欢减少', 'engagement', 160),
+  ratioMetric('click_rate', '点击率', 'conversion', 180),
+  ratioMetric('read_completion_rate', '阅读完成率', 'conversion', 190),
+  ratioMetric('play_completion_rate', '播放完成率', 'conversion', 200),
+  ratioMetric('positive_interaction_rate', '正向互动率', 'conversion', 210)
+]
+
+interface ZhihuPeriodAggregate {
+  period: Exclude<AccountMetricPeriod, 'daily'>
+  periodStart: string | null
+  periodEnd: string
+  aggregate: ZhihuMemberAggregate
+}
+
+interface CollectedZhihuDataset extends ZhihuApiSnapshot {
+  periodAggregates: ZhihuPeriodAggregate[]
+  dailyAnalytics: ZhihuDailyAnalytics[]
+  contentAnalytics: ReadonlyMap<string, ZhihuAnalyticsMetrics>
+}
 
 export interface ZhihuApiTransportLease {
   transport: ZhihuApiTransport
@@ -188,9 +257,12 @@ export class ZhihuApiService implements SessionApiPlatformService {
         const api = new ZhihuApi(lease.transport)
         const capturedAt = this.now()
         const limit = requestedMode === 'recent_20' ? 20 : requestedMode === 'recent_100' ? 100 : 0
-        const snapshot = limit === 0
-          ? await collectProfileOnly(api, account.remoteId!)
-          : await api.collect(account.remoteId!, limit)
+        const snapshot = await collectZhihuDataset(
+          api,
+          account.remoteId!,
+          limit,
+          this.nowDate()
+        )
         const cachedAvatar = await this.cacheAvatar(account.id, snapshot.profile)
         const payload = toPayload(snapshot, capturedAt, cachedAvatar, requestedMode)
         job = await this.options.jobs.transition(job, 'committing', {
@@ -423,13 +495,41 @@ export class ZhihuApiService implements SessionApiPlatformService {
   }
 }
 
-async function collectProfileOnly(
+async function collectZhihuDataset(
   api: ZhihuApi,
-  expectedRemoteId: string
-): Promise<ZhihuApiSnapshot> {
+  expectedRemoteId: string,
+  limit: number,
+  now: Date
+): Promise<CollectedZhihuDataset> {
   const before = await api.getIdentity()
   assertExpectedIdentity(before, expectedRemoteId)
   const profile = await api.getProfile(before)
+  const end = shanghaiDate(now)
+  const periodRanges = [
+    { period: 'last_7_days' as const, start: addIsoDays(end, -6) },
+    { period: 'last_14_days' as const, start: addIsoDays(end, -13) },
+    { period: 'last_30_days' as const, start: addIsoDays(end, -29) }
+  ]
+  const periodAggregates: ZhihuPeriodAggregate[] = []
+  for (const range of periodRanges) {
+    periodAggregates.push({
+      period: range.period,
+      periodStart: range.start,
+      periodEnd: end,
+      aggregate: await api.getMemberAggregate(range.start, end)
+    })
+  }
+  periodAggregates.push({
+    period: 'lifetime',
+    periodStart: null,
+    periodEnd: end,
+    aggregate: await api.getMemberAggregate()
+  })
+  const dailyAnalytics = await api.getMemberDaily(periodRanges[2]!.start, end)
+  const contents = limit > 0 ? await api.getContents(before.remoteHandle, limit) : []
+  const contentAnalytics = limit > 0
+    ? await collectContentAnalytics(api, contents, limit)
+    : new Map<string, ZhihuAnalyticsMetrics>()
   const after = await api.getIdentity()
   assertExpectedIdentity(after, expectedRemoteId)
   if (
@@ -439,11 +539,18 @@ async function collectProfileOnly(
   ) {
     throw new ZhihuApiError('IDENTITY_MISMATCH', '采集期间知乎登录身份发生变化')
   }
-  return { identity: after, profile, contents: [] }
+  return {
+    identity: after,
+    profile,
+    contents,
+    periodAggregates,
+    dailyAnalytics,
+    contentAnalytics
+  }
 }
 
 function toPayload(
-  snapshot: ZhihuApiSnapshot,
+  snapshot: CollectedZhihuDataset,
   capturedAt: string,
   cachedAvatar: CachedProfileAvatar | null,
   mode: Exclude<SyncMode, 'disabled'>
@@ -468,6 +575,26 @@ function toPayload(
       shares: null,
       favorites: snapshot.profile.favoriteCount
     },
+    accountMetricDefinitions: [...ZHIHU_ACCOUNT_METRIC_DEFINITIONS],
+    accountMetricSnapshots: [
+      ...snapshot.periodAggregates.map(({ period, periodStart, periodEnd, aggregate }) => ({
+        period,
+        periodStart,
+        periodEnd,
+        status: aggregate.metrics.advanced.status,
+        metrics: zhihuMetricValues(aggregate.metrics, true),
+        capturedAt
+      })),
+      ...snapshot.dailyAnalytics.map((analytics) => ({
+        period: 'daily' as const,
+        periodStart: analytics.date,
+        periodEnd: analytics.date,
+        status: analytics.advanced.status,
+        metrics: zhihuMetricValues(analytics, true),
+        capturedAt
+      }))
+    ],
+    contentMetricDefinitions: [...ZHIHU_CONTENT_METRIC_DEFINITIONS],
     contents: snapshot.contents.map((content) => ({
       remoteId: content.id,
       type: content.type,
@@ -475,17 +602,171 @@ function toPayload(
       bodyExcerpt: content.bodyExcerpt,
       url: content.url,
       publishedAt: content.publishedAt,
-      snapshots: [{
-        capturedAt,
-        views: content.readCount,
-        likes: content.likeCount,
-        comments: content.commentCount,
-        shares: content.shareCount,
-        favorites: content.favoriteCount
-      }]
+      snapshots: [contentSnapshot(content, snapshot.contentAnalytics.get(content.id), capturedAt)]
     })),
     warnings: contentCoverageWarnings(snapshot, mode)
   }
+}
+
+async function collectContentAnalytics(
+  api: ZhihuApi,
+  contents: readonly ZhihuContent[],
+  limit: number
+): Promise<ReadonlyMap<string, ZhihuAnalyticsMetrics>> {
+  const contentTypes = new Set(contents.map((content) => analysisType(content.type)))
+  const indexed = new Map<string, ZhihuAnalyticsMetrics>()
+  for (const type of contentTypes) {
+    const items = await api.getContentAnalysisItems(type, limit)
+    for (const item of items) {
+      if (item.contentId) indexed.set(`${type}:${item.contentId}`, item.metrics)
+      indexed.set(`${type}:${item.contentToken}`, item.metrics)
+    }
+  }
+
+  const result = new Map<string, ZhihuAnalyticsMetrics>()
+  for (const content of contents) {
+    const type = analysisType(content.type)
+    const analytics = indexed.get(`${type}:${content.platformContentId}`)
+    if (analytics) result.set(content.id, analytics)
+  }
+  return result
+}
+
+function contentSnapshot(
+  content: ZhihuContent,
+  analytics: ZhihuAnalyticsMetrics | undefined,
+  capturedAt: string
+) {
+  return {
+    capturedAt,
+    views: firstMetric(analytics?.views, analytics?.plays, content.readCount, content.playCount),
+    likes: firstMetric(analytics?.upvotes, content.voteUpCount),
+    comments: firstMetric(analytics?.comments, content.commentCount),
+    shares: firstMetric(analytics?.shares, content.shareCount),
+    favorites: firstMetric(analytics?.favorites, content.favoriteCount),
+    metrics: zhihuContentMetricValues(content, analytics)
+  }
+}
+
+function zhihuContentMetricValues(
+  content: ZhihuContent,
+  metrics: ZhihuAnalyticsMetrics | undefined
+): Record<string, number | null> {
+  const values: Record<string, number | null> = {}
+  addMetric(values, 'impressions', firstMetric(metrics?.impressions, content.impressionCount))
+  addMetric(values, 'plays', firstMetric(metrics?.plays, content.playCount))
+  addMetric(values, 'content_likes', firstMetric(metrics?.likes, content.likeCount))
+  addMetric(values, 'reactions', metrics?.reactions ?? null)
+  addMetric(values, 'reposts', firstMetric(metrics?.reposts, content.repostCount))
+  addMetric(values, 'likes_and_reactions', metrics?.likesAndReactions ?? null)
+  addMetric(values, 'new_upvotes', metrics?.newUpvotes ?? null)
+  addMetric(values, 'new_likes', metrics?.newLikes ?? null)
+  addMetric(values, 'upvote_increases', metrics?.upvoteIncreases ?? null)
+  addMetric(values, 'upvote_decreases', metrics?.upvoteDecreases ?? null)
+  addMetric(values, 'like_increases', metrics?.likeIncreases ?? null)
+  addMetric(values, 'like_decreases', metrics?.likeDecreases ?? null)
+  addMetric(values, 'click_rate', metrics?.clickRate ?? null)
+  addMetric(values, 'read_completion_rate', metrics?.readCompletionRate ?? null)
+  addMetric(values, 'play_completion_rate', metrics?.playCompletionRate ?? null)
+  if (metrics) {
+    addAdvancedMetric(values, 'positive_interaction_rate', metrics.advanced.positiveInteractionRate, metrics.advanced.status)
+  }
+  return values
+}
+
+function zhihuMetricValues(
+  metrics: ZhihuAnalyticsMetrics,
+  retainUnavailableAdvanced: boolean
+): Record<string, number | null> {
+  const values: Record<string, number | null> = {}
+  addMetric(values, 'views', metrics.views)
+  addMetric(values, 'impressions', metrics.impressions)
+  addMetric(values, 'plays', metrics.plays)
+  addMetric(values, 'upvotes', metrics.upvotes)
+  addMetric(values, 'content_likes', metrics.likes)
+  addMetric(values, 'comments', metrics.comments)
+  addMetric(values, 'favorites', metrics.favorites)
+  addMetric(values, 'shares', metrics.shares)
+  addMetric(values, 'reactions', metrics.reactions)
+  addMetric(values, 'reposts', metrics.reposts)
+  addMetric(values, 'likes_and_reactions', metrics.likesAndReactions)
+  addMetric(values, 'new_upvotes', metrics.newUpvotes)
+  addMetric(values, 'new_likes', metrics.newLikes)
+  addMetric(values, 'upvote_increases', metrics.upvoteIncreases)
+  addMetric(values, 'upvote_decreases', metrics.upvoteDecreases)
+  addMetric(values, 'like_increases', metrics.likeIncreases)
+  addMetric(values, 'like_decreases', metrics.likeDecreases)
+  addMetric(values, 'publish_count', metrics.publishCount)
+  addMetric(values, 'click_rate', metrics.clickRate)
+  addMetric(values, 'read_completion_rate', metrics.readCompletionRate)
+  addMetric(values, 'play_completion_rate', metrics.playCompletionRate)
+  if (retainUnavailableAdvanced) {
+    addAdvancedMetric(values, 'positive_interaction_rate', metrics.advanced.positiveInteractionRate, metrics.advanced.status)
+    addAdvancedMetric(values, 'follower_conversion', metrics.advanced.followerConversion, metrics.advanced.status)
+  }
+  return values
+}
+
+function addMetric(target: Record<string, number | null>, id: string, value: number | null): void {
+  if (value !== null) target[id] = value
+}
+
+function addAdvancedMetric(
+  target: Record<string, number | null>,
+  id: string,
+  value: number | null,
+  status: string | null
+): void {
+  if (value !== null || status !== null) target[id] = value
+}
+
+function firstMetric(...values: Array<number | null | undefined>): number | null {
+  return values.find((value): value is number => value !== null && value !== undefined) ?? null
+}
+
+function analysisType(type: ZhihuContent['type']): ZhihuAnalysisContentType {
+  if (type === 'post') return 'pin'
+  if (type === 'video') return 'zvideo'
+  return type
+}
+
+function shanghaiDate(value: Date): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(value)
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value
+  const year = part('year')
+  const month = part('month')
+  const day = part('day')
+  if (!year || !month || !day) throw new Error('无法计算知乎指标日期')
+  return `${year}-${month}-${day}`
+}
+
+function addIsoDays(value: string, days: number): string {
+  const [year, month, day] = value.split('-').map(Number)
+  if (!year || !month || !day || !Number.isSafeInteger(days)) throw new Error('知乎指标日期范围无效')
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
+}
+
+function countMetric(
+  id: string,
+  label: string,
+  group: AccountMetricDefinition['group'],
+  sortOrder: number
+): AccountMetricDefinition {
+  return { id, label, valueKind: 'count', unit: 'count', group, sortOrder }
+}
+
+function ratioMetric(
+  id: string,
+  label: string,
+  group: AccountMetricDefinition['group'],
+  sortOrder: number
+): AccountMetricDefinition {
+  return { id, label, valueKind: 'ratio', unit: 'ratio', group, sortOrder }
 }
 
 function syncResult(

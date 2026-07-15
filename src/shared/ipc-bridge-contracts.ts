@@ -33,6 +33,7 @@ export const socialVaultInvokeChannels = [
   'content:update',
   'content:clear-account',
   'analytics:overview',
+  'analytics:account-metrics',
   'analytics:dashboard',
   'tasks:summary',
   'tasks:list',

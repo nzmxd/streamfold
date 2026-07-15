@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  parseAccountMetricQuery,
   parseAnalyticsQuery,
   parseBulkUpdateAccounts,
   parseConfirmApiIdentity,
@@ -55,6 +56,32 @@ describe('IPC validation', () => {
     expect(parseAnalyticsQuery({ days: 90 })).toEqual({ days: 90 })
     expect(() => parseAnalyticsQuery({ days: 31 })).toThrow('统计周期无效')
     expect(() => parseContentQuery({ limit: 1000 })).toThrow('返回数量无效')
+  })
+
+  it('validates account metric history filters', () => {
+    expect(parseAccountMetricQuery({
+      accountId: 'account-1',
+      period: 'daily',
+      from: '2026-07-01',
+      to: '2026-07-15',
+      limit: 30,
+      offset: 0
+    })).toEqual({
+      accountId: 'account-1',
+      period: 'daily',
+      from: '2026-07-01',
+      to: '2026-07-15',
+      limit: 30,
+      offset: 0
+    })
+    expect(() => parseAccountMetricQuery({ accountId: 'account-1', period: 'weekly' }))
+      .toThrow('账号指标周期无效')
+    expect(() => parseAccountMetricQuery({ accountId: 'account-1', from: '2026-02-30' }))
+      .toThrow('开始日期无效')
+    expect(() => parseAccountMetricQuery({
+      accountId: 'account-1', from: '2026-07-15', to: '2026-07-01'
+    })).toThrow('账号指标日期范围无效')
+    expect(() => parseAccountMetricQuery({ period: 'daily' })).toThrow('ID无效')
   })
 
   it('validates local-only content updates', () => {

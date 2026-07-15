@@ -1,5 +1,7 @@
 import {
+  accountMetricPeriods,
   contentTypes,
+  type AccountMetricQuery,
   type AnalyticsQuery,
   type BulkUpdateAccountsInput,
   type ConfirmSessionApiIdentityInput,
@@ -208,6 +210,20 @@ export function parseAnalyticsQuery(value: unknown): AnalyticsQuery {
   return result
 }
 
+export function parseAccountMetricQuery(value: unknown): AccountMetricQuery {
+  const record = asRecord(value)
+  const result: AccountMetricQuery = { accountId: asId(record.accountId) }
+  if (record.period !== undefined) {
+    result.period = asEnum(record.period, accountMetricPeriods, '账号指标周期')
+  }
+  if (record.from !== undefined) result.from = asCalendarDate(record.from, '开始日期')
+  if (record.to !== undefined) result.to = asCalendarDate(record.to, '结束日期')
+  if (result.from && result.to && result.from > result.to) throw new Error('账号指标日期范围无效')
+  if (record.limit !== undefined) result.limit = asInteger(record.limit, '返回数量', 1, 500)
+  if (record.offset !== undefined) result.offset = asInteger(record.offset, '分页位置', 0, 1_000_000)
+  return result
+}
+
 export function parseUpdateSettings(value: unknown): UpdateSettingsInput {
   const record = asRecord(value)
   const result: UpdateSettingsInput = {}
@@ -358,6 +374,16 @@ function asDate(value: unknown, label: string): string {
   const date = new Date(text)
   if (Number.isNaN(date.getTime())) throw new Error(`${label}无效`)
   return date.toISOString()
+}
+
+function asCalendarDate(value: unknown, label: string): string {
+  const text = asText(value, label, 10, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new Error(`${label}无效`)
+  const date = new Date(`${text}T00:00:00.000Z`)
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) {
+    throw new Error(`${label}无效`)
+  }
+  return text
 }
 
 function asStringArray(value: unknown, label: string, maxItems: number, maxLength: number): string[] {

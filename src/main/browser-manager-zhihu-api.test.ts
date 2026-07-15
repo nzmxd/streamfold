@@ -58,6 +58,44 @@ describe('BrowserManager Zhihu API transport', () => {
     expect(source).not.toMatch(/document|querySelector|innerText|textContent|outerHTML|innerHTML|cookie|localStorage/)
   })
 
+  it('allows only fixed creator-analysis GET endpoints and exact query parameters', async () => {
+    const endpoints = [
+      ZHIHU_API_ENDPOINTS.memberAggregate(),
+      ZHIHU_API_ENDPOINTS.memberAggregate('2026-07-01', '2026-07-14'),
+      ZHIHU_API_ENDPOINTS.memberDaily('2026-07-01', '2026-07-14'),
+      ZHIHU_API_ENDPOINTS.contentAnalysisList('article', 20),
+      ZHIHU_API_ENDPOINTS.contentAggregate('answer', 'answer-42'),
+      ZHIHU_API_ENDPOINTS.contentDaily('zvideo', 'video-42', '2026-07-01', '2026-07-14')
+    ]
+    const executeJavaScript = vi.fn(async (source: string) => {
+      const endpoint = endpoints.find((candidate) => source.includes(JSON.stringify(candidate)))
+      return {
+        status: 200,
+        url: `${origin}${endpoint}`,
+        contentType: 'application/json',
+        text: '{}'
+      }
+    })
+    const contents = {
+      executeJavaScript,
+      getURL: () => `${origin}/creator`,
+      isDestroyed: () => false
+    }
+
+    for (const endpoint of endpoints) {
+      await expect(__zhihuApiTransportTest.fetchPageJson(contents, endpoint, 100))
+        .resolves.toMatchObject({ status: 200, url: `${origin}${endpoint}` })
+    }
+    for (const unsafe of [
+      `${ZHIHU_API_ENDPOINTS.memberAggregate()}&token=secret`,
+      ZHIHU_API_ENDPOINTS.contentAnalysisList('article').replace('limit=20', 'limit=100'),
+      ZHIHU_API_ENDPOINTS.contentDaily('answer', 'answer-42', '2026-07-01', '2026-07-14')
+        .replace('type=answer', 'type=question')
+    ]) {
+      await expect(__zhihuApiTransportTest.fetchPageJson(contents, unsafe, 100)).rejects.toThrow()
+    }
+  })
+
   it('rejects non-whitelisted routes and non-Zhihu page origins', async () => {
     const contents = {
       executeJavaScript: vi.fn(async () => ({})),

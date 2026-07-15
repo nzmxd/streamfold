@@ -8,8 +8,12 @@ import {
   normalizeZhihuApiEndpoint,
   parseZhihuAnswer,
   parseZhihuArticle,
+  parseZhihuContentAggregate,
+  parseZhihuContentAnalysisList,
   parseZhihuCreatorContent,
+  parseZhihuDailyAnalytics,
   parseZhihuIdentity,
+  parseZhihuMemberAggregate,
   parseZhihuPin,
   parseZhihuProfile
 } from './zhihu-api'
@@ -91,7 +95,7 @@ function pin(id = '9007199254740993999'): Record<string, unknown> {
 }
 
 function creatorContent(
-  type: 'answer' | 'article',
+  type: 'answer' | 'article' | 'pin' | 'zvideo',
   id: string,
   createdTime: number
 ): Record<string, unknown> {
@@ -99,18 +103,25 @@ function creatorContent(
     type,
     data: {
       id,
-      title: type === 'answer' ? '创作中心里的回答' : '创作中心里的文章',
-      excerpt: '<p>创作中心 <b>JSON</b> 摘要</p>',
+      ...(type === 'pin'
+        ? { content: [{ type: 'text', own_text: '创作中心里的想法正文' }] }
+        : { title: type === 'answer' ? '创作中心里的回答' : type === 'article'
+          ? '创作中心里的文章' : '创作中心里的视频' }),
+      ...(type === 'pin' ? {} : { excerpt: '<p>创作中心 <b>JSON</b> 摘要</p>' }),
       created_time: createdTime,
       updated_time: createdTime + 60,
       ...(type === 'answer' ? { question_id: '778899' } : {})
     },
     reaction: {
+      show_count: 88,
       read_count: 66,
+      play_count: 55,
       vote_up_count: 7,
       like_count: 99,
       comment_count: 3,
-      collect_count: 4
+      collect_count: 4,
+      share_count: 2,
+      re_pin: 1
     }
   }
 }
@@ -143,6 +154,46 @@ function legacyNext(endpoint: string): string {
   return `https://api.zhihu.com${url.pathname.replace('/api/v4', '')}${url.search}`
 }
 
+function analyticsMetrics(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    pv: 120,
+    show: 300,
+    play: 40,
+    upvote: 12,
+    like: 8,
+    comment: 5,
+    collect: 4,
+    share: 3,
+    reaction: 2,
+    re_pin: 1,
+    like_and_reaction: 10,
+    new_upvote: 2,
+    new_like: 1,
+    new_incr_upvote_num: 3,
+    new_desc_upvote_num: 1,
+    new_incr_like_num: 2,
+    new_desc_like_num: 1,
+    publish_cnt: 2,
+    click_rate: 12.5,
+    read_finished_rate: 0.5,
+    play_finished_rate: '25%',
+    advanced: {
+      positive_interact_percent: 0.2,
+      follower_translate: -2,
+      status: 'normal'
+    },
+    ...overrides
+  }
+}
+
+function contentAnalysisItem(token: string, id: string): Record<string, unknown> {
+  return {
+    type: 'article',
+    data: { id, url_token: token, title: `文章 ${id}` },
+    reaction: analyticsMetrics()
+  }
+}
+
 function expectCode(action: () => unknown, code: ZhihuApiErrorCode): void {
   expect(action).toThrowError(expect.objectContaining({ code }))
 }
@@ -159,6 +210,21 @@ describe('Zhihu JSON API adapter', () => {
     expect(normalizeZhihuApiEndpoint(
       `${origin}${ZHIHU_API_ENDPOINTS.creatorContents(20)}`
     )).toBe(ZHIHU_API_ENDPOINTS.creatorContents(20))
+    expect(normalizeZhihuApiEndpoint(
+      `${origin}${ZHIHU_API_ENDPOINTS.memberAggregate('2026-07-01', '2026-07-14')}`
+    )).toBe(ZHIHU_API_ENDPOINTS.memberAggregate('2026-07-01', '2026-07-14'))
+    expect(normalizeZhihuApiEndpoint(ZHIHU_API_ENDPOINTS.memberAggregate()))
+      .toBe(ZHIHU_API_ENDPOINTS.memberAggregate())
+    expect(normalizeZhihuApiEndpoint(
+      ZHIHU_API_ENDPOINTS.memberDaily('2026-07-01', '2026-07-14')
+    )).toBe(ZHIHU_API_ENDPOINTS.memberDaily('2026-07-01', '2026-07-14'))
+    expect(normalizeZhihuApiEndpoint(ZHIHU_API_ENDPOINTS.contentAnalysisList('article', 20)))
+      .toBe(ZHIHU_API_ENDPOINTS.contentAnalysisList('article', 20))
+    expect(normalizeZhihuApiEndpoint(ZHIHU_API_ENDPOINTS.contentAggregate('answer', 'answer_42')))
+      .toBe(ZHIHU_API_ENDPOINTS.contentAggregate('answer', 'answer_42'))
+    expect(normalizeZhihuApiEndpoint(
+      ZHIHU_API_ENDPOINTS.contentDaily('zvideo', 'video-42', '2026-07-01', '2026-07-14')
+    )).toBe(ZHIHU_API_ENDPOINTS.contentDaily('zvideo', 'video-42', '2026-07-01', '2026-07-14'))
 
     for (const unsafe of [
       'http://www.zhihu.com/api/v4/me?include=url_token',
@@ -174,7 +240,13 @@ describe('Zhihu JSON API adapter', () => {
       `/api/v4/members/${handle}/answers/extra?limit=20&offset=0`,
       `${ZHIHU_API_ENDPOINTS.creatorContents()}&sort_type=updated`,
       ZHIHU_API_ENDPOINTS.creatorContents().replace('limit=20', 'limit=10'),
-      ZHIHU_API_ENDPOINTS.creatorContents().replace('need_co_creation=1', 'need_co_creation=0')
+      ZHIHU_API_ENDPOINTS.creatorContents().replace('need_co_creation=1', 'need_co_creation=0'),
+      '/api/v4/creators/analysis/realtime/member/aggr?tab=all&start=2026-07-01',
+      '/api/v4/creators/analysis/realtime/member/daily?tab=all&start=2026-07-01&end=2026-10-15',
+      ZHIHU_API_ENDPOINTS.contentAnalysisList('article').replace('limit=20', 'limit=10'),
+      ZHIHU_API_ENDPOINTS.contentAnalysisList('article').replace('offset=0', 'offset=100'),
+      ZHIHU_API_ENDPOINTS.contentAggregate('answer', 'answer_42').replace('type=answer', 'type=question'),
+      `${ZHIHU_API_ENDPOINTS.contentDaily('answer', 'answer_42', '2026-07-01', '2026-07-14')}&cookie=1`
     ]) {
       expectCode(() => normalizeZhihuApiEndpoint(unsafe), 'MALFORMED_RESPONSE')
     }
@@ -233,6 +305,128 @@ describe('Zhihu JSON API adapter', () => {
     })
   })
 
+  it('maps account aggregates, signed follower conversion and percentage metrics', () => {
+    const endpoint = ZHIHU_API_ENDPOINTS.memberAggregate('2026-07-01', '2026-07-14')
+    const result = parseZhihuMemberAggregate(response(endpoint, {
+      ...analyticsMetrics(),
+      today: analyticsMetrics({ pv: 7 }),
+      yesterday: analyticsMetrics({ pv: 5 }),
+      updated: '2026-07-15 10:30'
+    }), endpoint)
+
+    expect(result.metrics).toMatchObject({
+      views: 120,
+      impressions: 300,
+      plays: 40,
+      upvotes: 12,
+      likes: 8,
+      comments: 5,
+      favorites: 4,
+      shares: 3,
+      reposts: 1,
+      publishCount: 2,
+      clickRate: 0.125,
+      readCompletionRate: 0.5,
+      playCompletionRate: 0.25,
+      advanced: {
+        positiveInteractionRate: 0.002,
+        followerConversion: -2,
+        status: 'normal'
+      }
+    })
+    expect(result.today?.views).toBe(7)
+    expect(result.yesterday?.views).toBe(5)
+  })
+
+  it('nulls advanced metrics for official unavailable statuses and never fabricates missing values', () => {
+    for (const status of ['unnormal_by_level', 'unnormal_by_pv', 'updating']) {
+      const endpoint = ZHIHU_API_ENDPOINTS.memberAggregate()
+      const result = parseZhihuMemberAggregate(response(endpoint, analyticsMetrics({
+        advanced: {
+          positive_interact_percent: 2.5,
+          follower_translate: 10,
+          status
+        }
+      })), endpoint)
+      expect(result.metrics.advanced).toEqual({
+        positiveInteractionRate: null,
+        followerConversion: null,
+        status
+      })
+    }
+
+    const endpoint = ZHIHU_API_ENDPOINTS.memberAggregate()
+    expect(parseZhihuMemberAggregate(response(endpoint, {}), endpoint).metrics).toMatchObject({
+      views: null,
+      upvotes: null,
+      likes: null,
+      advanced: { positiveInteractionRate: null, followerConversion: null, status: null }
+    })
+  })
+
+  it('parses account and content daily history inside the requested date range', () => {
+    const memberEndpoint = ZHIHU_API_ENDPOINTS.memberDaily('2026-07-01', '2026-07-02')
+    expect(parseZhihuDailyAnalytics(response(memberEndpoint, {
+      data: [
+        { p_date: '2026-07-02', ...analyticsMetrics({ pv: 2 }) },
+        { p_date: '2026-07-01', ...analyticsMetrics({ pv: 1 }) }
+      ]
+    }), memberEndpoint).map((item) => [item.date, item.views])).toEqual([
+      ['2026-07-01', 1],
+      ['2026-07-02', 2]
+    ])
+
+    const contentEndpoint = ZHIHU_API_ENDPOINTS.contentDaily(
+      'article',
+      'article-42',
+      '2026-07-01',
+      '2026-07-02'
+    )
+    expect(parseZhihuDailyAnalytics(response(contentEndpoint, [
+      { p_date: '2026-07-01', pv: 9, like: 2, share: null }
+    ]), contentEndpoint)[0]).toMatchObject({ date: '2026-07-01', views: 9, likes: 2, shares: null })
+  })
+
+  it('parses content aggregates and paginates analysis lists without requiring paging.next', async () => {
+    const aggregateEndpoint = ZHIHU_API_ENDPOINTS.contentAggregate('article', 'article-42')
+    expect(parseZhihuContentAggregate(
+      response(aggregateEndpoint, { data: analyticsMetrics({ pv: 42 }) }),
+      'article',
+      'article-42'
+    )).toMatchObject({ views: 42, upvotes: 12, likes: 8 })
+
+    const first = ZHIHU_API_ENDPOINTS.contentAnalysisList('article', 0)
+    const second = ZHIHU_API_ENDPOINTS.contentAnalysisList('article', 20)
+    const getJson = vi.fn(async (endpoint: string) => endpoint === first
+      ? list(endpoint, [contentAnalysisItem('token-1', '1')], {
+          isEnd: false,
+          next: null,
+          totals: 2,
+          totalsReal: 2
+        })
+      : list(endpoint, [contentAnalysisItem('token-2', '2')], {
+          totals: 2,
+          totalsReal: 2
+        }))
+    const result = await new ZhihuApi({ getJson }).getContentAnalysisItems('article', 2)
+    expect(result.map((item) => item.contentToken)).toEqual(['token-1', 'token-2'])
+    expect(result[0]?.metrics).toMatchObject({ views: 120, upvotes: 12, likes: 8 })
+    expect(getJson.mock.calls.map(([endpoint]) => endpoint)).toEqual([first, second])
+  })
+
+  it('rejects analysis dates outside the request and unsafe content-list paging', () => {
+    const endpoint = ZHIHU_API_ENDPOINTS.memberDaily('2026-07-01', '2026-07-02')
+    expectCode(() => parseZhihuDailyAnalytics(response(endpoint, [
+      { p_date: '2026-07-03', pv: 1 }
+    ]), endpoint), 'MALFORMED_RESPONSE')
+
+    const listEndpoint = ZHIHU_API_ENDPOINTS.contentAnalysisList('article')
+    expectCode(() => parseZhihuContentAnalysisList(response(listEndpoint, {
+      data: [contentAnalysisItem('token-1', '1')],
+      paging: { is_end: false, totals: 2, totals_real: 2, next: '/api/v4/me?include=url_token' }
+    }), 'article', listEndpoint), 'MALFORMED_RESPONSE')
+  })
+
   it('maps answers, articles and pins to namespaced IDs and canonical original URLs', () => {
     expect(parseZhihuAnswer(answer())).toEqual({
       id: 'answer:66442211:9007199254740993001',
@@ -243,11 +437,15 @@ describe('Zhihu JSON API adapter', () => {
       url: 'https://www.zhihu.com/question/66442211/answer/9007199254740993001',
       publishedAt: '2024-07-03T09:46:40.000Z',
       updatedAt: '2024-07-03T09:47:40.000Z',
+      impressionCount: null,
       readCount: null,
-      likeCount: 18,
+      playCount: null,
+      voteUpCount: 18,
+      likeCount: null,
       commentCount: 2,
       shareCount: null,
-      favoriteCount: null
+      favoriteCount: null,
+      repostCount: null
     })
     expect(parseZhihuArticle(article())).toMatchObject({
       id: 'article:123456789',
@@ -283,11 +481,15 @@ describe('Zhihu JSON API adapter', () => {
       url: 'https://www.zhihu.com/question/778899/answer/9007199254740993555',
       publishedAt: '2024-10-27T03:33:20.000Z',
       updatedAt: '2024-10-27T03:34:20.000Z',
+      impressionCount: 88,
       readCount: 66,
-      likeCount: 7,
+      playCount: 55,
+      voteUpCount: 7,
+      likeCount: 99,
       commentCount: 3,
-      shareCount: null,
-      favoriteCount: 4
+      shareCount: 2,
+      favoriteCount: 4,
+      repostCount: 1
     })
     expect(parseZhihuCreatorContent(creatorContent(
       'article',
@@ -298,12 +500,34 @@ describe('Zhihu JSON API adapter', () => {
       type: 'article',
       url: 'https://zhuanlan.zhihu.com/p/99887766',
       readCount: 66,
-      likeCount: 7,
+      voteUpCount: 7,
+      likeCount: 99,
       favoriteCount: 4
+    })
+    expect(parseZhihuCreatorContent(creatorContent(
+      'pin',
+      '9007199254740993999',
+      1_720_000_000
+    ))).toMatchObject({
+      id: 'pin:9007199254740993999',
+      type: 'post',
+      title: '创作中心里的想法正文',
+      bodyExcerpt: '创作中心里的想法正文',
+      url: 'https://www.zhihu.com/pin/9007199254740993999'
+    })
+    expect(parseZhihuCreatorContent(creatorContent(
+      'zvideo',
+      '1234567890',
+      1_720_000_000
+    ))).toMatchObject({
+      id: 'zvideo:1234567890',
+      type: 'video',
+      url: 'https://www.zhihu.com/zvideo/1234567890',
+      playCount: 55
     })
     expectCode(() => parseZhihuCreatorContent({
       ...creatorContent('article', '99887766', 1_720_000_000),
-      type: 'zvideo'
+      type: 'question'
     }), 'MALFORMED_RESPONSE')
   })
 
@@ -462,6 +686,14 @@ describe('Zhihu JSON API adapter', () => {
         status
       )), code)
     }
+    expectCode(() => parseZhihuMemberAggregate(response(
+      ZHIHU_API_ENDPOINTS.memberAggregate(),
+      { msg: 'no auth', code: '403' }
+    )), 'AUTH_REQUIRED')
+    expectCode(() => parseZhihuContentAggregate(response(
+      ZHIHU_API_ENDPOINTS.contentAggregate('article', 'article-42'),
+      { msg: 'no auth', code: 403 }
+    ), 'article', 'article-42'), 'AUTH_REQUIRED')
   })
 
   it('rejects malformed IDs, counters, response origins and oversized JSON', () => {

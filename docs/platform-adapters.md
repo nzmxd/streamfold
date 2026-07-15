@@ -1,6 +1,6 @@
 # 平台适配器
 
-> 适用版本：归页 Streamfold 0.6.1
+> 适用版本：归页 Streamfold 0.6.2
 >
 > 本文汇总当前可用平台的接口、字段和停止条件。共同的进程、数据库与安全边界见[运行架构](architecture.md)。
 
@@ -63,22 +63,37 @@
 
 ## 3. 知乎
 
-插件 ID：`zhihu-session-api`，版本 0.2.0，最小同步间隔 300 秒。
+插件 ID：`zhihu-session-api`，版本 0.4.0，最小同步间隔 300 秒。
 
 ### 接口与数据
 
 所有请求均在 `https://www.zhihu.com` 第一方页面上下文中执行固定 `GET`：
 
-| 用途 | 接口 |
-|---|---|
-| 当前身份 | `/api/v4/me?include=url_token` |
-| 本人资料 | `/api/v4/members/{url_token}?include=...` |
-| 创作中心本人内容 | `/api/v4/creators/creations/v2/all?start=0&end=0&limit=20&offset=...&need_co_creation=1&sort_type=created` |
-| 遗留解析参考 | `/api/v4/members/{url_token}/answers`、`articles`、`pins` |
+| 用途 | 固定接口 | 主要数据 |
+|---|---|---|
+| 当前身份 | `/api/v4/me?include=url_token` | 稳定账号 ID、当前 `url_token` 和昵称 |
+| 本人资料 | `/api/v4/members/{url_token}?include=...` | 头像、简介、关注、粉丝、内容数、累计获赞和获收藏 |
+| 创作中心本人内容 | `/api/v4/creators/creations/v2/all?start=0&end=0&limit=20&offset=...&need_co_creation=1&sort_type=created` | 回答、文章、想法、视频的 ID、标题、API 摘要、发布时间和当前指标 |
+| 账号周期汇总 | `/api/v4/creators/analysis/realtime/member/aggr?tab=all[&start=YYYY-MM-DD&end=YYYY-MM-DD]` | 指定周期或累计的流量、互动和高级指标 |
+| 账号每日趋势 | `/api/v4/creators/analysis/realtime/member/daily?tab=all&start=YYYY-MM-DD&end=YYYY-MM-DD` | 每日指标、发布数、点击率和完成率 |
+| 内容分析列表 | `/api/v4/creators/analysis/realtime/content/list?type=...&limit=20&offset=...` | 按回答、文章、想法和视频读取本人内容的完整指标 |
+| 单内容汇总 | `/api/v4/creators/analysis/realtime/content/aggr?type=...&token=...` | 单篇内容当前聚合指标 |
+| 单内容每日趋势 | `/api/v4/creators/analysis/realtime/content/daily?type=...&token=...&start=YYYY-MM-DD&end=YYYY-MM-DD` | 单篇内容最多 90 天的官方日趋势 |
+| 遗留解析参考 | `/api/v4/members/{url_token}/answers`、`articles`、`pins` | 兼容解析与测试，不作为创作中心失败时的降级数据源 |
 
 当前同步以创作中心统一列表为主数据源，不会在该接口失败时静默降级到公开成员列表。用户不需要预先打开“内容管理”页面，后台 workspace 会直接发起固定请求。
 
-账号资料映射包括稳定 ID、昵称、头像、简介、关注、粉丝、内容总数、累计获赞与获收藏。回答使用 `answer:{questionId}:{answerId}`，文章使用 `article:{articleId}`；保存标题、API 摘要、阅读、赞同、评论、收藏及经过验证的官方原帖 URL。
+账号资料映射包括稳定 ID、昵称、头像、简介、关注、粉丝、内容总数、累计获赞与获收藏。账号动态指标保存最近 7 天、14 天、30 天、累计和最近 30 天的每日记录：
+
+- 流量：阅读 `pv`、展现 `show`、播放 `play`；
+- 互动：赞同 `upvote`、喜欢 `like`、评论 `comment`、收藏 `collect`、分享 `share`、互动 `reaction`、转发 `re_pin`；
+- 变化：新增赞同/喜欢，以及赞同和喜欢的增加、减少；
+- 效率：发布数 `publish_cnt`、点击率 `click_rate`、阅读完成率 `read_finished_rate`、播放完成率 `play_finished_rate`；
+- 高级：正向互动率 `advanced.positive_interact_percent`、关注者转化 `advanced.follower_translate`。
+
+比例统一保存为 0 到 1。正向互动率的原始值按百分数处理，例如平台返回 `0.2` 表示 `0.2%`，落库为 `0.002`。关注者转化是允许为负数的数量。`advanced.status` 为 `unnormal_by_level`、`unnormal_by_pv` 或 `updating` 时，高级指标保存为 `null` 并保留状态，不显示为零。
+
+内容指标严格区分“赞同”和“喜欢”。兼容快照的 `likes` 列继续表示知乎赞同，动态指标 `content_likes` 表示官方喜欢；同时保存展现、阅读、播放、评论、收藏、分享、互动、转发及其他可用变化指标。回答使用 `answer:{questionId}:{answerId}`，文章使用 `article:{articleId}`，想法使用 `pin:{pinId}`，视频使用 `zvideo:{videoId}`，并保存经过验证的官方原帖 URL。想法摘要只读取 API JSON 的 `excerpt`、`excerpt_title` 或 `content[]` 文本块，不读取页面 DOM。
 
 ### 身份与分页
 
@@ -88,11 +103,15 @@
 4. `url_token` 只用于当次请求，稳定 ID 才写入 `accounts.remote_id`。
 5. 同步前后 `/me` 都必须与本地绑定一致。
 
-`recent_20` 读取一页，`recent_100` 最多读取五页；每页固定 20 条。`paging.next` 必须保持固定路径和查询参数，`offset` 按页大小递增，`is_end`、`totals`、`totals_real` 与实际结果必须一致。重复 URL、异常 offset、重复内容 ID、未知内容类型和分页不完整都会使整次同步失败。
+`recent_20` 读取一页，`recent_100` 最多读取五页；创作内容和内容分析列表均固定每页 20 条，允许的 `offset` 为 0、20、40、60、80。创作内容的 `paging.next` 必须保持固定路径和查询参数；内容分析列表允许平台省略 `paging.next`，此时宿主只按当前固定端点生成下一页。若平台返回 `next`，仍必须通过相同的主机、路径、类型、页大小和递增 offset 校验。
 
-单个列表响应最多 512 KiB，累计最多 2 MiB，请求超时 12 秒。头像仅接受已列入白名单的 `zhimg.com` 图片主机。401/403 或登录重定向会显示同一账号浏览器；429 会停止同步，不循环重试。
+两组列表都校验 `is_end`、`totals`、`totals_real`、重复内容 ID/token 和采集期间总数变化。异常 offset、跨类型下一页、未知内容类型或分页不完整都会使整次同步失败，不提交部分指标。回答、文章、想法和视频的分析列表分别分页，再按平台内容 ID 或 token 与创作内容合并。
 
-已使用本人测试账号完成创作中心两页 32 条内容在线验收，包括 26 篇文章、6 条回答及其阅读、赞同、评论和收藏指标。仍需补充空列表、真实 401/403/429 与登录账号切换场景验收。
+指标日期只接受有效的 `YYYY-MM-DD`，单次日趋势范围为 1 到 90 天；内容 token 只接受受限字符并由 `URLSearchParams` 编码。单个列表响应最多 512 KiB，累计最多 2 MiB，请求超时 12 秒。头像仅接受已列入白名单的 `zhimg.com` 图片主机。
+
+401/403、登录重定向，以及 HTTP 200 中的 `{code: 401|403, msg: "no auth"}` 都按登录失效处理；429 会停止同步，不循环重试。知乎未登录时，账号汇总可能返回全 `null`、每日接口可能返回全零，因此任何指标都只能位于同步前后两次 `/api/v4/me` 身份复验之间。身份变化、登录失效或风控响应会使整个同步事务回滚。
+
+0.6.2 的自动化测试覆盖固定端点白名单、日期和 token 校验、五页分页、缺失 `next`、重复内容、赞同/喜欢分离、想法和视频、负数关注者转化、高级指标不可用状态、登录失效 JSON、响应大小与同步前后身份复验。此前本人测试账号已完成创作中心两页 32 条内容在线验收；0.6.2 新增周期和高级指标仍应在发布前用本人账号完成一次脱敏响应验收。
 
 ## 4. 计划中平台
 
@@ -106,6 +125,7 @@
 ## 5. 调研来源
 
 - [jackwener/OpenCLI](https://github.com/jackwener/OpenCLI)：同源固定请求、平台适配器组织和知乎接口参考。
+- [chouheiwa/zhixi](https://github.com/chouheiwa/zhixi)：知乎创作中心账号汇总、内容日趋势和指标字段交叉核对。
 - [ReaJason/xhs](https://github.com/ReaJason/xhs)、[jackwener/xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli)、[jzOcb/xhs-note-health-checker](https://github.com/jzOcb/xhs-note-health-checker)：小红书接口与响应形状交叉核对。
 
 这些项目只用于调研。归页不运行其插件、Bridge、守护进程或签名实现。

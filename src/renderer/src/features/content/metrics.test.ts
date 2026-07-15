@@ -23,6 +23,13 @@ describe('content metric presentation', () => {
     ))).toEqual({ key: 'likes', label: '点赞', value: 8, previousValue: 7 })
   })
 
+  it('uses the platform term for Zhihu upvotes', () => {
+    expect(primaryContentMetric({
+      ...summary(snapshot({ views: null, likes: 8 })),
+      platformId: 'zhihu'
+    })).toMatchObject({ key: 'likes', label: '赞同', value: 8 })
+  })
+
   it('keeps missing metrics unknown instead of displaying them as zero', () => {
     expect(primaryContentMetric(summary(snapshot({})))).toEqual({
       key: null, label: '指标', value: null, previousValue: null
@@ -47,6 +54,27 @@ describe('content metric presentation', () => {
     expect(contentMetricValue(item, 'cover_click_rate')).toBe(0.174)
     expect(preferredContentMetricId(definitions, [item])).toBe('cover_click_rate')
     expect(formatContentMetric(0.174, definitions[1]!)).toBe('17.4%')
+  })
+
+  it('lets an adapter replace a core label while retaining the core value field', () => {
+    const definitions = resolveContentMetricDefinitions([{
+      id: 'likes',
+      label: '赞同',
+      valueKind: 'count',
+      unit: 'count',
+      group: 'engagement',
+      sortOrder: 40
+    }, {
+      id: 'content_likes',
+      label: '喜欢',
+      valueKind: 'count',
+      unit: 'count',
+      group: 'engagement',
+      sortOrder: 45
+    }])
+
+    expect(definitions.find(({ id }) => id === 'likes')?.label).toBe('赞同')
+    expect(definitions.find(({ id }) => id === 'content_likes')?.label).toBe('喜欢')
   })
 
   it('formats duration metrics using their declared unit', () => {

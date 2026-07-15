@@ -131,6 +131,39 @@ test('账号批量同步会在入队前预览并跳过未登录账号', async ()
   await expect(batchDialog).toBeHidden()
 })
 
+test('知乎账号详情在最小窗口下完整展示周期指标入口', async () => {
+  await openSection('accounts')
+  await page.getByRole('button', { name: '＋ 添加账号' }).click()
+  const addDialog = page.getByRole('dialog', { name: '添加账号' })
+  await addDialog.getByLabel('平台').selectOption('zhihu')
+  await addDialog.getByLabel('本地备注名（可选）').fill('知乎指标测试号')
+  await addDialog.getByRole('button', { name: '创建账号' }).click()
+  await expect(addDialog).toBeHidden()
+
+  const panel = page.locator('.account-metrics-panel')
+  await expect(panel).toBeVisible()
+  await expect(panel.getByText('暂无创作指标')).toBeVisible()
+  const periods = panel.getByRole('group', { name: '创作指标周期' })
+  await expect(periods.getByRole('button')).toHaveCount(4)
+  for (const label of ['近 7 天', '近 14 天', '近 30 天', '累计']) {
+    await expect(periods.getByRole('button', { name: label, exact: true })).toBeVisible()
+  }
+  await periods.getByRole('button', { name: '累计', exact: true }).click()
+  await expect(periods.getByRole('button', { name: '累计', exact: true })).toHaveAttribute('aria-pressed', 'true')
+
+  const layout = await panel.evaluate((element) => ({
+    horizontalOverflow: element.scrollWidth - element.clientWidth,
+    periodOverflow: (() => {
+      const periods = element.querySelector<HTMLElement>('.account-metric-periods')
+      return periods ? periods.scrollWidth - periods.clientWidth : 0
+    })(),
+    width: element.getBoundingClientRect().width
+  }))
+  expect(layout.horizontalOverflow).toBeLessThanOrEqual(1)
+  expect(layout.periodOverflow).toBeLessThanOrEqual(1)
+  expect(layout.width).toBeGreaterThan(300)
+})
+
 test('Webhook 权限与配置弹窗可打开且不再出现克隆错误', async () => {
   await waitForPluginCenter()
   const card = contributionCard('测试 Webhook')

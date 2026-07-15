@@ -65,6 +65,32 @@ describe('IPC trust and maintenance boundary', () => {
     expect(fixture.pluginLifecycle.installDevelopment).toHaveBeenCalledWith()
   })
 
+  it('validates account metric queries inside the trusted renderer boundary', async () => {
+    const fixture = ipcFixture()
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+    const handler = requiredHandler('analytics:account-metrics')
+
+    await expect(handler(eventFixture(fixture), {
+      accountId: 'account-1',
+      period: 'last_14_days',
+      limit: 2
+    })).resolves.toMatchObject({ accountId: 'account-1', platformId: 'zhihu' })
+    expect(fixture.database.getAccountMetricHistory).toHaveBeenCalledWith({
+      accountId: 'account-1',
+      period: 'last_14_days',
+      limit: 2
+    })
+
+    await expect(handler(eventFixture(fixture), {
+      accountId: 'account-1',
+      period: 'weekly'
+    })).rejects.toThrow('账号指标周期无效')
+    await expect(handler(eventFixture(fixture, { senderId: 999 }), {
+      accountId: 'account-1',
+      period: 'daily'
+    })).rejects.toThrow('远程页面')
+  })
+
   it('keeps update maintenance active after schedulers stop and installation starts', async () => {
     const fixture = ipcFixture()
     const activePackages = deferred<Array<{ id: string }>>()
@@ -162,6 +188,14 @@ function ipcFixture() {
     jobs: { onChanged: vi.fn(() => vi.fn()) },
     updates
   } as unknown as IpcServices
+  const database = {
+    getAccountMetricHistory: vi.fn(() => ({
+      accountId: 'account-1',
+      platformId: 'zhihu',
+      metricDefinitions: [],
+      snapshots: []
+    }))
+  } as unknown as Parameters<typeof registerIpc>[1]
   return {
     mainFrame,
     window,
@@ -171,7 +205,7 @@ function ipcFixture() {
     syncBatches,
     updates,
     services,
-    database: {} as Parameters<typeof registerIpc>[1],
+    database,
     browser: { applyAppearance: vi.fn() } as unknown as Parameters<typeof registerIpc>[2]
   }
 }

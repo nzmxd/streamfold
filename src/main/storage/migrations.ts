@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 12
+export const CURRENT_SCHEMA_VERSION = 13
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -57,6 +57,10 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 12) {
     inTransaction(db, () => migrateV11ToV12(db))
+    version = 12
+  }
+  if (version < 13) {
+    inTransaction(db, () => migrateV12ToV13(db))
   }
 }
 
@@ -618,6 +622,61 @@ function migrateV11ToV12(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_content_snapshot_metrics_metric
       ON content_snapshot_metrics(platform_id, metric_id, snapshot_id);
     PRAGMA user_version = 12;
+  `)
+}
+
+/** Adds account-level period metrics while preserving legacy account profile snapshots. */
+function migrateV12ToV13(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS account_metric_definitions (
+      platform_id TEXT NOT NULL,
+      metric_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      value_kind TEXT NOT NULL CHECK (value_kind IN ('count', 'ratio', 'duration')),
+      unit TEXT NOT NULL CHECK (unit IN ('count', 'ratio', 'seconds')),
+      metric_group TEXT NOT NULL CHECK (
+        metric_group IN ('reach', 'engagement', 'conversion', 'other')
+      ),
+      sort_order INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (platform_id, metric_id)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS account_metric_snapshots (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      period_kind TEXT NOT NULL CHECK (
+        period_kind IN ('daily', 'last_7_days', 'last_14_days', 'last_30_days', 'lifetime')
+      ),
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      status TEXT,
+      captured_at TEXT NOT NULL,
+      CHECK (
+        (period_kind = 'lifetime' AND period_start = '') OR
+        (period_kind <> 'lifetime' AND period_start <> '')
+      ),
+      UNIQUE (account_id, period_kind, period_start, period_end)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS account_metric_values (
+      snapshot_id TEXT NOT NULL REFERENCES account_metric_snapshots(id) ON DELETE CASCADE,
+      platform_id TEXT NOT NULL,
+      metric_id TEXT NOT NULL,
+      value REAL,
+      PRIMARY KEY (snapshot_id, metric_id),
+      FOREIGN KEY (platform_id, metric_id)
+        REFERENCES account_metric_definitions(platform_id, metric_id)
+        ON UPDATE CASCADE ON DELETE RESTRICT
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_account_metric_definitions_platform_order
+      ON account_metric_definitions(platform_id, sort_order, metric_id);
+    CREATE INDEX IF NOT EXISTS idx_account_metric_snapshots_account_period
+      ON account_metric_snapshots(account_id, period_kind, period_end, captured_at);
+    CREATE INDEX IF NOT EXISTS idx_account_metric_values_metric
+      ON account_metric_values(platform_id, metric_id, snapshot_id);
+    PRAGMA user_version = 13;
   `)
 }
 

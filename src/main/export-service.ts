@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises'
 import { dialog, type BrowserWindow } from 'electron'
 import type {
   Account,
+  AccountMetricHistory,
   AccountSnapshot,
   ContentDetail,
   ContentQuery,
@@ -17,6 +18,11 @@ interface ExportDatabase {
   listAccounts(): Account[]
   listGroups(): Group[]
   listAccountSnapshots(accountId?: string): AccountSnapshot[]
+  getAccountMetricHistory(query: {
+    accountId: string
+    limit?: number
+    offset?: number
+  }): AccountMetricHistory
   listContents(query?: ContentQuery): ContentSummary[]
   getContentDetail(id: string): ContentDetail
 }
@@ -70,14 +76,30 @@ export class ExportService {
       .filter((group) => accounts.some((account) => account.groupIds.includes(group.id)))
     const details = contents.map((content) => this.database.getContentDetail(content.id))
     return `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       exportedAt: new Date().toISOString(),
       scope: accountId ? 'account' : 'all',
       accounts,
       groups,
       accountSnapshots: this.database.listAccountSnapshots(accountId),
+      accountMetricHistories: accounts.map((account) => this.collectAccountMetricHistory(account.id)),
       contents: details.filter((content) => accountIds.has(content.accountId))
     }, null, 2)}\n`
+  }
+
+  private collectAccountMetricHistory(accountId: string): AccountMetricHistory {
+    const pageSize = 5_000
+    const snapshots: AccountMetricHistory['snapshots'] = []
+    let metricDefinitions: AccountMetricHistory['metricDefinitions'] = []
+    let platformId = ''
+    for (let offset = 0; ; offset += pageSize) {
+      const page = this.database.getAccountMetricHistory({ accountId, limit: pageSize, offset })
+      platformId = page.platformId
+      metricDefinitions = page.metricDefinitions
+      snapshots.push(...page.snapshots)
+      if (page.snapshots.length < pageSize) break
+    }
+    return { accountId, platformId, metricDefinitions, snapshots }
   }
 
 }

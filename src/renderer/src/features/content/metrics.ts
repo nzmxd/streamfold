@@ -29,7 +29,8 @@ export interface PrimaryContentMetric {
 }
 
 export function primaryContentMetric(
-  item: Pick<ContentSummary, 'latestSnapshot' | 'previousSnapshot'>
+  item: Pick<ContentSummary, 'latestSnapshot' | 'previousSnapshot'> &
+    Partial<Pick<ContentSummary, 'platformId'>>
 ): PrimaryContentMetric {
   const definition = coreMetricDefinitions.find((candidate) => (
     contentMetricValue(item.latestSnapshot, candidate.id) !== null
@@ -38,11 +39,19 @@ export function primaryContentMetric(
   return definition && key
     ? {
         key,
-        label: definition.label,
+        label: platformMetricLabel(item.platformId, definition),
         value: contentMetricValue(item.latestSnapshot, key),
         previousValue: contentMetricValue(item.previousSnapshot, key)
       }
     : { key: null, label: '指标', value: null, previousValue: null }
+}
+
+function platformMetricLabel(
+  platformId: ContentSummary['platformId'] | undefined,
+  definition: ContentMetricDefinition
+): string {
+  if (platformId === 'zhihu' && definition.id === 'likes') return '赞同'
+  return definition.label
 }
 
 export function resolveContentMetricDefinitions(

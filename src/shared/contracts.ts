@@ -193,6 +193,7 @@ export interface SocialVaultApi {
   }
   analytics: {
     overview(query?: import('./content-contracts').AnalyticsQuery): Promise<import('./content-contracts').AnalyticsOverview>
+    accountMetrics(query: import('./content-contracts').AccountMetricQuery): Promise<import('./content-contracts').AccountMetricHistory>
     dashboard(): Promise<import('./content-contracts').DashboardOverview>
   }
   tasks: {

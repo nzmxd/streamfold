@@ -79,6 +79,7 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
     },
     analytics: {
       overview: (query) => invoke('analytics:overview', query),
+      accountMetrics: (query) => invoke('analytics:account-metrics', query),
       dashboard: () => invoke('analytics:dashboard')
     },
     tasks: {

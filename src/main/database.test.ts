@@ -373,6 +373,157 @@ describe('SocialDatabase', () => {
       .toEqual([100, 101])
   })
 
+  it('persists account period metrics with null availability and negative conversion values', () => {
+    const account = createManagedAccount(database, 'account-metric-owner', '账号周期指标')
+    const payload = standardDataset('account-metric-owner', 'account-metric-content')
+    payload.accountMetricDefinitions = accountMetricDefinitions()
+    payload.accountMetricSnapshots = [
+      {
+        period: 'daily',
+        periodStart: '2026-07-11',
+        periodEnd: '2026-07-11',
+        metrics: {
+          reads: 80,
+          follower_conversion: 1,
+          positive_interaction_rate: 0.1
+        },
+        capturedAt: '2026-07-13T08:00:00.000Z'
+      },
+      {
+        period: 'daily',
+        periodStart: '2026-07-12',
+        periodEnd: '2026-07-12',
+        status: 'insufficient_level',
+        metrics: {
+          reads: 128,
+          follower_conversion: -2,
+          positive_interaction_rate: null
+        },
+        capturedAt: '2026-07-13T08:00:00.000Z'
+      },
+      {
+        period: 'last_7_days',
+        periodStart: '2026-07-07',
+        periodEnd: '2026-07-13',
+        status: null,
+        metrics: {
+          reads: 900,
+          follower_conversion: 12,
+          positive_interaction_rate: 0.18
+        },
+        capturedAt: '2026-07-13T08:00:00.000Z'
+      },
+      {
+        period: 'lifetime',
+        periodStart: null,
+        periodEnd: '2026-07-13',
+        metrics: {
+          reads: 20_000,
+          follower_conversion: 230,
+          positive_interaction_rate: 0.22
+        },
+        capturedAt: '2026-07-13T08:00:00.000Z'
+      }
+    ]
+
+    commitManagedDataset(database, account.id, payload)
+
+    expect(database.listAccountMetricDefinitions(account.platformId)).toEqual(accountMetricDefinitions())
+    expect(database.getAccountMetricHistory({ accountId: account.id })).toMatchObject({
+      accountId: account.id,
+      platformId: account.platformId,
+      metricDefinitions: accountMetricDefinitions()
+    })
+    expect(database.listAccountMetricSnapshots({
+      accountId: account.id,
+      period: 'daily',
+      from: '2026-07-12',
+      to: '2026-07-12',
+      limit: 1
+    })).toEqual([{
+      accountId: account.id,
+      period: 'daily',
+      periodStart: '2026-07-12',
+      periodEnd: '2026-07-12',
+      status: 'insufficient_level',
+      metrics: {
+        follower_conversion: -2,
+        positive_interaction_rate: null,
+        reads: 128
+      },
+      capturedAt: '2026-07-13T08:00:00.000Z'
+    }])
+    expect(database.listAccountMetricSnapshots({ accountId: account.id, period: 'lifetime' })[0])
+      .toMatchObject({ periodStart: null, status: null, metrics: { reads: 20_000 } })
+  })
+
+  it('updates the same account metric period without duplicating history or accepting stale values', () => {
+    const account = createManagedAccount(database, 'account-metric-update-owner', '指标修订账号')
+    const first = standardDataset('account-metric-update-owner', 'metric-update-content')
+    first.accountMetricDefinitions = accountMetricDefinitions()
+    first.accountMetricSnapshots = [{
+      period: 'daily',
+      periodStart: '2026-07-12',
+      periodEnd: '2026-07-12',
+      metrics: { reads: 100, follower_conversion: 1, positive_interaction_rate: null },
+      capturedAt: '2026-07-13T08:00:00.000Z'
+    }]
+    commitManagedDataset(database, account.id, first)
+
+    const revised: StandardDataset = {
+      ...first,
+      capturedAt: '2026-07-14T08:00:00.000Z',
+      contents: [],
+      accountMetricSnapshots: [{
+        ...first.accountMetricSnapshots[0]!,
+        status: 'ready',
+        metrics: { reads: 105, follower_conversion: 2, positive_interaction_rate: 0.12 },
+        capturedAt: '2026-07-14T08:00:00.000Z'
+      }]
+    }
+    commitManagedDataset(database, account.id, revised, '2026-07-14T08:00:01.000Z')
+
+    const stale: StandardDataset = {
+      ...revised,
+      capturedAt: '2026-07-15T08:00:00.000Z',
+      accountMetricSnapshots: [{
+        ...revised.accountMetricSnapshots![0]!,
+        metrics: { reads: 99 },
+        capturedAt: '2026-07-13T09:00:00.000Z'
+      }]
+    }
+    commitManagedDataset(database, account.id, stale, '2026-07-15T08:00:01.000Z')
+
+    expect(database.listAccountMetricSnapshots({ accountId: account.id, period: 'daily' })).toEqual([{
+      accountId: account.id,
+      period: 'daily',
+      periodStart: '2026-07-12',
+      periodEnd: '2026-07-12',
+      status: 'ready',
+      metrics: { follower_conversion: 2, positive_interaction_rate: 0.12, reads: 105 },
+      capturedAt: '2026-07-14T08:00:00.000Z'
+    }])
+  })
+
+  it('rolls back account metrics when a value lacks a definition', () => {
+    const account = createManagedAccount(database, 'invalid-account-metric-owner', '非法账号指标')
+    const payload = standardDataset('invalid-account-metric-owner', 'invalid-account-metric-content')
+    payload.accountMetricDefinitions = accountMetricDefinitions()
+    payload.accountMetricSnapshots = [{
+      period: 'last_30_days',
+      periodStart: '2026-06-14',
+      periodEnd: '2026-07-13',
+      metrics: { undeclared_metric: 1 },
+      capturedAt: payload.capturedAt
+    }]
+
+    expect(() => commitManagedDataset(database, account.id, payload))
+      .toThrow('账号动态指标缺少定义')
+    expect(database.listAccountMetricDefinitions(account.platformId)).toEqual([])
+    expect(database.listAccountMetricSnapshots({ accountId: account.id })).toEqual([])
+    expect(database.listContents({ accountId: account.id })).toEqual([])
+  })
+
   it('rolls back metric definitions and business rows when a dynamic metric is invalid', () => {
     const account = createManagedAccount(database, 'invalid-metric-owner', '非法指标账号')
     const invalid = standardDataset('invalid-metric-owner', 'invalid-metric-content')
@@ -1184,6 +1335,52 @@ describe('SocialDatabase migrations', () => {
     ])
     inspected.close()
   })
+
+  it('migrates v12 databases to v13 with empty account period metrics', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v12.sqlite')
+    database = new SocialDatabase(path)
+    const account = createManagedAccount(database, 'legacy-account-metric-owner', '旧账号指标账号')
+    commitManagedDataset(
+      database,
+      account.id,
+      standardDataset('legacy-account-metric-owner', 'legacy-account-metric-content')
+    )
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    previous.exec(`
+      DROP TABLE account_metric_values;
+      DROP TABLE account_metric_snapshots;
+      DROP TABLE account_metric_definitions;
+      PRAGMA user_version = 12;
+    `)
+    previous.close()
+
+    database = new SocialDatabase(path)
+
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
+    expect(database.listAccountMetricDefinitions(account.platformId)).toEqual([])
+    expect(database.listAccountMetricSnapshots({ accountId: account.id })).toEqual([])
+    expect(database.listContents({ accountId: account.id })).toHaveLength(1)
+
+    database.close()
+    database = null
+    const inspected = new DatabaseSync(path, { readOnly: true })
+    const tables = inspected.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name IN (
+        'account_metric_definitions', 'account_metric_snapshots', 'account_metric_values'
+      ) ORDER BY name
+    `).all() as unknown as Array<{ name: string }>
+    expect(tables.map(({ name }) => name)).toEqual([
+      'account_metric_definitions',
+      'account_metric_snapshots',
+      'account_metric_values'
+    ])
+    inspected.close()
+  })
 })
 
 describe('SocialDatabase backup images', () => {
@@ -1393,5 +1590,27 @@ function dynamicMetricDefinitions(): NonNullable<StandardDataset['contentMetricD
     { id: 'followers_gained', label: '涨粉', valueKind: 'count', unit: 'count', group: 'conversion', sortOrder: 3 },
     { id: 'average_view_duration', label: '人均观看时长', valueKind: 'duration', unit: 'seconds', group: 'engagement', sortOrder: 4 },
     { id: 'danmaku', label: '弹幕', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 5 }
+  ]
+}
+
+function accountMetricDefinitions(): NonNullable<StandardDataset['accountMetricDefinitions']> {
+  return [
+    { id: 'reads', label: '阅读', valueKind: 'count', unit: 'count', group: 'reach', sortOrder: 1 },
+    {
+      id: 'positive_interaction_rate',
+      label: '正向互动率',
+      valueKind: 'ratio',
+      unit: 'ratio',
+      group: 'engagement',
+      sortOrder: 2
+    },
+    {
+      id: 'follower_conversion',
+      label: '关注者转化',
+      valueKind: 'count',
+      unit: 'count',
+      group: 'conversion',
+      sortOrder: 3
+    }
   ]
 }

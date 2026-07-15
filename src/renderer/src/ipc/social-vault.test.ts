@@ -62,6 +62,26 @@ describe('social vault renderer facade', () => {
     )
   })
 
+  it('queries account metric history through the analytics allowlist', async () => {
+    const invoke = vi.fn(async () => ({ metricDefinitions: [], snapshots: [] }))
+    const bridge: SocialVaultBridge = {
+      runtime: { platform: 'win32' },
+      invoke,
+      on: vi.fn(() => () => undefined)
+    }
+
+    await createSocialVaultApi(bridge).analytics.accountMetrics({
+      accountId: 'account-1',
+      period: 'last_30_days',
+      limit: 2
+    })
+
+    expect(invoke).toHaveBeenCalledWith(
+      'analytics:account-metrics',
+      '[{"accountId":"account-1","period":"last_30_days","limit":2}]'
+    )
+  })
+
   it('subscribes to task changes through the fixed event channel', () => {
     const listener = vi.fn()
     const on = vi.fn(() => () => undefined)

@@ -77,7 +77,12 @@ describe('ZhihuApiService', () => {
   it('commits profile_only metrics without requesting content lists', async () => {
     enablePlugin()
     const account = createSyncableAccount('profile_only')
-    const transport = createTransport()
+    const transport = createTransport({
+      dailyRows: [
+        { p_date: '2026-07-12', ...analyticsMetrics({ pv: 5, follower_translate: -1 }) },
+        { p_date: '2026-07-13', ...analyticsMetrics({ pv: 7, follower_translate: -2 }) }
+      ]
+    })
 
     const result = await createService(() => transport).sync(account.id)
 
@@ -101,6 +106,11 @@ describe('ZhihuApiService', () => {
       .toEqual([
         ZHIHU_API_ENDPOINTS.identity,
         ZHIHU_API_ENDPOINTS.profile(ownerHandle),
+        ZHIHU_API_ENDPOINTS.memberAggregate('2026-07-07', '2026-07-13'),
+        ZHIHU_API_ENDPOINTS.memberAggregate('2026-06-30', '2026-07-13'),
+        ZHIHU_API_ENDPOINTS.memberAggregate('2026-06-14', '2026-07-13'),
+        ZHIHU_API_ENDPOINTS.memberAggregate(),
+        ZHIHU_API_ENDPOINTS.memberDaily('2026-06-14', '2026-07-13'),
         ZHIHU_API_ENDPOINTS.identity
       ])
     expect(database.listContents({ accountId: account.id })).toEqual([])
@@ -114,6 +124,32 @@ describe('ZhihuApiService', () => {
         favorites: 23,
         likesAndFavoritesTotal: 147
       })
+    ])
+    expect(database.getAccountMetricHistory({
+      accountId: account.id,
+      period: 'last_7_days'
+    })).toMatchObject({
+      metricDefinitions: expect.arrayContaining([
+        expect.objectContaining({ id: 'positive_interaction_rate', unit: 'ratio' }),
+        expect.objectContaining({ id: 'follower_conversion', unit: 'count' })
+      ]),
+      snapshots: [expect.objectContaining({
+        periodStart: '2026-07-07',
+        periodEnd: '2026-07-13',
+        status: 'normal',
+        metrics: expect.objectContaining({
+          views: 120,
+          positive_interaction_rate: 0.002,
+          follower_conversion: -2
+        })
+      })]
+    })
+    expect(database.getAccountMetricHistory({
+      accountId: account.id,
+      period: 'daily'
+    }).snapshots).toEqual([
+      expect.objectContaining({ periodEnd: '2026-07-13', metrics: expect.objectContaining({ views: 7 }) }),
+      expect.objectContaining({ periodEnd: '2026-07-12', metrics: expect.objectContaining({ views: 5 }) })
     ])
   })
 
@@ -173,7 +209,23 @@ describe('ZhihuApiService', () => {
           comment_count: 2,
           collect_count: 6
         }
-      }]
+      }],
+      analysisRows: {
+        answer: [analysisRow('answer', '9001', analyticsMetrics({
+          pv: 101,
+          show: 301,
+          upvote: 21,
+          like: 31,
+          follower_translate: -1
+        }))],
+        article: [analysisRow('article', '7001', analyticsMetrics({
+          pv: 202,
+          show: 402,
+          upvote: 22,
+          like: 32,
+          follower_translate: 3
+        }))]
+      }
     })
 
     const result = await createService(() => transport).sync(account.id)
@@ -192,19 +244,43 @@ describe('ZhihuApiService', () => {
         type: 'answer',
         url: 'https://www.zhihu.com/question/8001/answer/9001',
         bodyExcerpt: '回答摘要',
-        latestSnapshot: expect.objectContaining({ views: 10, likes: 18, comments: 3, favorites: 4 })
+        latestSnapshot: expect.objectContaining({
+          views: 101,
+          likes: 21,
+          comments: 5,
+          favorites: 4,
+          metrics: expect.objectContaining({
+            impressions: 301,
+            content_likes: 31
+          })
+        })
       }),
       expect.objectContaining({
         remoteId: 'article:7001',
         type: 'article',
         url: 'https://zhuanlan.zhihu.com/p/7001',
-        latestSnapshot: expect.objectContaining({ views: 27, likes: 11, comments: 2, favorites: 6 })
+        latestSnapshot: expect.objectContaining({
+          views: 202,
+          likes: 22,
+          metrics: expect.objectContaining({ impressions: 402, content_likes: 32 })
+        })
       })
+    ]))
+    expect(database.getContentDetail(contents[0]!.id).metricDefinitions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'likes', label: '赞同' }),
+      expect.objectContaining({ id: 'content_likes', label: '喜欢' })
     ]))
     expect(transport.getJson.mock.calls.map(([endpoint]) => endpoint)).toEqual([
       ZHIHU_API_ENDPOINTS.identity,
       ZHIHU_API_ENDPOINTS.profile(ownerHandle),
+      ZHIHU_API_ENDPOINTS.memberAggregate('2026-07-07', '2026-07-13'),
+      ZHIHU_API_ENDPOINTS.memberAggregate('2026-06-30', '2026-07-13'),
+      ZHIHU_API_ENDPOINTS.memberAggregate('2026-06-14', '2026-07-13'),
+      ZHIHU_API_ENDPOINTS.memberAggregate(),
+      ZHIHU_API_ENDPOINTS.memberDaily('2026-06-14', '2026-07-13'),
       ZHIHU_API_ENDPOINTS.creatorContents(),
+      ZHIHU_API_ENDPOINTS.contentAnalysisList('answer'),
+      ZHIHU_API_ENDPOINTS.contentAnalysisList('article'),
       ZHIHU_API_ENDPOINTS.identity
     ])
     expect(database.getStorageCounts()).toMatchObject({
@@ -264,6 +340,11 @@ describe('ZhihuApiService', () => {
     expect(transport.getJson.mock.calls.map(([endpoint]) => endpoint)).toEqual([
       ZHIHU_API_ENDPOINTS.identity,
       ZHIHU_API_ENDPOINTS.profile(ownerHandle),
+      ZHIHU_API_ENDPOINTS.memberAggregate('2026-07-07', '2026-07-13'),
+      ZHIHU_API_ENDPOINTS.memberAggregate('2026-06-30', '2026-07-13'),
+      ZHIHU_API_ENDPOINTS.memberAggregate('2026-06-14', '2026-07-13'),
+      ZHIHU_API_ENDPOINTS.memberAggregate(),
+      ZHIHU_API_ENDPOINTS.memberDaily('2026-06-14', '2026-07-13'),
       ZHIHU_API_ENDPOINTS.creatorContents()
     ])
     expect(database.getAccount(account.id)).toMatchObject({
@@ -367,6 +448,9 @@ function createTransport(options: {
   identities?: Array<{ id: string; handle: string; name: string }>
   profileOverrides?: Record<string, unknown>
   creatorRows?: Array<Record<string, unknown>>
+  memberAggregate?: Record<string, unknown>
+  dailyRows?: Array<Record<string, unknown>>
+  analysisRows?: Partial<Record<'answer' | 'article' | 'pin' | 'zvideo', Array<Record<string, unknown>>>>
 } = {}) {
   const identities = options.identities ?? [{ id: ownerId, handle: ownerHandle, name: ownerName }]
   let identityIndex = 0
@@ -383,8 +467,20 @@ function createTransport(options: {
     if (endpoint === ZHIHU_API_ENDPOINTS.profile(ownerHandle)) {
       return response(endpoint, profile(options.profileOverrides))
     }
+    if (endpoint.startsWith('/api/v4/creators/analysis/realtime/member/aggr?')) {
+      return response(endpoint, options.memberAggregate ?? analyticsMetrics())
+    }
+    if (endpoint === ZHIHU_API_ENDPOINTS.memberDaily('2026-06-14', '2026-07-13')) {
+      return response(endpoint, { data: options.dailyRows ?? [] })
+    }
     if (endpoint === ZHIHU_API_ENDPOINTS.creatorContents()) {
       return response(endpoint, list(options.creatorRows ?? []), options.listStatus ?? 200)
+    }
+    if (endpoint.startsWith('/api/v4/creators/analysis/realtime/content/list?')) {
+      const type = new URL(endpoint, origin).searchParams.get('type') as
+        | 'answer' | 'article' | 'pin' | 'zvideo' | null
+      if (!type) throw new Error(`unexpected content analysis endpoint: ${endpoint}`)
+      return response(endpoint, list(options.analysisRows?.[type] ?? []))
     }
     throw new Error(`unexpected endpoint: ${endpoint}`)
   })
@@ -424,5 +520,56 @@ function profile(overrides: Record<string, unknown> = {}): Record<string, unknow
     thanked_count: 31,
     favorited_count: 23,
     ...overrides
+  }
+}
+
+function analyticsMetrics(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const followerConversion = overrides.follower_translate ?? -2
+  const positiveInteractionRate = overrides.positive_interact_percent ?? 0.2
+  const advancedStatus = overrides.advanced_status ?? 'normal'
+  const metrics: Record<string, unknown> = {
+    pv: 120,
+    show: 300,
+    play: 40,
+    upvote: 12,
+    like: 8,
+    comment: 5,
+    collect: 4,
+    share: 3,
+    reaction: 2,
+    re_pin: 1,
+    like_and_reaction: 10,
+    new_upvote: 2,
+    new_like: 1,
+    new_incr_upvote_num: 3,
+    new_desc_upvote_num: 1,
+    new_incr_like_num: 2,
+    new_desc_like_num: 1,
+    publish_cnt: 2,
+    click_rate: 12.5,
+    read_finished_rate: 0.5,
+    play_finished_rate: '25%',
+    advanced: {
+      positive_interact_percent: positiveInteractionRate,
+      follower_translate: followerConversion,
+      status: advancedStatus
+    },
+    ...overrides
+  }
+  delete metrics.follower_translate
+  delete metrics.positive_interact_percent
+  delete metrics.advanced_status
+  return metrics
+}
+
+function analysisRow(
+  type: 'answer' | 'article' | 'pin' | 'zvideo',
+  id: string,
+  metrics: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    type,
+    data: { id, url_token: id, title: `${type}-${id}` },
+    reaction: metrics
   }
 }

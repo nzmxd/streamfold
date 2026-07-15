@@ -14,6 +14,15 @@ describe('preload social vault transport', () => {
 
     await expect(bridge.invoke('accounts:switch-adapter', '["account","adapter"]')).resolves.toBe('ok')
     expect(invoke).toHaveBeenCalledWith('accounts:switch-adapter', 'account', 'adapter')
+
+    await expect(bridge.invoke(
+      'analytics:account-metrics',
+      '[{"accountId":"account","period":"last_7_days"}]'
+    )).resolves.toBe('ok')
+    expect(invoke).toHaveBeenCalledWith(
+      'analytics:account-metrics',
+      { accountId: 'account', period: 'last_7_days' }
+    )
   })
 
   it('rejects channels outside the explicit allowlist', () => {

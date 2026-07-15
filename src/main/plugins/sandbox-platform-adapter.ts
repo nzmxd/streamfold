@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { Account, SyncMode } from '../../shared/contracts'
-import type { ContentMetricDefinition } from '../../shared/content-contracts'
+import type {
+  AccountMetricDefinition,
+  AccountMetricPeriod,
+  ContentMetricDefinition
+} from '../../shared/content-contracts'
 import type { JobRecord } from '../../shared/job-contracts'
 import type {
   ConfirmSessionApiIdentityInput,
@@ -11,7 +15,11 @@ import type { ManagedSyncCommitMetadata, ManagedSyncCommitResult } from '../data
 import { isOfficialContentUrl } from '../platforms'
 import type { SessionApiPlatformService } from '../platform-sync-service'
 import type { JobService } from '../services/job-service'
-import type { StandardDataset, StandardProfile } from './types'
+import type {
+  StandardAccountMetricSnapshot,
+  StandardDataset,
+  StandardProfile
+} from './types'
 import type { PluginHostService } from './plugin-host-service'
 import { PluginPlatformSessionError, type PluginRuntimeExecutor } from './plugin-runtime-executor'
 
@@ -344,6 +352,8 @@ function parseDataset(value: Record<string, unknown>, platformId: string): Stand
   if (new Date(capturedAt).toISOString() !== capturedAt) throw new Error('插件采集时间无效')
   const profile = value.profile === null || value.profile === undefined ? null : parseProfile(record(value.profile))
   const contentMetricDefinitions = parseContentMetricDefinitions(value.contentMetricDefinitions)
+  const accountMetricDefinitions = parseAccountMetricDefinitions(value.accountMetricDefinitions)
+  const accountMetricSnapshots = parseAccountMetricSnapshots(value.accountMetricSnapshots)
   if (!Array.isArray(value.contents) || value.contents.length > 5_000) throw new Error('插件内容数据集无效')
   const contents = value.contents.map((item) => {
     const content = record(item)
@@ -387,6 +397,8 @@ function parseDataset(value: Record<string, unknown>, platformId: string): Stand
     profile,
     contents,
     ...(contentMetricDefinitions === undefined ? {} : { contentMetricDefinitions }),
+    ...(accountMetricDefinitions === undefined ? {} : { accountMetricDefinitions }),
+    ...(accountMetricSnapshots === undefined ? {} : { accountMetricSnapshots }),
     warnings
   }
 }
@@ -424,6 +436,70 @@ function parseContentMetricDefinitions(value: unknown): ContentMetricDefinition[
       unit: unit as ContentMetricDefinition['unit'],
       group: group as ContentMetricDefinition['group'],
       sortOrder: definition.sortOrder as number
+    }
+  })
+}
+
+function parseAccountMetricDefinitions(value: unknown): AccountMetricDefinition[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value) || value.length > 100) throw new Error('插件账号指标定义无效')
+  const ids = new Set<string>()
+  return value.map((raw) => {
+    const definition = record(raw)
+    const id = text(definition.id, '账号指标 ID', 1, 64)
+    if (!/^[a-z][a-z0-9._-]{0,63}$/.test(id) || ids.has(id)) throw new Error('插件账号指标 ID 无效或重复')
+    ids.add(id)
+    const valueKind = text(definition.valueKind, '账号指标类型', 1, 16)
+    const unit = text(definition.unit, '账号指标单位', 1, 16)
+    const group = text(definition.group, '账号指标分组', 1, 16)
+    if (!['count', 'ratio', 'duration'].includes(valueKind) ||
+      !['count', 'ratio', 'seconds'].includes(unit) ||
+      !['reach', 'engagement', 'conversion', 'other'].includes(group)) {
+      throw new Error('插件账号指标定义无效')
+    }
+    if ((valueKind === 'count' && unit !== 'count') ||
+      (valueKind === 'ratio' && unit !== 'ratio') ||
+      (valueKind === 'duration' && unit !== 'seconds')) {
+      throw new Error('插件账号指标单位无效')
+    }
+    if (!Number.isSafeInteger(definition.sortOrder) || (definition.sortOrder as number) < 0 ||
+      (definition.sortOrder as number) > 10_000) {
+      throw new Error('插件账号指标排序无效')
+    }
+    return {
+      id,
+      label: text(definition.label, '账号指标名称', 1, 40),
+      valueKind: valueKind as AccountMetricDefinition['valueKind'],
+      unit: unit as AccountMetricDefinition['unit'],
+      group: group as AccountMetricDefinition['group'],
+      sortOrder: definition.sortOrder as number
+    }
+  })
+}
+
+function parseAccountMetricSnapshots(value: unknown): StandardAccountMetricSnapshot[] | undefined {
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value) || value.length > 5_000) throw new Error('插件账号指标快照无效')
+  const periods = new Set<AccountMetricPeriod>([
+    'daily', 'last_7_days', 'last_14_days', 'last_30_days', 'lifetime'
+  ])
+  return value.map((raw) => {
+    const snapshot = record(raw)
+    const period = text(snapshot.period, '账号指标周期', 1, 32) as AccountMetricPeriod
+    if (!periods.has(period)) throw new Error('插件账号指标周期无效')
+    const periodStart = snapshot.periodStart === null
+      ? null
+      : text(snapshot.periodStart, '账号指标开始日期', 10, 10)
+    const status = snapshot.status === undefined || snapshot.status === null
+      ? null
+      : text(snapshot.status, '账号指标状态', 1, 100)
+    return {
+      period,
+      periodStart,
+      periodEnd: text(snapshot.periodEnd, '账号指标结束日期', 10, 10),
+      status,
+      metrics: parseDynamicMetrics(snapshot.metrics),
+      capturedAt: text(snapshot.capturedAt, '账号指标采集时间', 10, 40)
     }
   })
 }

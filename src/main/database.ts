@@ -26,6 +26,11 @@ import type {
   UpdateGroupInput
 } from '../shared/contracts'
 import type {
+  AccountMetricDefinition,
+  AccountMetricHistory,
+  AccountMetricPeriod,
+  AccountMetricQuery,
+  AccountMetricSnapshot,
   AccountSnapshot,
   AnalyticsOverview,
   AnalyticsQuery,
@@ -39,6 +44,7 @@ import type {
   MetricValues,
   UpdateContentInput
 } from '../shared/content-contracts'
+import { accountMetricPeriods } from '../shared/content-contracts'
 import type {
   JobBatchRecord,
   JobKind,
@@ -61,6 +67,7 @@ import type {
 } from '../shared/plugin-host-contracts'
 import type {
   DatasetCommitStats,
+  StandardAccountMetricSnapshot,
   StandardContent,
   StandardContentSnapshot,
   StandardDataset,
@@ -234,6 +241,32 @@ interface ContentMetricDefinitionRow {
 }
 
 interface ContentSnapshotMetricRow {
+  snapshot_id: string
+  metric_id: string
+  value: number | null
+}
+
+interface AccountMetricDefinitionRow {
+  platform_id: string
+  metric_id: string
+  label: string
+  value_kind: AccountMetricDefinition['valueKind']
+  unit: AccountMetricDefinition['unit']
+  metric_group: AccountMetricDefinition['group']
+  sort_order: number
+}
+
+interface AccountMetricSnapshotRow {
+  id: string
+  account_id: string
+  period_kind: AccountMetricPeriod
+  period_start: string
+  period_end: string
+  status: string | null
+  captured_at: string
+}
+
+interface AccountMetricValueRow {
   snapshot_id: string
   metric_id: string
   value: number | null
@@ -1023,6 +1056,118 @@ export class SocialDatabase {
     return Object.fromEntries(rows.map((row) => [row.metric_id, nullableNumber(row.value)]))
   }
 
+  listAccountMetricDefinitions(platformId: PlatformId): AccountMetricDefinition[] {
+    const rows = this.db.prepare(`
+      SELECT platform_id, metric_id, label, value_kind, unit, metric_group, sort_order
+      FROM account_metric_definitions
+      WHERE platform_id = ?
+      ORDER BY sort_order ASC, metric_id ASC
+    `).all(platformId) as unknown as AccountMetricDefinitionRow[]
+    return rows.map(mapAccountMetricDefinition)
+  }
+
+  private upsertAccountMetricDefinitions(
+    platformId: PlatformId,
+    definitions: AccountMetricDefinition[],
+    updatedAt: string
+  ): ReadonlyMap<string, AccountMetricDefinition> {
+    validateAccountMetricDefinitions(definitions)
+    const upsert = this.db.prepare(`
+      INSERT INTO account_metric_definitions (
+        platform_id, metric_id, label, value_kind, unit, metric_group, sort_order, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(platform_id, metric_id) DO UPDATE SET
+        label = excluded.label,
+        value_kind = excluded.value_kind,
+        unit = excluded.unit,
+        metric_group = excluded.metric_group,
+        sort_order = excluded.sort_order,
+        updated_at = excluded.updated_at
+    `)
+    for (const definition of definitions) {
+      upsert.run(
+        platformId,
+        definition.id,
+        definition.label,
+        definition.valueKind,
+        definition.unit,
+        definition.group,
+        definition.sortOrder,
+        updatedAt
+      )
+    }
+    return new Map(this.listAccountMetricDefinitions(platformId).map((definition) => [definition.id, definition]))
+  }
+
+  listAccountMetricSnapshots(query: AccountMetricQuery): AccountMetricSnapshot[] {
+    if (!query.accountId?.trim()) throw new Error('账号指标查询缺少账号')
+    requireAccount(this.getAccount(query.accountId))
+    if (query.period !== undefined && !ACCOUNT_METRIC_PERIODS.has(query.period)) {
+      throw new Error('账号指标查询周期无效')
+    }
+    if (query.from !== undefined && !isIsoCalendarDate(query.from)) throw new Error('账号指标查询开始日期无效')
+    if (query.to !== undefined && !isIsoCalendarDate(query.to)) throw new Error('账号指标查询结束日期无效')
+    if (query.from && query.to && query.from > query.to) throw new Error('账号指标查询日期范围无效')
+
+    const where = ['account_id = ?']
+    const parameters: Array<string | number> = [query.accountId]
+    if (query.period) {
+      where.push('period_kind = ?')
+      parameters.push(query.period)
+    }
+    if (query.from) {
+      where.push('period_end >= ?')
+      parameters.push(query.from)
+    }
+    if (query.to) {
+      where.push('period_end <= ?')
+      parameters.push(query.to)
+    }
+    parameters.push(
+      clampInteger(query.limit ?? 1_000, 1, 5_000),
+      clampInteger(query.offset ?? 0, 0, 1_000_000_000)
+    )
+    const rows = this.db.prepare(`
+      SELECT id, account_id, period_kind, period_start, period_end, status, captured_at
+      FROM account_metric_snapshots
+      WHERE ${where.join(' AND ')}
+      ORDER BY period_end DESC, captured_at DESC, period_kind ASC, period_start DESC
+      LIMIT ? OFFSET ?
+    `).all(...parameters) as unknown as AccountMetricSnapshotRow[]
+    const metricsBySnapshot = this.accountMetricsBySnapshotIds(rows.map((row) => row.id))
+    return rows.map((row) => mapAccountMetricSnapshot(row, metricsBySnapshot.get(row.id) ?? {}))
+  }
+
+  getAccountMetricHistory(query: AccountMetricQuery): AccountMetricHistory {
+    const account = requireAccount(this.getAccount(query.accountId))
+    return {
+      accountId: account.id,
+      platformId: account.platformId,
+      metricDefinitions: this.listAccountMetricDefinitions(account.platformId),
+      snapshots: this.listAccountMetricSnapshots(query)
+    }
+  }
+
+  private accountMetricsBySnapshotIds(snapshotIds: string[]): Map<string, Record<string, number | null>> {
+    const metricsBySnapshot = new Map<string, Record<string, number | null>>()
+    for (let offset = 0; offset < snapshotIds.length; offset += 500) {
+      const ids = snapshotIds.slice(offset, offset + 500)
+      const placeholders = ids.map(() => '?').join(', ')
+      const rows = this.db.prepare(`
+        SELECT snapshot_id, metric_id, value
+        FROM account_metric_values
+        WHERE snapshot_id IN (${placeholders})
+        ORDER BY snapshot_id, metric_id
+      `).all(...ids) as unknown as AccountMetricValueRow[]
+      for (const row of rows) {
+        const metrics = metricsBySnapshot.get(row.snapshot_id) ?? {}
+        metrics[row.metric_id] = nullableNumber(row.value)
+        metricsBySnapshot.set(row.snapshot_id, metrics)
+      }
+    }
+    return metricsBySnapshot
+  }
+
   updateContent(input: UpdateContentInput): ContentDetail {
     if (!this.getContentRow(input.id)) throw new Error('内容不存在')
     const current = this.getContentDetail(input.id)
@@ -1065,6 +1210,7 @@ export class SocialDatabase {
     })
     this.transaction(() => {
       this.db.prepare('DELETE FROM account_snapshots WHERE account_id = ?').run(accountId)
+      this.db.prepare('DELETE FROM account_metric_snapshots WHERE account_id = ?').run(accountId)
       this.db.prepare('DELETE FROM contents WHERE account_id = ?').run(accountId)
       this.db.prepare('DELETE FROM jobs WHERE account_id = ?').run(accountId)
       this.db.prepare('DELETE FROM sync_cursors WHERE account_id = ?').run(accountId)
@@ -1185,7 +1331,18 @@ export class SocialDatabase {
         payload.contentMetricDefinitions ?? [],
         payload.capturedAt
       )
+      const accountMetricDefinitions = this.upsertAccountMetricDefinitions(
+        account.platformId,
+        payload.accountMetricDefinitions ?? [],
+        payload.capturedAt
+      )
       this.insertAccountSnapshot(account.id, profile, payload.capturedAt)
+      this.writeAccountMetricSnapshots(
+        account.id,
+        account.platformId,
+        payload.accountMetricSnapshots ?? [],
+        accountMetricDefinitions
+      )
       const stats = this.writeStandardContents(
         account.id,
         account.platformId,
@@ -1225,6 +1382,8 @@ export class SocialDatabase {
           capturedAt: payload.capturedAt,
           profile,
           contentMetricDefinitions: payload.contentMetricDefinitions ?? [],
+          accountMetricDefinitions: payload.accountMetricDefinitions ?? [],
+          accountMetricSnapshots: payload.accountMetricSnapshots ?? [],
           contents: payload.contents,
           warnings: payload.warnings,
           stats
@@ -1251,6 +1410,57 @@ export class SocialDatabase {
       profile.views ?? null, profile.likes ?? null, profile.comments ?? null,
       profile.shares ?? null, profile.favorites ?? null, capturedAt
     )
+  }
+
+  private writeAccountMetricSnapshots(
+    accountId: string,
+    platformId: PlatformId,
+    sourceSnapshots: StandardAccountMetricSnapshot[],
+    metricDefinitions: ReadonlyMap<string, AccountMetricDefinition>
+  ): void {
+    const snapshots = dedupeAccountMetricSnapshots(sourceSnapshots)
+    const findSnapshot = this.db.prepare(`
+      SELECT id, account_id, period_kind, period_start, period_end, status, captured_at
+      FROM account_metric_snapshots
+      WHERE account_id = ? AND period_kind = ? AND period_start = ? AND period_end = ?
+    `)
+    const insertSnapshot = this.db.prepare(`
+      INSERT INTO account_metric_snapshots (
+        id, account_id, period_kind, period_start, period_end, status, captured_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
+    const updateSnapshot = this.db.prepare(`
+      UPDATE account_metric_snapshots SET status = ?, captured_at = ? WHERE id = ?
+    `)
+    const deleteValues = this.db.prepare('DELETE FROM account_metric_values WHERE snapshot_id = ?')
+    const insertValue = this.db.prepare(`
+      INSERT INTO account_metric_values (snapshot_id, platform_id, metric_id, value)
+      VALUES (?, ?, ?, ?)
+    `)
+
+    for (const snapshot of snapshots) {
+      const normalizedMetrics = validateAccountMetricValues(snapshot.metrics, metricDefinitions)
+      const periodStart = snapshot.periodStart ?? ''
+      const existing = findSnapshot.get(
+        accountId, snapshot.period, periodStart, snapshot.periodEnd
+      ) as unknown as AccountMetricSnapshotRow | undefined
+      if (existing && existing.captured_at > snapshot.capturedAt) continue
+      const snapshotId = existing?.id ?? randomUUID()
+      if (existing) updateSnapshot.run(snapshot.status ?? null, snapshot.capturedAt, snapshotId)
+      else insertSnapshot.run(
+        snapshotId,
+        accountId,
+        snapshot.period,
+        periodStart,
+        snapshot.periodEnd,
+        snapshot.status ?? null,
+        snapshot.capturedAt
+      )
+      deleteValues.run(snapshotId)
+      for (const [metricId, value] of Object.entries(normalizedMetrics)) {
+        insertValue.run(snapshotId, platformId, metricId, value)
+      }
+    }
   }
 
   private writeStandardContents(
@@ -2468,6 +2678,32 @@ function mapContentMetricDefinition(row: ContentMetricDefinitionRow): ContentMet
   }
 }
 
+function mapAccountMetricDefinition(row: AccountMetricDefinitionRow): AccountMetricDefinition {
+  return {
+    id: row.metric_id,
+    label: row.label,
+    valueKind: row.value_kind,
+    unit: row.unit,
+    group: row.metric_group,
+    sortOrder: Number(row.sort_order)
+  }
+}
+
+function mapAccountMetricSnapshot(
+  row: AccountMetricSnapshotRow,
+  metrics: Record<string, number | null>
+): AccountMetricSnapshot {
+  return {
+    accountId: row.account_id,
+    period: row.period_kind,
+    periodStart: row.period_start || null,
+    periodEnd: row.period_end,
+    status: row.status,
+    metrics,
+    capturedAt: row.captured_at
+  }
+}
+
 function deriveAccountStatus(state: {
   connectionStatus: ConnectionStatus
   syncEnabled: boolean
@@ -2722,6 +2958,10 @@ function validateStandardDataset(payload: StandardDataset): void {
   if (!isIsoDate(payload.capturedAt)) throw new Error('数据集采集时间无效')
   if (payload.profile && !payload.profile.remoteId.trim()) throw new Error('数据集身份缺少 remoteId')
   validateContentMetricDefinitions(payload.contentMetricDefinitions ?? [])
+  validateAccountMetricDefinitions(payload.accountMetricDefinitions ?? [])
+  for (const snapshot of payload.accountMetricSnapshots ?? []) {
+    validateAccountMetricSnapshotShape(snapshot)
+  }
   for (const content of payload.contents) {
     if (!content.remoteId.trim()) throw new Error('数据集内容缺少 remoteId')
     for (const snapshot of content.snapshots) {
@@ -2741,6 +2981,7 @@ const CONTENT_METRIC_UNITS = new Set<ContentMetricDefinition['unit']>([
 const CONTENT_METRIC_GROUPS = new Set<ContentMetricDefinition['group']>([
   'reach', 'engagement', 'conversion', 'other'
 ])
+const ACCOUNT_METRIC_PERIODS = new Set<AccountMetricPeriod>(accountMetricPeriods)
 
 function validateContentMetricDefinitions(definitions: ContentMetricDefinition[]): void {
   if (!Array.isArray(definitions) || definitions.length > 100) throw new Error('内容指标定义数量无效')
@@ -2771,6 +3012,100 @@ function validateContentMetricDefinitions(definitions: ContentMetricDefinition[]
       throw new Error('内容指标定义排序无效')
     }
   }
+}
+
+function validateAccountMetricDefinitions(definitions: AccountMetricDefinition[]): void {
+  if (!Array.isArray(definitions) || definitions.length > 100) throw new Error('账号指标定义数量无效')
+  const ids = new Set<string>()
+  for (const definition of definitions) {
+    if (!definition || typeof definition !== 'object') throw new Error('账号指标定义无效')
+    if (!CONTENT_METRIC_ID_PATTERN.test(definition.id) || ids.has(definition.id)) {
+      throw new Error('账号指标定义 ID 无效或重复')
+    }
+    ids.add(definition.id)
+    if (typeof definition.label !== 'string' || definition.label.trim() !== definition.label ||
+      definition.label.length < 1 || definition.label.length > 40 ||
+      /[\u0000-\u001f\u007f]/u.test(definition.label)) {
+      throw new Error('账号指标定义标签无效')
+    }
+    if (!CONTENT_METRIC_VALUE_KINDS.has(definition.valueKind) ||
+      !CONTENT_METRIC_UNITS.has(definition.unit) ||
+      !CONTENT_METRIC_GROUPS.has(definition.group)) {
+      throw new Error('账号指标定义类型无效')
+    }
+    const expectedUnit: Record<AccountMetricDefinition['valueKind'], AccountMetricDefinition['unit']> = {
+      count: 'count',
+      ratio: 'ratio',
+      duration: 'seconds'
+    }
+    if (definition.unit !== expectedUnit[definition.valueKind]) throw new Error('账号指标定义单位无效')
+    if (!Number.isSafeInteger(definition.sortOrder) || definition.sortOrder < 0 || definition.sortOrder > 10_000) {
+      throw new Error('账号指标定义排序无效')
+    }
+  }
+}
+
+function validateAccountMetricSnapshotShape(snapshot: StandardAccountMetricSnapshot): void {
+  if (!snapshot || typeof snapshot !== 'object' || !ACCOUNT_METRIC_PERIODS.has(snapshot.period)) {
+    throw new Error('账号指标周期无效')
+  }
+  if (!isIsoCalendarDate(snapshot.periodEnd) ||
+    (snapshot.period === 'lifetime'
+      ? snapshot.periodStart !== null
+      : !snapshot.periodStart || !isIsoCalendarDate(snapshot.periodStart))) {
+    throw new Error('账号指标统计日期无效')
+  }
+  if (snapshot.periodStart && snapshot.periodStart > snapshot.periodEnd) {
+    throw new Error('账号指标统计日期范围无效')
+  }
+  if (snapshot.period === 'daily' && snapshot.periodStart !== snapshot.periodEnd) {
+    throw new Error('账号每日指标日期范围无效')
+  }
+  if (!isIsoDate(snapshot.capturedAt)) throw new Error('账号指标采集时间无效')
+  if (snapshot.status !== undefined && snapshot.status !== null && (
+    typeof snapshot.status !== 'string' || snapshot.status.length > 100 ||
+    /[\u0000-\u001f\u007f]/u.test(snapshot.status)
+  )) throw new Error('账号指标状态无效')
+  validateAccountMetricValueShape(snapshot.metrics)
+}
+
+function validateAccountMetricValueShape(metrics: Record<string, number | null>): void {
+  if (!metrics || typeof metrics !== 'object' || Array.isArray(metrics) || Object.keys(metrics).length > 100) {
+    throw new Error('账号动态指标无效')
+  }
+  for (const [metricId, value] of Object.entries(metrics)) {
+    if (!CONTENT_METRIC_ID_PATTERN.test(metricId) ||
+      (value !== null && (typeof value !== 'number' || !Number.isFinite(value)))) {
+      throw new Error('账号动态指标无效')
+    }
+  }
+}
+
+function validateAccountMetricValues(
+  metrics: Record<string, number | null>,
+  definitions: ReadonlyMap<string, AccountMetricDefinition>
+): Record<string, number | null> {
+  validateAccountMetricValueShape(metrics)
+  const normalized: Record<string, number | null> = {}
+  for (const metricId of Object.keys(metrics).sort()) {
+    const definition = definitions.get(metricId)
+    if (!definition) throw new Error(`账号动态指标缺少定义：${metricId}`)
+    const value = metrics[metricId] ?? null
+    if (value !== null) {
+      // Account deltas such as follower conversion can legitimately be negative.
+      if (definition.valueKind === 'count' && !Number.isSafeInteger(value)) {
+        throw new Error(`账号计数指标无效：${metricId}`)
+      }
+      if (definition.valueKind === 'ratio' && (value < 0 || value > 1)) {
+        throw new Error(`账号比率指标无效：${metricId}`)
+      }
+      if (definition.valueKind === 'duration' && value < 0) {
+        throw new Error(`账号时长指标无效：${metricId}`)
+      }
+    }
+    normalized[metricId] = value
+  }
+  return normalized
 }
 
 function validateContentSnapshotMetricShape(metrics: Record<string, number | null>): void {
@@ -2819,6 +3154,18 @@ function dedupeStandardContents(contents: StandardContent[]): StandardContent[] 
     for (const snapshot of previous?.snapshots ?? []) snapshots.set(snapshot.capturedAt, snapshot)
     for (const snapshot of content.snapshots) snapshots.set(snapshot.capturedAt, snapshot)
     result.set(content.remoteId, { ...content, snapshots: [...snapshots.values()] })
+  }
+  return [...result.values()]
+}
+
+function dedupeAccountMetricSnapshots(
+  snapshots: StandardAccountMetricSnapshot[]
+): StandardAccountMetricSnapshot[] {
+  const result = new Map<string, StandardAccountMetricSnapshot>()
+  for (const snapshot of snapshots) {
+    const key = `${snapshot.period}\u0000${snapshot.periodStart ?? ''}\u0000${snapshot.periodEnd}`
+    const previous = result.get(key)
+    if (!previous || previous.capturedAt <= snapshot.capturedAt) result.set(key, snapshot)
   }
   return [...result.values()]
 }
@@ -2979,6 +3326,12 @@ function sum(values: Array<number | null | undefined>): number {
 
 function isIsoDate(value: string): boolean {
   return value.length > 0 && Number.isFinite(Date.parse(value))
+}
+
+function isIsoCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T00:00:00.000Z`)
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
 }
 
 function safeSyncErrorMessage(value: unknown): string {

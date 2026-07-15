@@ -1,4 +1,6 @@
 import type {
+  AccountMetricDefinition,
+  AccountMetricPeriod,
   ContentMetricDefinition,
   ContentType,
   MetricValues
@@ -41,12 +43,23 @@ export interface StandardContent {
   snapshots: StandardContentSnapshot[]
 }
 
+export interface StandardAccountMetricSnapshot {
+  period: AccountMetricPeriod
+  periodStart: string | null
+  periodEnd: string
+  status?: string | null
+  metrics: Record<string, number | null>
+  capturedAt: string
+}
+
 /** Platform-neutral dataset produced by a verified, read-only platform adapter. */
 export interface StandardDataset {
   capturedAt: string
   profile: StandardProfile | null
   contents: StandardContent[]
   contentMetricDefinitions?: ContentMetricDefinition[]
+  accountMetricDefinitions?: AccountMetricDefinition[]
+  accountMetricSnapshots?: StandardAccountMetricSnapshot[]
   warnings: string[]
 }
 

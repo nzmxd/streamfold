@@ -164,6 +164,52 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
       expect.any(Object)
     )
   })
+
+  it('accepts account period metrics with status, null values and negative deltas', async () => {
+    const repository = repositoryFixture()
+    repository.commitManagedSync.mockReturnValue({
+      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
+      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
+    })
+    const payload = dataset('stable-owner')
+    payload.accountMetricDefinitions = [
+      {
+        id: 'positive_interaction_rate', label: '正向互动率', valueKind: 'ratio', unit: 'ratio',
+        group: 'engagement', sortOrder: 1
+      },
+      {
+        id: 'follower_conversion', label: '关注者转化', valueKind: 'count', unit: 'count',
+        group: 'conversion', sortOrder: 2
+      }
+    ]
+    payload.accountMetricSnapshots = [{
+      period: 'daily',
+      periodStart: '2026-07-13',
+      periodEnd: '2026-07-13',
+      status: 'insufficient_level',
+      metrics: { positive_interaction_rate: null, follower_conversion: -1 },
+      capturedAt: now
+    }]
+    const runtime = runtimeSequence([identity('stable-owner'), payload, identity('stable-owner')])
+    const adapter = createAdapter(repository, runtime, jobsFixture())
+
+    await adapter.sync('account-1')
+
+    expect(repository.commitManagedSync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountMetricDefinitions: [
+          expect.objectContaining({ id: 'positive_interaction_rate' }),
+          expect.objectContaining({ id: 'follower_conversion' })
+        ],
+        accountMetricSnapshots: [expect.objectContaining({
+          period: 'daily',
+          status: 'insufficient_level',
+          metrics: { positive_interaction_rate: null, follower_conversion: -1 }
+        })]
+      }),
+      expect.any(Object)
+    )
+  })
 })
 
 function createAdapter(

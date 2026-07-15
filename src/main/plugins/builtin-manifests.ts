@@ -56,7 +56,7 @@ export const zhihuPluginManifestV2: PluginManifestV2 = Object.freeze({
   schemaVersion: 2,
   id: 'zhihu-session-api',
   name: '知乎数据同步',
-  version: '0.3.0',
+  version: '0.4.0',
   description: '使用当前账号的登录会话，同步本人资料及创作中心中的回答、文章和统计指标。',
   license: 'builtin',
   publisher: { id: 'streamfold', name: '归页', keyId: 'streamfold-builtin' },
@@ -81,14 +81,20 @@ export const zhihuPluginManifestV2: PluginManifestV2 = Object.freeze({
       contentUrls: [
         { remoteIdTemplate: 'answer:{questionId}:{answerId}', origin: 'https://www.zhihu.com', pathTemplate: '/question/{questionId}/answer/{answerId}' },
         { remoteIdTemplate: 'article:{articleId}', origin: 'https://zhuanlan.zhihu.com', pathTemplate: '/p/{articleId}' },
-        { remoteIdTemplate: 'pin:{pinId}', origin: 'https://www.zhihu.com', pathTemplate: '/pin/{pinId}' }
+        { remoteIdTemplate: 'pin:{pinId}', origin: 'https://www.zhihu.com', pathTemplate: '/pin/{pinId}' },
+        { remoteIdTemplate: 'zvideo:{videoId}', origin: 'https://www.zhihu.com', pathTemplate: '/zvideo/{videoId}' }
       ],
       riskNote: '仅打开知乎官方登录与创作页面；不自动填写登录信息。'
     },
     endpoints: [
       endpoint('identity', 'https://www.zhihu.com', '/api/v4/me', 512 * 1024),
       endpoint('profile', 'https://www.zhihu.com', '/api/v4/members/{handle}', 512 * 1024),
-      endpoint('creations', 'https://www.zhihu.com', '/api/v4/creators/creations/v2/all', 512 * 1024)
+      endpoint('creations', 'https://www.zhihu.com', '/api/v4/creators/creations/v2/all', 512 * 1024),
+      endpoint('member-aggr', 'https://www.zhihu.com', '/api/v4/creators/analysis/realtime/member/aggr', 512 * 1024),
+      endpoint('member-daily', 'https://www.zhihu.com', '/api/v4/creators/analysis/realtime/member/daily', 512 * 1024),
+      endpoint('content-list', 'https://www.zhihu.com', '/api/v4/creators/analysis/realtime/content/list', 512 * 1024),
+      endpoint('content-aggr', 'https://www.zhihu.com', '/api/v4/creators/analysis/realtime/content/aggr', 512 * 1024),
+      endpoint('content-daily', 'https://www.zhihu.com', '/api/v4/creators/analysis/realtime/content/daily', 512 * 1024)
     ],
     captures: [],
     minimumIntervalSeconds: 300,
