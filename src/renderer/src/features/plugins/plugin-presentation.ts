@@ -6,8 +6,19 @@ import type {
   PluginPackageStatus,
   PluginPermission,
   PluginRunStatus,
+  PluginScheduleCadence,
   PluginTriggerKind
 } from '../../../../shared/contracts'
+
+export const scheduleWeekdayOptions = [
+  { value: 1, label: '周一' },
+  { value: 2, label: '周二' },
+  { value: 3, label: '周三' },
+  { value: 4, label: '周四' },
+  { value: 5, label: '周五' },
+  { value: 6, label: '周六' },
+  { value: 7, label: '周日' }
+] as const
 
 const contributionLabels: Record<PluginContributionKind, string> = {
   'platform.adapter': '平台适配器',
@@ -94,6 +105,31 @@ export function defaultScheduleMinutes(contribution: PluginContribution): number
     return Math.max(minimumScheduleMinutes(contribution), contribution.defaultIntervalMinutes ?? 24 * 60)
   }
   return Math.max(minimumScheduleMinutes(contribution), 24 * 60)
+}
+
+export function scheduleCadenceLabel(cadence: PluginScheduleCadence): string {
+  if (cadence.type === 'daily') return `每天 ${cadence.time}`
+  if (cadence.type === 'weekly') {
+    if (cadence.weekdays.length === 7) return `每天 ${cadence.time}`
+    const selected = new Set(cadence.weekdays)
+    const days = scheduleWeekdayOptions
+      .filter((option) => selected.has(option.value))
+      .map((option) => option.label.slice(1))
+      .join('、')
+    return `每周${days} ${cadence.time}`
+  }
+  if (cadence.type === 'monthly') {
+    if (cadence.monthDays.length === 31) return `每天 ${cadence.time}`
+    const days = cadence.monthDays.length > 6
+      ? `${cadence.monthDays.slice(0, 3).join('、')} 等 ${cadence.monthDays.length} 天`
+      : `${cadence.monthDays.join('、')} 日`
+    return `每月 ${days} ${cadence.time}`
+  }
+  const minutes = cadence.intervalMinutes
+  if (minutes % (7 * 24 * 60) === 0) return `每 ${minutes / (7 * 24 * 60)} 周`
+  if (minutes % (24 * 60) === 0) return `每 ${minutes / (24 * 60)} 天`
+  if (minutes % 60 === 0) return `每 ${minutes / 60} 小时`
+  return `每 ${minutes} 分钟`
 }
 
 export function packageCanBeEnabled(plugin: InstalledPluginPackage): boolean {

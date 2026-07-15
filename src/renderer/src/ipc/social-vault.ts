@@ -88,6 +88,7 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
       get: (id) => invoke('tasks:get', id),
       cancel: (id) => invoke('tasks:cancel', id),
       retry: (id) => invoke('tasks:retry', id),
+      markHandled: (input) => invoke('tasks:mark-handled', input),
       listBatch: (batchId) => invoke('tasks:list-batch', batchId),
       listBatches: () => invoke('tasks:list-batches'),
       onChanged: (callback) => subscribe('tasks:changed', () => callback())

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 13
+export const CURRENT_SCHEMA_VERSION = 15
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -61,6 +61,14 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 13) {
     inTransaction(db, () => migrateV12ToV13(db))
+    version = 13
+  }
+  if (version < 14) {
+    inTransaction(db, () => migrateV13ToV14(db))
+    version = 14
+  }
+  if (version < 15) {
+    inTransaction(db, () => migrateV14ToV15(db))
   }
 }
 
@@ -677,6 +685,33 @@ function migrateV12ToV13(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_metric_values_metric
       ON account_metric_values(platform_id, metric_id, snapshot_id);
     PRAGMA user_version = 13;
+  `)
+}
+
+/** Adds structured calendar recurrences while retaining interval-only schedules. */
+function migrateV13ToV14(db: DatabaseSync): void {
+  addColumn(db, 'plugin_schedules', "cadence_json TEXT NOT NULL DEFAULT ''")
+  db.exec(`
+    UPDATE plugin_schedules
+    SET cadence_json = '{"type":"interval","intervalMinutes":' || interval_minutes || '}'
+    WHERE cadence_json = '';
+    PRAGMA user_version = 14;
+  `)
+}
+
+/** Tracks user-resolved task failures without changing immutable task history. */
+function migrateV14ToV15(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_attention_resolutions (
+      task_source TEXT NOT NULL CHECK (task_source IN ('job', 'plugin-run')),
+      task_id TEXT NOT NULL,
+      resolved_at TEXT NOT NULL,
+      PRIMARY KEY (task_source, task_id)
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_task_attention_resolved_at
+      ON task_attention_resolutions(resolved_at DESC);
+    PRAGMA user_version = 15;
   `)
 }
 

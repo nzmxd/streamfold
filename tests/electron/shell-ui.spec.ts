@@ -203,7 +203,7 @@ test('Webhook 权限与配置弹窗可打开且不再出现克隆错误', async 
   await expect(dialog).toBeHidden()
 })
 
-test('创建后立即启用控件正确对齐并可切换', async () => {
+test('自动计划支持间隔、每天、每周和每月并保持控件对齐', async () => {
   await waitForPluginCenter()
   const card = contributionCard('知乎账号适配器')
   await expect(card).toBeVisible()
@@ -212,6 +212,31 @@ test('创建后立即启用控件正确对齐并可切换', async () => {
   const dialog = page.getByRole('dialog', { name: '知乎账号适配器' })
   await expect(dialog).toBeVisible()
   await expect(dialog.locator('.feature-loading')).toHaveCount(0)
+  const cadenceTabs = dialog.getByRole('tablist', { name: '计划执行方式' })
+  await expect(cadenceTabs.getByRole('tab')).toHaveCount(4)
+  await expect(cadenceTabs.getByRole('tab', { name: '间隔' })).toHaveAttribute('aria-selected', 'true')
+  await expect(dialog.getByLabel('运行间隔（分钟）')).toBeVisible()
+
+  await cadenceTabs.getByRole('tab', { name: '每天' }).click()
+  await expect(dialog.getByLabel('执行时间')).toBeVisible()
+  await expect(dialog.getByText('启用后等待下一个设定时间，不会立即执行')).toBeVisible()
+
+  await cadenceTabs.getByRole('tab', { name: '每周' }).click()
+  const weekdayGroup = dialog.getByRole('group', { name: '星期' })
+  await expect(weekdayGroup.getByRole('checkbox')).toHaveCount(7)
+
+  await cadenceTabs.getByRole('tab', { name: '每月' }).click()
+  const monthDayGroup = dialog.getByRole('group', { name: '日期' })
+  await expect(monthDayGroup.getByRole('checkbox')).toHaveCount(31)
+
+  const cadenceLayout = await dialog.locator('.cadence-config').evaluate((element) => ({
+    horizontalOverflow: element.scrollWidth - element.clientWidth,
+    width: element.getBoundingClientRect().width
+  }))
+  expect(cadenceLayout.horizontalOverflow).toBeLessThanOrEqual(1)
+  expect(cadenceLayout.width).toBeGreaterThan(260)
+
+  await cadenceTabs.getByRole('tab', { name: '间隔' }).click()
   const option = dialog.locator('.enable-on-create')
   const checkbox = option.locator('input[type="checkbox"]')
   const copy = option.locator(':scope > span')

@@ -42,6 +42,7 @@ export const socialVaultInvokeChannels = [
   'tasks:retry',
   'tasks:list-batch',
   'tasks:list-batches',
+  'tasks:mark-handled',
   'plugins:packages',
   'plugins:contributions',
   'plugins:set-package-enabled',

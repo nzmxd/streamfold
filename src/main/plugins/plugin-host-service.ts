@@ -1,4 +1,5 @@
 import type {
+  CreatePluginScheduleInput,
   InstalledPluginPackage,
   PluginConfigProperty,
   PluginConfigView,
@@ -18,6 +19,12 @@ import type {
 import { builtinPluginManifestsV2 } from './builtin-manifests'
 import { ExtensionRegistry } from './extension-registry'
 import type { PluginSecretStore } from './plugin-secret-store'
+import {
+  legacyIntervalMinutes,
+  minimumPluginScheduleSpacingMinutes,
+  nextPluginScheduleOccurrence,
+  normalizePluginScheduleCadence
+} from './schedule-recurrence'
 
 interface PluginHostRepository {
   listAccounts?(): Array<{
@@ -296,14 +303,7 @@ export class PluginHostService {
     return this.repository.listPluginSchedules()
   }
 
-  createSchedule(input: {
-    pluginId: string
-    contributionId: string
-    accountIds: string[]
-    groupIds: string[]
-    intervalMinutes: number
-    enabled: boolean
-  }): PluginSchedule {
+  createSchedule(input: CreatePluginScheduleInput): PluginSchedule {
     const contribution = this.requireContribution(input.pluginId, input.contributionId)
     if (!contribution.permissions.includes('scheduler.run')) throw new Error('贡献点没有定时执行能力')
     if (contribution.kind === 'platform.adapter' && input.accountIds.length === 0 && input.groupIds.length === 0) {
@@ -319,8 +319,9 @@ export class PluginHostService {
       : contribution.kind === 'platform.adapter'
         ? Math.max(60, Math.ceil(contribution.minimumIntervalSeconds / 60))
         : 5
-    if (!Number.isInteger(input.intervalMinutes) || input.intervalMinutes < declaredMinimum) {
-      throw new Error(`定时间隔不能少于 ${declaredMinimum} 分钟`)
+    const cadence = normalizePluginScheduleCadence(input.cadence, input.intervalMinutes)
+    if (minimumPluginScheduleSpacingMinutes(cadence) < declaredMinimum) {
+      throw new Error(`运行周期的最短间隔不能少于 ${declaredMinimum} 分钟`)
     }
     const now = new Date()
     return this.repository.createPluginSchedule({
@@ -328,9 +329,10 @@ export class PluginHostService {
       contributionId: input.contributionId,
       accountIds: uniqueIds(input.accountIds, '账号'),
       groupIds: uniqueIds(input.groupIds, '分组'),
-      intervalMinutes: input.intervalMinutes,
+      cadence,
+      intervalMinutes: legacyIntervalMinutes(cadence),
       enabled: input.enabled,
-      nextRunAt: input.enabled ? new Date(now.getTime() + input.intervalMinutes * 60_000).toISOString() : null,
+      nextRunAt: input.enabled ? nextPluginScheduleOccurrence(cadence, now).toISOString() : null,
       lastRunAt: null,
       consecutiveFailures: 0,
       suspendedReason: ''
@@ -343,7 +345,7 @@ export class PluginHostService {
     return this.repository.updatePluginSchedule(id, {
       enabled,
       nextRunAt: enabled
-        ? new Date(Date.now() + current.intervalMinutes * 60_000).toISOString()
+        ? nextPluginScheduleOccurrence(current.cadence, new Date()).toISOString()
         : null,
       suspendedReason: ''
     })

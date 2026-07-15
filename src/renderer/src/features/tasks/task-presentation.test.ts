@@ -13,6 +13,7 @@ import {
 function task(overrides: Partial<TaskView> = {}): TaskView {
   return {
     id: 'task-1',
+    source: 'job',
     batchId: 'batch-1',
     kind: 'account.sync',
     trigger: 'manual',
@@ -31,6 +32,9 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     startedAt: null,
     finishedAt: null,
     nextAttemptAt: null,
+    attentionState: null,
+    attentionResolvedAt: null,
+    attentionSupersededByTaskId: null,
     ...overrides
   }
 }
@@ -46,14 +50,14 @@ describe('task presentation', () => {
     expect(canCancelTask(task({ status: 'queued' }))).toBe(true)
     expect(canCancelTask(task({ status: 'running' }))).toBe(false)
     expect(canCancelTask(task({ kind: 'plugin.action', status: 'queued' }))).toBe(false)
-    expect(canRetryTask(task({ status: 'paused' }))).toBe(true)
+    expect(canRetryTask(task({ status: 'paused', attentionState: 'pending' }))).toBe(true)
     expect(canRetryTask(task({ status: 'succeeded' }))).toBe(false)
   })
 
   it('recognizes account tasks that need login handling', () => {
-    expect(taskNeedsLogin(task({ status: 'paused', errorCode: 'SESSION_EXPIRED' }))).toBe(true)
-    expect(taskNeedsLogin(task({ status: 'failed', errorMessage: 'identity mismatch' }))).toBe(true)
-    expect(taskNeedsLogin(task({ status: 'paused', stage: '登录已过期' }))).toBe(true)
+    expect(taskNeedsLogin(task({ status: 'paused', attentionState: 'pending', errorCode: 'SESSION_EXPIRED' }))).toBe(true)
+    expect(taskNeedsLogin(task({ status: 'failed', attentionState: 'pending', errorMessage: 'identity mismatch' }))).toBe(true)
+    expect(taskNeedsLogin(task({ status: 'paused', attentionState: 'pending', stage: '登录已过期' }))).toBe(true)
     expect(taskNeedsLogin(task({ accountId: null, errorCode: 'LOGIN_REQUIRED' }))).toBe(false)
   })
 
@@ -61,7 +65,7 @@ describe('task presentation', () => {
     const batches = summarizeTaskBatches([
       task({ id: 'queued', status: 'queued' }),
       task({ id: 'done', status: 'succeeded', finishedAt: '2026-07-15T01:01:00.000Z' }),
-      task({ id: 'failed', status: 'failed', finishedAt: '2026-07-15T01:02:00.000Z' }),
+      task({ id: 'failed', status: 'failed', attentionState: 'pending', finishedAt: '2026-07-15T01:02:00.000Z' }),
       task({ id: 'single', batchId: null })
     ])
 

@@ -119,6 +119,38 @@ describe('PluginAutomationService', () => {
     })
   })
 
+  it('coalesces missed calendar occurrences into one run and advances from the current local day', async () => {
+    const account = createAccount('account-calendar')
+    const grant = createGrant({ accountIds: [account.id], permissions: ['scheduler.run'] })
+    const repository = new FakeAutomationRepository([account], grant)
+    const schedule = createSchedule(account.id)
+    schedule.cadence = { type: 'daily', time: '09:00' }
+    schedule.intervalMinutes = 24 * 60
+    schedule.nextRunAt = new Date(2026, 6, 10, 9, 0, 0, 0).toISOString()
+    repository.schedules.push(schedule)
+    const now = new Date(2026, 6, 20, 10, 0, 0, 0)
+    const executor = { execute: vi.fn(async () => null) }
+    const service = new PluginAutomationService(
+      repository,
+      { listContributions: () => [scheduledContribution()] },
+      executor,
+      30_000,
+      () => now
+    )
+
+    await service.tick()
+
+    expect(executor.execute).toHaveBeenCalledOnce()
+    const next = new Date(repository.schedules[0]!.nextRunAt!)
+    expect([
+      next.getFullYear(),
+      next.getMonth() + 1,
+      next.getDate(),
+      next.getHours(),
+      next.getMinutes()
+    ]).toEqual([2026, 7, 21, 9, 0])
+  })
+
   it('pauses new automatic work without blocking a later manual run', async () => {
     const account = createAccount('account-1')
     const repository = new FakeAutomationRepository([account], createGrant({ accountIds: [account.id], permissions: [] }))
@@ -374,6 +406,7 @@ function createSchedule(accountId: string): PluginSchedule {
     contributionId: 'example.schedule',
     accountIds: [accountId],
     groupIds: [],
+    cadence: { type: 'interval', intervalMinutes: 5 },
     intervalMinutes: 5,
     enabled: true,
     nextRunAt: '2026-07-01T00:00:00.000Z',

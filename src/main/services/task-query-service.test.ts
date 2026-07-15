@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Account } from '../../shared/contracts'
-import type { JobBatchRecord, JobRecord, TaskQuery } from '../../shared/job-contracts'
+import type {
+  JobBatchRecord,
+  JobRecord,
+  TaskAttentionResolutionRecord,
+  TaskQuery
+} from '../../shared/job-contracts'
 import type { PluginRunRecord } from '../../shared/plugin-host-contracts'
 import { TaskQueryService, type TaskQueryRepository } from './task-query-service'
 
@@ -199,6 +204,73 @@ describe('TaskQueryService', () => {
     })
   })
 
+  it('keeps failed history while resolving attention manually or after a later success', async () => {
+    const now = new Date('2026-07-15T12:00:00.000Z')
+    const repository = createRepository({
+      jobs: [
+        job('failed-before-success', {
+          status: 'failed',
+          createdAt: '2026-07-15T08:00:00.000Z',
+          finishedAt: '2026-07-15T08:01:00.000Z'
+        }),
+        job('later-success', {
+          status: 'succeeded',
+          createdAt: '2026-07-15T09:00:00.000Z',
+          finishedAt: '2026-07-15T09:01:00.000Z'
+        }),
+        job('latest-failure', {
+          status: 'failed',
+          createdAt: '2026-07-15T10:00:00.000Z',
+          finishedAt: '2026-07-15T10:01:00.000Z'
+        }),
+        job('manually-handled', {
+          accountId: 'other-account',
+          status: 'interrupted',
+          createdAt: '2026-07-15T11:00:00.000Z',
+          finishedAt: '2026-07-15T11:01:00.000Z'
+        })
+      ],
+      resolutions: [{
+        source: 'job',
+        taskId: 'manually-handled',
+        resolvedAt: '2026-07-15T11:30:00.000Z'
+      }]
+    })
+    const service = new TaskQueryService(repository, { clock: () => now })
+
+    const all = await service.list({ limit: 20 })
+    expect(all.items).toHaveLength(4)
+    expect(all.items.find((task) => task.id === 'failed-before-success')).toMatchObject({
+      status: 'failed',
+      attentionState: 'superseded',
+      attentionSupersededByTaskId: 'later-success'
+    })
+    expect(all.items.find((task) => task.id === 'manually-handled')).toMatchObject({
+      status: 'interrupted',
+      attentionState: 'handled',
+      attentionResolvedAt: '2026-07-15T11:30:00.000Z'
+    })
+    await expectIds(service, { attention: 'pending' }, ['latest-failure'])
+    await expectIds(service, { attention: 'resolved' }, ['manually-handled', 'failed-before-success'])
+    await expect(service.summary()).resolves.toMatchObject({ needsAttentionCount: 1 })
+
+    await expect(service.markHandled({ source: 'job', taskId: 'latest-failure' })).resolves.toMatchObject({
+      id: 'latest-failure',
+      attentionState: 'handled',
+      attentionResolvedAt: now.toISOString()
+    })
+    expect(repository.markTaskAttentionHandled).toHaveBeenCalledWith(
+      'job',
+      'latest-failure',
+      now.toISOString()
+    )
+    await expect(service.summary()).resolves.toMatchObject({ needsAttentionCount: 0 })
+    await expect(service.markHandled({ source: 'job', taskId: 'later-success' }))
+      .rejects.toThrow('不需要处理')
+    await expect(service.markHandled({ source: 'job', taskId: 'failed-before-success' }))
+      .rejects.toThrow('后续成功任务')
+  })
+
   it('returns source records for cancel/retry routing and a renderer-safe single view', async () => {
     const storedJob = job('same-id', {
       accountId: 'account-xhs',
@@ -322,11 +394,13 @@ function createRepository(input: {
   batches?: JobBatchRecord[]
   pluginRuns?: PluginRunRecord[]
   accounts?: Account[]
+  resolutions?: TaskAttentionResolutionRecord[]
 } = {}) {
   const jobs = input.jobs ?? []
   const batches = input.batches ?? []
   const pluginRuns = input.pluginRuns ?? []
   const accounts = input.accounts ?? []
+  const resolutions = input.resolutions ?? []
   return {
     listJobs: vi.fn(() => jobs),
     getJob: vi.fn((id: string) => jobs.find((value) => value.id === id) ?? null),
@@ -334,7 +408,15 @@ function createRepository(input: {
     getJobBatch: vi.fn((id: string) => batches.find((value) => value.id === id) ?? null),
     listPluginRuns: vi.fn((_limit?: number) => pluginRuns),
     getPluginRun: vi.fn((id: string) => pluginRuns.find((value) => value.id === id) ?? null),
-    listAccounts: vi.fn(() => accounts)
+    listAccounts: vi.fn(() => accounts),
+    listTaskAttentionResolutions: vi.fn(() => resolutions),
+    markTaskAttentionHandled: vi.fn((source, taskId, resolvedAt) => {
+      const record = { source, taskId, resolvedAt }
+      const index = resolutions.findIndex((item) => item.source === source && item.taskId === taskId)
+      if (index >= 0) resolutions[index] = record
+      else resolutions.push(record)
+      return record
+    })
   } satisfies TaskQueryRepository
 }
 

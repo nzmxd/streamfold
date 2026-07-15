@@ -228,12 +228,20 @@ export interface UpsertPluginGrantInput {
   networkOrigins: string[]
 }
 
+export type PluginScheduleCadence =
+  | { type: 'interval'; intervalMinutes: number }
+  | { type: 'daily'; time: string }
+  | { type: 'weekly'; weekdays: number[]; time: string }
+  | { type: 'monthly'; monthDays: number[]; time: string }
+
 export interface PluginSchedule {
   id: string
   pluginId: string
   contributionId: string
   accountIds: string[]
   groupIds: string[]
+  cadence: PluginScheduleCadence
+  /** Retained for older renderers and databases. New code should use cadence. */
   intervalMinutes: number
   enabled: boolean
   nextRunAt: string | null
@@ -249,7 +257,9 @@ export interface CreatePluginScheduleInput {
   contributionId: string
   accountIds: string[]
   groupIds: string[]
-  intervalMinutes: number
+  cadence?: PluginScheduleCadence
+  /** Legacy interval-only input accepted during upgrades. */
+  intervalMinutes?: number
   enabled: boolean
 }
 

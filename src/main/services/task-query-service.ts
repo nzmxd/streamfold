@@ -2,6 +2,8 @@ import type { Account } from '../../shared/contracts'
 import type {
   JobBatchRecord,
   JobRecord,
+  MarkTaskHandledInput,
+  TaskAttentionResolutionRecord,
   TaskBatchView,
   TaskKind,
   TaskListResult,
@@ -23,9 +25,15 @@ export interface TaskQueryRepository {
   listPluginRuns(limit?: number): MaybePromise<PluginRunRecord[]>
   getPluginRun(id: string): MaybePromise<PluginRunRecord | null>
   listAccounts(): MaybePromise<Account[]>
+  listTaskAttentionResolutions(): MaybePromise<TaskAttentionResolutionRecord[]>
+  markTaskAttentionHandled(
+    source: TaskAttentionResolutionRecord['source'],
+    taskId: string,
+    resolvedAt: string
+  ): MaybePromise<TaskAttentionResolutionRecord>
 }
 
-export type TaskSource =
+export type TaskBackingSource =
   | { source: 'job'; record: JobRecord }
   | { source: 'plugin-run'; record: PluginRunRecord }
 
@@ -102,31 +110,43 @@ export class TaskQueryService {
   }
 
   async get(id: string): Promise<TaskView | null> {
-    const [source, accounts] = await Promise.all([
-      this.getSource(id),
-      this.repository.listAccounts()
-    ])
-    if (!source) return null
-    const accountsById = indexAccounts(accounts)
-    return source.source === 'job'
-      ? mapJob(source.record, accountsById)
-      : mapPluginRun(source.record, accountsById)
+    const source = await this.getSource(id)
+    return source ? this.projectSource(source) : null
   }
 
   /** Resolves the backing record for mutation services such as cancel and retry. */
-  async getSource(id: string): Promise<TaskSource | null> {
+  async getSource(id: string): Promise<TaskBackingSource | null> {
     const job = await this.repository.getJob(id)
     if (job) return { source: 'job', record: cloneJob(job) }
     const run = await this.repository.getPluginRun(id)
     return run ? { source: 'plugin-run', record: { ...run } } : null
   }
 
+  async markHandled(input: MarkTaskHandledInput): Promise<TaskView> {
+    const record = input.source === 'job'
+      ? await this.repository.getJob(input.taskId)
+      : await this.repository.getPluginRun(input.taskId)
+    if (!record) throw new Error('任务不存在')
+    const task = await this.projectSource(input.source === 'job'
+      ? { source: 'job', record: record as JobRecord }
+      : { source: 'plugin-run', record: record as PluginRunRecord })
+    if (task.attentionState === 'handled') return task
+    if (task.attentionState === 'superseded') throw new Error('该任务已由后续成功任务解决')
+    if (task.attentionState !== 'pending') throw new Error('该任务不需要处理')
+
+    const resolvedAt = this.now().toISOString()
+    await this.repository.markTaskAttentionHandled(input.source, input.taskId, resolvedAt)
+    return {
+      ...task,
+      attentionState: 'handled',
+      attentionResolvedAt: resolvedAt,
+      attentionSupersededByTaskId: null
+    }
+  }
+
   async summary(query: TaskQuery = {}): Promise<TaskSummary> {
     const tasks = applyQuery(await this.loadTasks(), withoutPagination(query))
-    const now = this.clock()
-    if (!Number.isFinite(now.getTime())) {
-      throw new Error('TaskQueryService clock returned an invalid date')
-    }
+    const now = this.now()
     const startOfToday = new Date(
       now.getFullYear(),
       now.getMonth(),
@@ -145,9 +165,7 @@ export class TaskQueryService {
     return {
       queuedCount: tasks.filter((task) => task.status === 'queued').length,
       runningCount: tasks.filter((task) => task.status === 'running').length,
-      needsAttentionCount: tasks.filter((task) =>
-        task.status === 'failed' || task.status === 'interrupted' || task.status === 'paused'
-      ).length,
+      needsAttentionCount: tasks.filter((task) => task.attentionState === 'pending').length,
       completedTodayCount: tasks.filter((task) =>
         task.status === 'succeeded' && finishedToday(task)
       ).length,
@@ -159,33 +177,40 @@ export class TaskQueryService {
   }
 
   async getBatch(id: string): Promise<TaskBatchView | null> {
-    const [batch, jobs, accounts] = await Promise.all([
+    const [batch, jobs, accounts, resolutions] = await Promise.all([
       this.repository.getJobBatch(id),
       this.repository.listJobs(),
-      this.repository.listAccounts()
+      this.repository.listAccounts(),
+      this.repository.listTaskAttentionResolutions()
     ])
     if (!batch) return null
     const accountsById = indexAccounts(accounts)
-    const tasks = jobs
-      .filter((job) => job.batchId === id)
-      .map((job) => mapJob(job, accountsById))
+    const tasks = applyAttentionState(
+      jobs.map((job) => mapJob(job, accountsById)),
+      resolutions
+    ).filter((task) => task.batchId === id)
       .sort(compareTasks)
     return buildBatchView(batch, tasks)
   }
 
   async listBatches(): Promise<TaskBatchView[]> {
-    const [batches, jobs, accounts] = await Promise.all([
+    const [batches, jobs, accounts, resolutions] = await Promise.all([
       this.repository.listJobBatches(),
       this.repository.listJobs(),
-      this.repository.listAccounts()
+      this.repository.listAccounts(),
+      this.repository.listTaskAttentionResolutions()
     ])
     const accountsById = indexAccounts(accounts)
     const tasksByBatch = new Map<string, TaskView[]>()
-    for (const job of jobs) {
-      if (!job.batchId) continue
-      const tasks = tasksByBatch.get(job.batchId) ?? []
-      tasks.push(mapJob(job, accountsById))
-      tasksByBatch.set(job.batchId, tasks)
+    const projectedJobs = applyAttentionState(
+      jobs.map((job) => mapJob(job, accountsById)),
+      resolutions
+    )
+    for (const task of projectedJobs) {
+      if (!task.batchId) continue
+      const tasks = tasksByBatch.get(task.batchId) ?? []
+      tasks.push(task)
+      tasksByBatch.set(task.batchId, tasks)
     }
 
     return [...batches]
@@ -197,16 +222,48 @@ export class TaskQueryService {
   }
 
   private async loadTasks(): Promise<TaskView[]> {
-    const [jobs, pluginRuns, accounts] = await Promise.all([
+    const [jobs, pluginRuns, accounts, resolutions] = await Promise.all([
       this.repository.listJobs(),
       this.repository.listPluginRuns(this.pluginRunReadLimit),
-      this.repository.listAccounts()
+      this.repository.listAccounts(),
+      this.repository.listTaskAttentionResolutions()
     ])
     const accountsById = indexAccounts(accounts)
-    return [
+    return applyAttentionState([
       ...jobs.map((job) => mapJob(job, accountsById)),
       ...pluginRuns.map((run) => mapPluginRun(run, accountsById))
-    ].sort(compareTasks)
+    ], resolutions).sort(compareTasks)
+  }
+
+  private async projectSource(source: TaskBackingSource): Promise<TaskView> {
+    const [jobs, pluginRuns, accounts, resolutions] = await Promise.all([
+      this.repository.listJobs(),
+      this.repository.listPluginRuns(this.pluginRunReadLimit),
+      this.repository.listAccounts(),
+      this.repository.listTaskAttentionResolutions()
+    ])
+    const accountsById = indexAccounts(accounts)
+    const target = source.source === 'job'
+      ? mapJob(source.record, accountsById)
+      : mapPluginRun(source.record, accountsById)
+    const tasks = [
+      ...jobs.map((job) => mapJob(job, accountsById)),
+      ...pluginRuns.map((run) => mapPluginRun(run, accountsById))
+    ]
+    if (!tasks.some((task) => task.source === target.source && task.id === target.id)) {
+      tasks.push(target)
+    }
+    return applyAttentionState(tasks, resolutions).find((task) => (
+      task.source === target.source && task.id === target.id
+    ))!
+  }
+
+  private now(): Date {
+    const now = this.clock()
+    if (!Number.isFinite(now.getTime())) {
+      throw new Error('TaskQueryService clock returned an invalid date')
+    }
+    return now
   }
 }
 
@@ -214,6 +271,7 @@ function mapJob(job: JobRecord, accountsById: ReadonlyMap<string, Account>): Tas
   const account = accountsById.get(job.accountId)
   return {
     id: job.id,
+    source: 'job',
     batchId: job.batchId,
     kind: 'account.sync',
     trigger: job.trigger,
@@ -231,7 +289,10 @@ function mapJob(job: JobRecord, accountsById: ReadonlyMap<string, Account>): Tas
     createdAt: job.createdAt,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
-    nextAttemptAt: null
+    nextAttemptAt: null,
+    attentionState: null,
+    attentionResolvedAt: null,
+    attentionSupersededByTaskId: null
   }
 }
 
@@ -242,6 +303,7 @@ function mapPluginRun(
   const account = run.accountId ? accountsById.get(run.accountId) : undefined
   return {
     id: run.id,
+    source: 'plugin-run',
     batchId: null,
     kind: mapPluginRunKind(run.trigger),
     trigger: mapPluginTrigger(run.trigger),
@@ -259,8 +321,66 @@ function mapPluginRun(
     createdAt: run.createdAt,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
-    nextAttemptAt: run.nextAttemptAt
+    nextAttemptAt: run.nextAttemptAt,
+    attentionState: null,
+    attentionResolvedAt: null,
+    attentionSupersededByTaskId: null
   }
+}
+
+function applyAttentionState(
+  tasks: readonly TaskView[],
+  resolutions: readonly TaskAttentionResolutionRecord[]
+): TaskView[] {
+  const handledByTask = new Map(resolutions.map((resolution) => [
+    `${resolution.source}\n${resolution.taskId}`,
+    resolution
+  ]))
+  const latestSuccessByAction = new Map<string, TaskView>()
+  for (const task of tasks) {
+    if (task.status !== 'succeeded') continue
+    const key = logicalActionKey(task)
+    const current = latestSuccessByAction.get(key)
+    if (!current || sortableTime(task.createdAt) > sortableTime(current.createdAt)) {
+      latestSuccessByAction.set(key, task)
+    }
+  }
+
+  return tasks.map((task) => {
+    if (!isAttentionStatus(task.status)) return { ...task }
+    const handled = handledByTask.get(`${task.source}\n${task.id}`)
+    if (handled) {
+      return {
+        ...task,
+        attentionState: 'handled',
+        attentionResolvedAt: handled.resolvedAt,
+        attentionSupersededByTaskId: null
+      }
+    }
+    const success = latestSuccessByAction.get(logicalActionKey(task))
+    if (success && sortableTime(success.createdAt) > sortableTime(task.createdAt)) {
+      return {
+        ...task,
+        attentionState: 'superseded',
+        attentionResolvedAt: success.finishedAt ?? success.createdAt,
+        attentionSupersededByTaskId: success.id
+      }
+    }
+    return {
+      ...task,
+      attentionState: 'pending',
+      attentionResolvedAt: null,
+      attentionSupersededByTaskId: null
+    }
+  })
+}
+
+function isAttentionStatus(status: TaskStatus): boolean {
+  return status === 'failed' || status === 'interrupted' || status === 'paused'
+}
+
+function logicalActionKey(task: TaskView): string {
+  return JSON.stringify([task.kind, task.accountId, task.pluginId, task.contributionId])
 }
 
 function mapJobStatus(job: JobRecord, account: Account | undefined): TaskStatus {
@@ -303,6 +423,10 @@ function applyQuery(tasks: readonly TaskView[], query: TaskQuery): TaskView[] {
     if (query.accountId !== undefined && task.accountId !== query.accountId) return false
     if (query.pluginId !== undefined && task.pluginId !== query.pluginId) return false
     if (query.contributionId !== undefined && task.contributionId !== query.contributionId) return false
+    if (query.attention === 'pending' && task.attentionState !== 'pending') return false
+    if (query.attention === 'resolved' && (
+      task.attentionState !== 'handled' && task.attentionState !== 'superseded'
+    )) return false
 
     const createdAt = Date.parse(task.createdAt)
     if (createdFrom !== null && (!Number.isFinite(createdAt) || createdAt < createdFrom)) return false
@@ -326,7 +450,8 @@ function taskSearchText(task: TaskView): string {
     task.contributionId,
     task.stage,
     task.errorCode,
-    task.errorMessage
+    task.errorMessage,
+    task.attentionState
   ].filter((value): value is string => Boolean(value)).join('\n').toLocaleLowerCase()
 }
 
@@ -343,7 +468,8 @@ function buildBatchView(batch: JobBatchRecord, tasks: TaskView[]): TaskBatchView
     failedCount: count('failed'),
     cancelledCount: count('cancelled'),
     interruptedCount: count('interrupted'),
-    pausedCount: count('paused')
+    pausedCount: count('paused'),
+    needsAttentionCount: tasks.filter((task) => task.attentionState === 'pending').length
   }
 }
 

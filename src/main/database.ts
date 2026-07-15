@@ -52,6 +52,8 @@ import type {
   JobStatus,
   RequestedSyncMode,
   SyncBatchScope,
+  TaskAttentionResolutionRecord,
+  TaskSource,
   TaskTrigger
 } from '../shared/job-contracts'
 import type {
@@ -63,6 +65,7 @@ import type {
   PluginPackageSource,
   PluginPackageStatus,
   PluginRunRecord as ExtensionRunRecord,
+  PluginScheduleCadence,
   PluginSchedule
 } from '../shared/plugin-host-contracts'
 import type {
@@ -73,6 +76,10 @@ import type {
   StandardDataset,
   StandardProfile
 } from './plugins/types'
+import {
+  legacyIntervalMinutes,
+  normalizePluginScheduleCadence
+} from './plugins/schedule-recurrence'
 import { CURRENT_SCHEMA_VERSION, migrateDatabase, readUserVersion } from './storage/migrations'
 
 export interface CreateJobInput {
@@ -310,6 +317,12 @@ interface JobBatchRow {
   created_at: string
 }
 
+interface TaskAttentionResolutionRow {
+  task_source: TaskSource
+  task_id: string
+  resolved_at: string
+}
+
 interface PluginRow {
   plugin_id: string
   manifest_json: string
@@ -350,6 +363,7 @@ interface PluginScheduleRow {
   contribution_id: string
   account_ids_json: string
   group_ids_json: string
+  cadence_json: string
   interval_minutes: number
   enabled: number
   next_run_at: string | null
@@ -1667,6 +1681,35 @@ export class SocialDatabase {
     return rows.map(mapJob)
   }
 
+  listTaskAttentionResolutions(): TaskAttentionResolutionRecord[] {
+    const rows = this.db.prepare(`
+      SELECT task_source, task_id, resolved_at
+      FROM task_attention_resolutions
+      ORDER BY resolved_at DESC
+    `).all() as unknown as TaskAttentionResolutionRow[]
+    return rows.map((row) => ({
+      source: row.task_source,
+      taskId: row.task_id,
+      resolvedAt: row.resolved_at
+    }))
+  }
+
+  markTaskAttentionHandled(
+    source: TaskSource,
+    taskId: string,
+    resolvedAt = new Date().toISOString()
+  ): TaskAttentionResolutionRecord {
+    if (source !== 'job' && source !== 'plugin-run') throw new Error('任务来源无效')
+    if (!taskId.trim()) throw new Error('任务 ID 无效')
+    if (!isIsoDate(resolvedAt)) throw new Error('任务处理时间无效')
+    this.db.prepare(`
+      INSERT INTO task_attention_resolutions (task_source, task_id, resolved_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(task_source, task_id) DO UPDATE SET resolved_at = excluded.resolved_at
+    `).run(source, taskId, resolvedAt)
+    return { source, taskId, resolvedAt }
+  }
+
   getJob(id: string): JobRecord | null {
     const row = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as unknown as JobRow | undefined
     return row ? mapJob(row) : null
@@ -2075,16 +2118,17 @@ export class SocialDatabase {
     this.db.prepare(`
       INSERT INTO plugin_schedules (
         id, plugin_id, contribution_id, account_ids_json, group_ids_json,
-        interval_minutes, enabled, next_run_at, last_run_at, consecutive_failures,
-        suspended_reason, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cadence_json, interval_minutes, enabled, next_run_at, last_run_at,
+        consecutive_failures, suspended_reason, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.pluginId,
       input.contributionId,
       JSON.stringify([...new Set(input.accountIds)]),
       JSON.stringify([...new Set(input.groupIds)]),
-      input.intervalMinutes,
+      JSON.stringify(input.cadence),
+      legacyIntervalMinutes(input.cadence),
       input.enabled ? 1 : 0,
       input.nextRunAt,
       input.lastRunAt,
@@ -2818,13 +2862,15 @@ function mapGrant(row: Record<string, unknown>): PluginGrant {
 }
 
 function mapSchedule(row: PluginScheduleRow): PluginSchedule {
+  const cadence = safeScheduleCadence(row.cadence_json, row.interval_minutes)
   return {
     id: row.id,
     pluginId: row.plugin_id,
     contributionId: row.contribution_id,
     accountIds: safeStringArray(row.account_ids_json),
     groupIds: safeStringArray(row.group_ids_json),
-    intervalMinutes: Number(row.interval_minutes),
+    cadence,
+    intervalMinutes: legacyIntervalMinutes(cadence),
     enabled: Boolean(row.enabled),
     nextRunAt: row.next_run_at,
     lastRunAt: row.last_run_at,
@@ -2832,6 +2878,14 @@ function mapSchedule(row: PluginScheduleRow): PluginSchedule {
     suspendedReason: row.suspended_reason,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  }
+}
+
+function safeScheduleCadence(value: string, intervalMinutes: number): PluginScheduleCadence {
+  try {
+    return normalizePluginScheduleCadence(value ? JSON.parse(value) : undefined, Number(intervalMinutes))
+  } catch {
+    return normalizePluginScheduleCadence(undefined, Number(intervalMinutes))
   }
 }
 

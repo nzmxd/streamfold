@@ -49,6 +49,7 @@ describe('social vault renderer facade', () => {
       requestedScope: 'recent_20'
     })
     await api.tasks.list({ statuses: ['queued'], limit: 50 })
+    await api.tasks.markHandled({ source: 'job', taskId: 'job-1' })
 
     expect(invoke).toHaveBeenNthCalledWith(
       1,
@@ -59,6 +60,11 @@ describe('social vault renderer facade', () => {
       2,
       'tasks:list',
       '[{"statuses":["queued"],"limit":50}]'
+    )
+    expect(invoke).toHaveBeenNthCalledWith(
+      3,
+      'tasks:mark-handled',
+      '[{"source":"job","taskId":"job-1"}]'
     )
   })
 
