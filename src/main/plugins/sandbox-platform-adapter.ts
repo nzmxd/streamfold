@@ -407,6 +407,7 @@ function parseContentMetricDefinitions(value: unknown): ContentMetricDefinition[
   if (value === undefined || value === null) return undefined
   if (!Array.isArray(value) || value.length > 100) throw new Error('插件内容指标定义无效')
   const ids = new Set<string>()
+  const standardIds = new Set<string>()
   return value.map((raw) => {
     const definition = record(raw)
     const id = text(definition.id, '内容指标 ID', 1, 64)
@@ -429,13 +430,36 @@ function parseContentMetricDefinitions(value: unknown): ContentMetricDefinition[
       (definition.sortOrder as number) > 10_000) {
       throw new Error('插件内容指标排序无效')
     }
+    const measurementKind = definition.measurementKind === undefined
+      ? undefined
+      : text(definition.measurementKind, '内容指标测量语义', 1, 20)
+    if (measurementKind !== undefined && !['cumulative', 'period_total', 'gauge'].includes(measurementKind)) {
+      throw new Error('插件内容指标测量语义无效')
+    }
+    const standardMetricId = definition.standardMetricId === undefined || definition.standardMetricId === null
+      ? definition.standardMetricId as null | undefined
+      : text(definition.standardMetricId, '标准内容指标', 1, 20)
+    if (standardMetricId !== undefined && standardMetricId !== null &&
+      !['views', 'likes', 'comments', 'shares', 'favorites'].includes(standardMetricId)) {
+      throw new Error('插件标准内容指标无效')
+    }
+    if (standardMetricId && standardIds.has(standardMetricId)) {
+      throw new Error('插件标准内容指标映射重复')
+    }
+    if (standardMetricId) standardIds.add(standardMetricId)
     return {
       id,
       label: text(definition.label, '内容指标名称', 1, 40),
       valueKind: valueKind as ContentMetricDefinition['valueKind'],
       unit: unit as ContentMetricDefinition['unit'],
       group: group as ContentMetricDefinition['group'],
-      sortOrder: definition.sortOrder as number
+      sortOrder: definition.sortOrder as number,
+      ...(measurementKind === undefined ? {} : {
+        measurementKind: measurementKind as ContentMetricDefinition['measurementKind']
+      }),
+      ...(standardMetricId === undefined ? {} : {
+        standardMetricId: standardMetricId as ContentMetricDefinition['standardMetricId']
+      })
     }
   })
 }

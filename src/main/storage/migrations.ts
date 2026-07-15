@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 13
+export const CURRENT_SCHEMA_VERSION = 14
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -61,6 +61,10 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 13) {
     inTransaction(db, () => migrateV12ToV13(db))
+    version = 13
+  }
+  if (version < 14) {
+    inTransaction(db, () => migrateV13ToV14(db))
   }
 }
 
@@ -677,6 +681,171 @@ function migrateV12ToV13(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_account_metric_values_metric
       ON account_metric_values(platform_id, metric_id, snapshot_id);
     PRAGMA user_version = 13;
+  `)
+}
+
+/** Adds local content organization, observation provenance and full-text search. */
+function migrateV13ToV14(db: DatabaseSync): void {
+  addColumn(db, 'contents', 'is_bookmarked INTEGER NOT NULL DEFAULT 0 CHECK (is_bookmarked IN (0, 1))')
+  addColumn(db, 'contents', 'last_captured_at TEXT')
+  addColumn(db, 'content_metric_definitions', `measurement_kind TEXT NOT NULL DEFAULT 'gauge' CHECK (
+    measurement_kind IN ('cumulative', 'period_total', 'gauge')
+  )`)
+  addColumn(db, 'content_metric_definitions', `standard_metric_id TEXT CHECK (
+    standard_metric_id IS NULL OR standard_metric_id IN ('views', 'likes', 'comments', 'shares', 'favorites')
+  )`)
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content_tags (
+      content_id TEXT NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+      tag TEXT NOT NULL CHECK (length(trim(tag)) > 0),
+      PRIMARY KEY (content_id, tag)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS content_observations (
+      id TEXT PRIMARY KEY,
+      content_id TEXT NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+      job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+      snapshot_id TEXT REFERENCES content_snapshots(id) ON DELETE SET NULL,
+      contribution_id TEXT NOT NULL DEFAULT '',
+      semantics_revision TEXT NOT NULL DEFAULT 'legacy',
+      observed_at TEXT NOT NULL,
+      UNIQUE (content_id, job_id)
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS content_metric_semantics (
+      contribution_id TEXT NOT NULL,
+      semantics_revision TEXT NOT NULL,
+      platform_id TEXT NOT NULL,
+      metric_id TEXT NOT NULL,
+      label TEXT NOT NULL,
+      value_kind TEXT NOT NULL CHECK (value_kind IN ('count', 'ratio', 'duration')),
+      unit TEXT NOT NULL CHECK (unit IN ('count', 'ratio', 'seconds')),
+      metric_group TEXT NOT NULL CHECK (metric_group IN ('reach', 'engagement', 'conversion', 'other')),
+      sort_order INTEGER NOT NULL,
+      measurement_kind TEXT NOT NULL DEFAULT 'gauge' CHECK (
+        measurement_kind IN ('cumulative', 'period_total', 'gauge')
+      ),
+      standard_metric_id TEXT CHECK (
+        standard_metric_id IS NULL OR standard_metric_id IN ('views', 'likes', 'comments', 'shares', 'favorites')
+      ),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (contribution_id, semantics_revision, metric_id)
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_content_tags_tag
+      ON content_tags(tag, content_id);
+    CREATE INDEX IF NOT EXISTS idx_contents_capture_sort
+      ON contents(COALESCE(last_captured_at, first_captured_at) DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_contents_published_sort
+      ON contents(published_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_contents_bookmarked_capture
+      ON contents(is_bookmarked, COALESCE(last_captured_at, first_captured_at) DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_content_observations_content_time
+      ON content_observations(content_id, observed_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_content_observations_job
+      ON content_observations(job_id, content_id) WHERE job_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_content_observations_snapshot
+      ON content_observations(snapshot_id) WHERE snapshot_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_content_observations_contribution_time
+      ON content_observations(contribution_id, observed_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_content_metric_semantics_platform
+      ON content_metric_semantics(platform_id, metric_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_content_metric_semantics_standard
+      ON content_metric_semantics(contribution_id, semantics_revision, standard_metric_id)
+      WHERE standard_metric_id IS NOT NULL;
+
+    UPDATE contents
+    SET last_captured_at = COALESCE(
+      (
+        SELECT MAX(content_snapshots.captured_at)
+        FROM content_snapshots
+        WHERE content_snapshots.content_id = contents.id
+      ),
+      first_captured_at
+    )
+    WHERE last_captured_at IS NULL;
+
+    INSERT OR IGNORE INTO content_tags (content_id, tag)
+    SELECT contents.id, CAST(tags.value AS TEXT)
+    FROM contents
+    CROSS JOIN json_each(
+      CASE WHEN json_valid(contents.tags_json) THEN contents.tags_json ELSE '[]' END
+    ) AS tags
+    WHERE tags.type = 'text' AND length(trim(CAST(tags.value AS TEXT))) > 0;
+
+    INSERT OR IGNORE INTO content_observations (
+      id, content_id, job_id, snapshot_id, contribution_id, semantics_revision, observed_at
+    )
+    SELECT
+      'legacy-snapshot:' || content_snapshots.id,
+      content_snapshots.content_id,
+      NULL,
+      content_snapshots.id,
+      COALESCE(accounts.adapter_contribution_id, ''),
+      'legacy',
+      content_snapshots.captured_at
+    FROM content_snapshots
+    JOIN contents ON contents.id = content_snapshots.content_id
+    JOIN accounts ON accounts.id = contents.account_id;
+
+    INSERT OR IGNORE INTO content_metric_semantics (
+      contribution_id, semantics_revision, platform_id, metric_id, label, value_kind, unit, metric_group,
+      sort_order, measurement_kind, standard_metric_id, updated_at
+    )
+    SELECT DISTINCT
+      accounts.adapter_contribution_id,
+      'legacy',
+      definitions.platform_id,
+      definitions.metric_id,
+      definitions.label,
+      definitions.value_kind,
+      definitions.unit,
+      definitions.metric_group,
+      definitions.sort_order,
+      definitions.measurement_kind,
+      definitions.standard_metric_id,
+      definitions.updated_at
+    FROM content_metric_definitions definitions
+    JOIN accounts ON accounts.platform_id = definitions.platform_id
+    WHERE accounts.adapter_contribution_id IS NOT NULL
+      AND trim(accounts.adapter_contribution_id) <> '';
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(
+      title,
+      body_excerpt,
+      note,
+      tags_json,
+      content = 'contents',
+      content_rowid = 'rowid',
+      tokenize = 'trigram'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS contents_fts_insert
+    AFTER INSERT ON contents
+    BEGIN
+      INSERT INTO content_fts(rowid, title, body_excerpt, note, tags_json)
+      VALUES (NEW.rowid, NEW.title, NEW.body_excerpt, NEW.note, NEW.tags_json);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS contents_fts_delete
+    AFTER DELETE ON contents
+    BEGIN
+      INSERT INTO content_fts(content_fts, rowid, title, body_excerpt, note, tags_json)
+      VALUES ('delete', OLD.rowid, OLD.title, OLD.body_excerpt, OLD.note, OLD.tags_json);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS contents_fts_update
+    AFTER UPDATE OF title, body_excerpt, note, tags_json ON contents
+    BEGIN
+      INSERT INTO content_fts(content_fts, rowid, title, body_excerpt, note, tags_json)
+      VALUES ('delete', OLD.rowid, OLD.title, OLD.body_excerpt, OLD.note, OLD.tags_json);
+      INSERT INTO content_fts(rowid, title, body_excerpt, note, tags_json)
+      VALUES (NEW.rowid, NEW.title, NEW.body_excerpt, NEW.note, NEW.tags_json);
+    END;
+
+    INSERT INTO content_fts(content_fts) VALUES ('rebuild');
+    PRAGMA user_version = 14;
   `)
 }
 

@@ -2,13 +2,20 @@ import { describe, expect, it } from 'vitest'
 import {
   parseAccountMetricQuery,
   parseAnalyticsQuery,
+  parseAnalyticsComparisonQuery,
+  parseAnalyticsSummaryQuery,
+  parseBulkUpdateContents,
   parseBulkUpdateAccounts,
   parseConfirmApiIdentity,
   parseEnqueueSyncBatch,
   parseContentQuery,
+  parseContentLifecycleQuery,
+  parseContentSearchQuery,
+  parseContentTagFacetQuery,
   parseCreateAccount,
   parseCreateEncryptedBackup,
   parseExportData,
+  parseExportFilteredContents,
   parseMoveGroup,
   parseRestoreEncryptedBackup,
   parseTaskQuery,
@@ -56,6 +63,50 @@ describe('IPC validation', () => {
     expect(parseAnalyticsQuery({ days: 90 })).toEqual({ days: 90 })
     expect(() => parseAnalyticsQuery({ days: 31 })).toThrow('统计周期无效')
     expect(() => parseContentQuery({ limit: 1000 })).toThrow('返回数量无效')
+  })
+
+  it('validates paged content search, bulk metadata and filtered export', () => {
+    expect(parseContentSearchQuery({
+      keyword: '  复盘  ', accountIds: ['a', 'a'], platformId: 'publisher.platform',
+      groupId: 'group', tags: ['重点', '重点'], tagMatch: 'all', bookmarked: true,
+      publishedFrom: '2026-07-01', publishedTo: '2026-07-15',
+      sort: 'captured', order: 'asc', limit: 50, offset: 100
+    })).toEqual({
+      keyword: '复盘', accountIds: ['a'], platformId: 'publisher.platform', groupId: 'group',
+      tags: ['重点'], tagMatch: 'all', bookmarked: true,
+      publishedFrom: '2026-07-01T00:00:00.000Z', publishedTo: '2026-07-15T00:00:00.000Z',
+      sort: 'captured', order: 'asc', limit: 50, offset: 100
+    })
+    expect(parseBulkUpdateContents({
+      contentIds: ['c1', 'c1', 'c2'], isBookmarked: true,
+      tagChange: { action: 'add', tags: ['研究'] }
+    })).toEqual({
+      contentIds: ['c1', 'c2'], isBookmarked: true,
+      tagChange: { action: 'add', tags: ['研究'] }
+    })
+    expect(parseContentTagFacetQuery({ search: '  研 ', limit: 20 })).toEqual({ search: '研', limit: 20 })
+    expect(parseExportFilteredContents({
+      query: { bookmarked: true }, format: 'json', includeSnapshots: true
+    })).toEqual({ query: { bookmarked: true }, format: 'json', includeSnapshots: true })
+    expect(() => parseContentSearchQuery({ limit: 101 })).toThrow('返回数量无效')
+    expect(() => parseContentSearchQuery({ publishedFrom: '2026-07-15', publishedTo: '2026-07-01' }))
+      .toThrow('发布时间范围无效')
+    expect(() => parseBulkUpdateContents({ contentIds: ['c1'] })).toThrow('没有需要执行')
+  })
+
+  it('validates reliable analytics queries', () => {
+    expect(parseAnalyticsSummaryQuery({
+      accountIds: ['a'], standardMetricIds: ['views', 'likes'], capturedFrom: '2026-07-01'
+    })).toEqual({
+      accountIds: ['a'], standardMetricIds: ['views', 'likes'],
+      capturedFrom: '2026-07-01T00:00:00.000Z'
+    })
+    expect(parseAnalyticsComparisonQuery({ dimension: 'platform', groupId: 'g' }))
+      .toEqual({ dimension: 'platform', groupId: 'g' })
+    expect(parseContentLifecycleQuery({ standardMetricId: 'comments', limit: 25, offset: 50 }))
+      .toEqual({ standardMetricId: 'comments', limit: 25, offset: 50 })
+    expect(() => parseAnalyticsComparisonQuery({ dimension: 'content' })).toThrow('对比维度无效')
+    expect(() => parseContentLifecycleQuery({ standardMetricId: 'impressions' })).toThrow('标准指标无效')
   })
 
   it('validates account metric history filters', () => {

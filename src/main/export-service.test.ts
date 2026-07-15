@@ -8,6 +8,7 @@ describe('CSV export safety', () => {
       id: 'content', accountId: 'account', accountAlias: '+工作号', platformId: 'weibo',
       remoteId: 'remote', type: 'post', title: '=1+1', bodyExcerpt: '含有,"引号"',
       url: 'https://weibo.com/1', publishedAt: null, firstCapturedAt: '2026-01-01T00:00:00.000Z',
+      lastCapturedAt: '2026-01-01T00:00:00.000Z', isBookmarked: false,
       updatedAt: '2026-01-01T00:00:00.000Z', note: '', tags: [],
       latestSnapshot: null, previousSnapshot: null
     }
@@ -22,6 +23,7 @@ describe('CSV export safety', () => {
       id: '0', accountId: 'account', accountAlias: '账号', platformId: 'weibo',
       remoteId: 'remote', type: 'post', title: '', bodyExcerpt: '', url: '',
       publishedAt: null, firstCapturedAt: '2026-01-01T00:00:00.000Z',
+      lastCapturedAt: '2026-01-01T00:00:00.000Z', isBookmarked: false,
       updatedAt: '2026-01-01T00:00:00.000Z', note: '', tags: [],
       latestSnapshot: null, previousSnapshot: null
     }
@@ -45,6 +47,7 @@ describe('CSV export safety', () => {
       id: 'content', accountId: 'account', accountAlias: '账号', platformId: 'xiaohongshu',
       remoteId: 'remote', type: 'image', title: '作品', bodyExcerpt: '', url: '',
       publishedAt: null, firstCapturedAt: '2026-01-01T00:00:00.000Z',
+      lastCapturedAt: '2026-01-01T00:00:00.000Z', isBookmarked: false,
       updatedAt: '2026-01-01T00:00:00.000Z', note: '', tags: [], previousSnapshot: null,
       latestSnapshot: {
         views: 100, likes: 10, comments: 2, shares: 1, favorites: 3,

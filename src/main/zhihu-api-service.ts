@@ -63,24 +63,24 @@ const ZHIHU_ACCOUNT_METRIC_DEFINITIONS: readonly AccountMetricDefinition[] = [
   countMetric('follower_conversion', '关注者转化', 'conversion', 220)
 ]
 
-const ZHIHU_CONTENT_METRIC_DEFINITIONS: readonly ContentMetricDefinition[] = [
-  countMetric('likes', '赞同', 'engagement', 40),
-  countMetric('impressions', '曝光量', 'reach', 20),
-  countMetric('plays', '播放量', 'reach', 30),
-  countMetric('content_likes', '喜欢', 'engagement', 45),
-  countMetric('reactions', '互动', 'engagement', 80),
-  countMetric('reposts', '转发', 'engagement', 90),
-  countMetric('likes_and_reactions', '喜欢与互动', 'engagement', 100),
-  countMetric('new_upvotes', '新增赞同', 'engagement', 110),
-  countMetric('new_likes', '新增喜欢', 'engagement', 120),
-  countMetric('upvote_increases', '赞同增加', 'engagement', 130),
-  countMetric('upvote_decreases', '赞同减少', 'engagement', 140),
-  countMetric('like_increases', '喜欢增加', 'engagement', 150),
-  countMetric('like_decreases', '喜欢减少', 'engagement', 160),
-  ratioMetric('click_rate', '点击率', 'conversion', 180),
-  ratioMetric('read_completion_rate', '阅读完成率', 'conversion', 190),
-  ratioMetric('play_completion_rate', '播放完成率', 'conversion', 200),
-  ratioMetric('positive_interaction_rate', '正向互动率', 'conversion', 210)
+export const ZHIHU_CONTENT_METRIC_DEFINITIONS: readonly ContentMetricDefinition[] = [
+  cumulativeContentMetric('likes', '赞同', 'engagement', 40, 'likes'),
+  cumulativeContentMetric('impressions', '曝光量', 'reach', 20),
+  cumulativeContentMetric('plays', '播放量', 'reach', 30),
+  cumulativeContentMetric('content_likes', '喜欢', 'engagement', 45),
+  cumulativeContentMetric('reactions', '互动', 'engagement', 80),
+  cumulativeContentMetric('reposts', '转发', 'engagement', 90),
+  cumulativeContentMetric('likes_and_reactions', '喜欢与互动', 'engagement', 100),
+  periodTotalContentMetric('new_upvotes', '新增赞同', 'engagement', 110),
+  periodTotalContentMetric('new_likes', '新增喜欢', 'engagement', 120),
+  periodTotalContentMetric('upvote_increases', '赞同增加', 'engagement', 130),
+  periodTotalContentMetric('upvote_decreases', '赞同减少', 'engagement', 140),
+  periodTotalContentMetric('like_increases', '喜欢增加', 'engagement', 150),
+  periodTotalContentMetric('like_decreases', '喜欢减少', 'engagement', 160),
+  gaugeRatioContentMetric('click_rate', '点击率', 'conversion', 180),
+  gaugeRatioContentMetric('read_completion_rate', '阅读完成率', 'conversion', 190),
+  gaugeRatioContentMetric('play_completion_rate', '播放完成率', 'conversion', 200),
+  gaugeRatioContentMetric('positive_interaction_rate', '正向互动率', 'conversion', 210)
 ]
 
 interface ZhihuPeriodAggregate {
@@ -767,6 +767,43 @@ function ratioMetric(
   sortOrder: number
 ): AccountMetricDefinition {
   return { id, label, valueKind: 'ratio', unit: 'ratio', group, sortOrder }
+}
+
+function cumulativeContentMetric(
+  id: string,
+  label: string,
+  group: ContentMetricDefinition['group'],
+  sortOrder: number,
+  standardMetricId: ContentMetricDefinition['standardMetricId'] = null
+): ContentMetricDefinition {
+  return {
+    id, label, valueKind: 'count', unit: 'count', group, sortOrder,
+    measurementKind: 'cumulative', standardMetricId
+  }
+}
+
+function periodTotalContentMetric(
+  id: string,
+  label: string,
+  group: ContentMetricDefinition['group'],
+  sortOrder: number
+): ContentMetricDefinition {
+  return {
+    id, label, valueKind: 'count', unit: 'count', group, sortOrder,
+    measurementKind: 'period_total', standardMetricId: null
+  }
+}
+
+function gaugeRatioContentMetric(
+  id: string,
+  label: string,
+  group: ContentMetricDefinition['group'],
+  sortOrder: number
+): ContentMetricDefinition {
+  return {
+    id, label, valueKind: 'ratio', unit: 'ratio', group, sortOrder,
+    measurementKind: 'gauge', standardMetricId: null
+  }
 }
 
 function syncResult(

@@ -35,6 +35,31 @@ describe('XiaohongshuApiService', () => {
 
   afterEach(() => database.close())
 
+  it('declares cumulative, gauge and cross-platform semantics for every content metric', () => {
+    expect(XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS.every((definition) => (
+      definition.measurementKind !== undefined &&
+      Object.prototype.hasOwnProperty.call(definition, 'standardMetricId')
+    ))).toBe(true)
+    expect(XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS
+      .filter(({ measurementKind }) => measurementKind === 'cumulative')
+      .map(({ id }) => id)).toEqual([
+        'impressions', 'views', 'likes', 'comments', 'favorites',
+        'followers_gained', 'shares', 'danmaku'
+      ])
+    expect(XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS
+      .filter(({ measurementKind }) => measurementKind === 'gauge')
+      .map(({ id }) => id)).toEqual(['cover_click_rate', 'average_view_duration'])
+    expect(XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS
+      .filter(({ standardMetricId }) => standardMetricId !== null)
+      .map(({ id, standardMetricId }) => [id, standardMetricId])).toEqual([
+        ['views', 'views'],
+        ['likes', 'likes'],
+        ['comments', 'comments'],
+        ['favorites', 'favorites'],
+        ['shares', 'shares']
+      ])
+  })
+
   it('revalidates an existing remoteId through the API', async () => {
     enablePlugin()
     const account = createAccount('profile_only')

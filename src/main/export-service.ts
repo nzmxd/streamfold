@@ -7,9 +7,12 @@ import type {
   AccountSnapshot,
   ContentDetail,
   ContentQuery,
+  ContentSearchPage,
+  ContentSearchQuery,
   ContentSummary,
   ExportDataInput,
   ExportDataResult,
+  ExportFilteredContentsInput,
   Group
 } from '../shared/contracts'
 import { collectAllContents, serializeContentCsv } from './export-format'
@@ -24,6 +27,7 @@ interface ExportDatabase {
     offset?: number
   }): AccountMetricHistory
   listContents(query?: ContentQuery): ContentSummary[]
+  searchContents(query?: ContentSearchQuery, internalMaximumLimit?: number): ContentSearchPage
   getContentDetail(id: string): ContentDetail
 }
 
@@ -54,6 +58,46 @@ export class ExportService {
 
     const output = input.format === 'json'
       ? this.toJson(contents, input.accountId)
+      : serializeContentCsv(contents)
+    try {
+      await writeFile(result.filePath, output, { encoding: 'utf8', mode: 0o600 })
+    } catch {
+      throw new Error('导出文件写入失败，请检查目标目录权限')
+    }
+    return {
+      cancelled: false,
+      fileName: basename(result.filePath),
+      exportedContentCount: contents.length
+    }
+  }
+
+  async exportFiltered(input: ExportFilteredContentsInput): Promise<ExportDataResult> {
+    const contents = this.collectFilteredContents(input.query)
+    const date = new Date().toISOString().slice(0, 10)
+    const result = await dialog.showSaveDialog(this.owner, {
+      title: input.format === 'json' ? '导出筛选内容' : '导出筛选内容 CSV',
+      defaultPath: `streamfold-filtered-${date}.${input.format}`,
+      filters: input.format === 'json'
+        ? [{ name: 'JSON 数据', extensions: ['json'] }]
+        : [{ name: 'CSV 表格', extensions: ['csv'] }],
+      properties: ['createDirectory', 'showOverwriteConfirmation']
+    })
+    if (result.canceled || !result.filePath) {
+      return { cancelled: true, fileName: null, exportedContentCount: 0 }
+    }
+
+    const exportedContents = input.format === 'json' && input.includeSnapshots
+      ? contents.map((content) => this.database.getContentDetail(content.id))
+      : contents
+    const output = input.format === 'json'
+      ? `${JSON.stringify({
+          schemaVersion: 4,
+          exportedAt: new Date().toISOString(),
+          scope: 'filtered_contents',
+          filter: input.query,
+          includesSnapshots: Boolean(input.includeSnapshots),
+          contents: exportedContents
+        }, null, 2)}\n`
       : serializeContentCsv(contents)
     try {
       await writeFile(result.filePath, output, { encoding: 'utf8', mode: 0o600 })
@@ -100,6 +144,17 @@ export class ExportService {
       if (page.snapshots.length < pageSize) break
     }
     return { accountId, platformId, metricDefinitions, snapshots }
+  }
+
+  private collectFilteredContents(query: ContentSearchQuery): ContentSummary[] {
+    const pageSize = 5_000
+    const contents: ContentSummary[] = []
+    for (let offset = 0; ; offset += pageSize) {
+      const page = this.database.searchContents({ ...query, offset, limit: pageSize }, pageSize)
+      contents.push(...page.items)
+      if (!page.hasMore) break
+    }
+    return contents
   }
 
 }

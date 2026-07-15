@@ -542,6 +542,15 @@ describe('SocialDatabase', () => {
       withoutDefinitions,
       '2026-07-13T08:01:01.000Z'
     )).toThrow('内容动态指标缺少定义')
+
+    const futureSnapshot = standardDataset('invalid-metric-owner', 'future-snapshot-content')
+    futureSnapshot.contents[0]!.snapshots[0]!.capturedAt = '2026-07-14T08:00:00.000Z'
+    expect(() => commitManagedDataset(
+      database,
+      account.id,
+      futureSnapshot,
+      '2026-07-13T08:02:01.000Z'
+    )).toThrow('内容快照时间不能晚于本次采集时间')
   })
 
   it('attaches only the newest account snapshot when listing accounts', () => {
@@ -610,6 +619,16 @@ describe('SocialDatabase', () => {
       accountSnapshotCount: 1,
       jobCount: 2
     })
+    const content = database.listContents({ accountId: account.id })[0]!
+    const observations = database.listContentObservations(content.id)
+    expect(observations).toHaveLength(2)
+    expect(new Set(observations.map(({ jobId }) => jobId)))
+      .toEqual(new Set([metadata.jobId, secondMetadata.jobId]))
+    expect(observations[0]?.snapshotId).not.toBeNull()
+    expect(observations[1]?.snapshotId).toBe(observations[0]?.snapshotId)
+    expect(observations.every(({ contributionId }) => (
+      contributionId === XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID
+    ))).toBe(true)
     expect(database.getPluginState('xiaohongshu-session-api')).toMatchObject({ successCount: 2 })
   })
 
@@ -1461,7 +1480,11 @@ describe('SocialDatabase backup images', () => {
       package_status: 'disabled',
       last_error: '恢复后需要从插件目录重新安装'
     })
+    const portableSearchCount = portable.prepare(`
+      SELECT COUNT(*) AS count FROM content_fts WHERE content_fts MATCH ?
+    `).get('"content-backup"')
     portable.close()
+    expect(portableSearchCount).toEqual({ count: 0 })
 
     database.updateAccount({ id: account.id, alias: '已修改', groupIds: [] })
     expect(() => database?.restoreBackupImage(image, () => {
@@ -1481,6 +1504,7 @@ describe('SocialDatabase backup images', () => {
       syncStatus: 'idle'
     })
     expect(database.listContents({ accountId: account.id })).toHaveLength(1)
+    expect(database.searchContents({ keyword: 'content-backup' })).toMatchObject({ total: 1 })
     expect(database.getAccount(account.id)?.lastSyncError).toContain('重新打开官方页面')
     expect(database.getJob(queuedBeforeBackup.id)).toMatchObject({
       status: 'interrupted',
@@ -1514,7 +1538,7 @@ function managedSyncMetadata(database: SocialDatabase, accountId: string, finish
     source: 'builtin',
     status: 'active',
     enabled: true,
-    packageHash: 'builtin:xiaohongshu-session-api@0.3.0',
+    packageHash: 'builtin:xiaohongshu-session-api@0.4.0',
     publisherKeyId: xiaohongshuPluginManifestV2.publisher.keyId
   })
   database.setPluginContributionEnabled(

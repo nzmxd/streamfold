@@ -32,19 +32,52 @@ import type {
   AccountMetricQuery,
   AccountMetricSnapshot,
   AccountSnapshot,
+  AnalyticsAccountQuality,
+  AnalyticsComparison,
+  AnalyticsComparisonQuery,
+  AnalyticsMetricSummary,
   AnalyticsOverview,
   AnalyticsQuery,
+  AnalyticsScope,
+  AnalyticsSummary,
+  AnalyticsSummaryQuery,
+  BulkUpdateContentsInput,
+  BulkUpdateContentsResult,
   ContentDetail,
+  ContentLifecycleQuery,
+  ContentLifecycleResult,
   ContentMetricDefinition,
+  ContentObservation,
   ContentQuery,
+  ContentSearchPage,
+  ContentSearchQuery,
   ContentSnapshot,
   ContentSummary,
+  ContentTagFacet,
+  ContentTagFacetQuery,
   ContentType,
   DashboardOverview,
+  MetricMeasurement,
   MetricValues,
+  StandardAnalyticsMetricId,
+  StandardContentMetricId,
   UpdateContentInput
 } from '../shared/content-contracts'
-import { accountMetricPeriods } from '../shared/content-contracts'
+import {
+  accountMetricPeriods,
+  lifecycleMilestoneIds,
+  standardAnalyticsMetricIds
+} from '../shared/content-contracts'
+import {
+  deriveAnalyticsValue,
+  deriveLifecycleMilestones,
+  median
+} from './analytics-derivation'
+import {
+  normalizeTags,
+  prepareContentSearch,
+  toEscapedLikeContainsPattern
+} from './search-primitives'
 import type {
   JobBatchRecord,
   JobKind,
@@ -212,9 +245,11 @@ interface ContentRow {
   url: string
   published_at: string | null
   first_captured_at: string
+  last_captured_at: string | null
   updated_at: string
   note: string
   tags_json: string
+  is_bookmarked: number
 }
 
 interface MetricSnapshotRow {
@@ -230,6 +265,11 @@ interface SnapshotRow extends MetricSnapshotRow {
   id: string
 }
 
+interface RankedContentSnapshotRow extends SnapshotRow {
+  content_id: string
+  snapshot_rank: number
+}
+
 interface ContentMetricDefinitionRow {
   platform_id: string
   metric_id: string
@@ -238,6 +278,8 @@ interface ContentMetricDefinitionRow {
   unit: ContentMetricDefinition['unit']
   metric_group: ContentMetricDefinition['group']
   sort_order: number
+  measurement_kind: NonNullable<ContentMetricDefinition['measurementKind']>
+  standard_metric_id: ContentMetricDefinition['standardMetricId'] | null
 }
 
 interface ContentSnapshotMetricRow {
@@ -279,6 +321,76 @@ interface AccountSnapshotRow extends MetricSnapshotRow {
   content_count: number | null
   views_total: number | null
   likes_favorites_total: number | null
+}
+
+interface AnalyticsContentRow {
+  content_id: string
+  account_id: string
+  account_alias: string
+  platform_id: PlatformId
+  title: string
+  published_at: string | null
+  first_captured_at: string
+  last_captured_at: string | null
+}
+
+interface AnalyticsAccountContext {
+  accountId: string
+  accountAlias: string
+  platformId: PlatformId
+  lastSyncedAt: string | null
+}
+
+interface AnalyticsObservationRow {
+  content_id: string
+  account_id: string
+  account_alias: string
+  platform_id: PlatformId
+  title: string
+  published_at: string | null
+  observation_id: string | null
+  observed_at: string | null
+  snapshot_id: string | null
+  snapshot_captured_at: string | null
+  observation_rank: number | null
+  views: number | null
+  likes: number | null
+  comments: number | null
+  shares: number | null
+  favorites: number | null
+  mapped_views: number | null
+  mapped_likes: number | null
+  mapped_comments: number | null
+  mapped_shares: number | null
+  mapped_favorites: number | null
+  views_measurement: MetricMeasurement | null
+  likes_measurement: MetricMeasurement | null
+  comments_measurement: MetricMeasurement | null
+  shares_measurement: MetricMeasurement | null
+  favorites_measurement: MetricMeasurement | null
+}
+
+interface AnalyticsObservedSnapshot {
+  observationId: string
+  observedAt: string
+  snapshotId: string | null
+  snapshot: ContentSnapshot | null
+  measurements: Partial<Record<StandardContentMetricId, MetricMeasurement>>
+}
+
+interface AnalyticsContentSeries {
+  contentId: string
+  accountId: string
+  accountAlias: string
+  platformId: PlatformId
+  title: string
+  publishedAt: string | null
+  observations: AnalyticsObservedSnapshot[]
+}
+
+interface AnalyticsAccountSnapshotSeries {
+  accountId: string
+  snapshots: AccountSnapshot[]
 }
 
 interface JobRow {
@@ -429,11 +541,12 @@ export class SocialDatabase {
       try {
         portable.exec('PRAGMA journal_mode = DELETE; PRAGMA foreign_keys = ON;')
         sanitizePortablePluginState(portable)
+        stripPortableDerivedState(portable)
       } finally {
         portable.close()
       }
       const size = statSync(temporaryPath).size
-      if (size <= 0 || size > 48 * 1024 * 1024) throw new Error('本地数据库超过 48 MB 备份上限')
+      if (size <= 0 || size > 256 * 1024 * 1024) throw new Error('本地数据库超过 256 MB 备份上限')
       return readFileSync(temporaryPath)
     } finally {
       rmSync(temporaryPath, { force: true })
@@ -465,6 +578,7 @@ export class SocialDatabase {
 
       this.db = openDatabase(this.databasePath)
       sanitizePortablePluginState(this.db)
+      rebuildContentSearchIndex(this.db)
       const now = new Date().toISOString()
       this.db.prepare(`
         UPDATE accounts SET connection_status = 'pending', status = 'pending', sync_enabled = 0,
@@ -991,21 +1105,304 @@ export class SocialDatabase {
       ORDER BY COALESCE(c.published_at, c.first_captured_at) DESC, c.updated_at DESC
       LIMIT ? OFFSET ?
     `).all(...parameters) as unknown as ContentRow[]
-    return rows.map((row) => this.mapContent(row))
+    return this.mapContents(rows)
+  }
+
+  searchContents(query: ContentSearchQuery = {}, internalMaximumLimit = 100): ContentSearchPage {
+    const prepared = prepareContentSearch(query.keyword ?? '')
+    const accountIds = normalizeContentIdSelection(query.accountIds ?? [], '账号')
+    const tags = normalizeTags(query.tags ?? [])
+    validateContentSearchRange(query.publishedFrom, query.publishedTo, '发布时间')
+    validateContentSearchRange(query.capturedFrom, query.capturedTo, '采集时间')
+    if (query.sort !== undefined && !CONTENT_SEARCH_SORTS.has(query.sort)) throw new Error('内容排序字段无效')
+    if (query.order !== undefined && query.order !== 'asc' && query.order !== 'desc') {
+      throw new Error('内容排序方向无效')
+    }
+    if (query.tagMatch !== undefined && query.tagMatch !== 'all' && query.tagMatch !== 'any') {
+      throw new Error('标签匹配方式无效')
+    }
+
+    const where: string[] = []
+    const whereParameters: Array<string | number> = []
+    if (accountIds.length > 0) {
+      where.push(`c.account_id IN (${sqlPlaceholders(accountIds.length)})`)
+      whereParameters.push(...accountIds)
+    }
+    if (query.platformId) {
+      where.push('a.platform_id = ?')
+      whereParameters.push(query.platformId)
+    }
+    if (query.groupId) {
+      where.push(`EXISTS (
+        SELECT 1 FROM account_groups ag
+        WHERE ag.account_id = c.account_id AND ag.group_id = ?
+      )`)
+      whereParameters.push(query.groupId)
+    }
+    if (query.type) {
+      where.push('c.type = ?')
+      whereParameters.push(query.type)
+    }
+    if (query.bookmarked !== undefined) {
+      where.push('c.is_bookmarked = ?')
+      whereParameters.push(query.bookmarked ? 1 : 0)
+    }
+    if (query.publishedFrom) {
+      where.push('c.published_at >= ?')
+      whereParameters.push(query.publishedFrom)
+    }
+    if (query.publishedTo) {
+      where.push('c.published_at <= ?')
+      whereParameters.push(query.publishedTo)
+    }
+    if (query.capturedFrom) {
+      where.push('COALESCE(c.last_captured_at, c.first_captured_at) >= ?')
+      whereParameters.push(query.capturedFrom)
+    }
+    if (query.capturedTo) {
+      where.push('COALESCE(c.last_captured_at, c.first_captured_at) <= ?')
+      whereParameters.push(query.capturedTo)
+    }
+    if (tags.length > 0) {
+      if ((query.tagMatch ?? 'all') === 'all') {
+        where.push(`(
+          SELECT COUNT(DISTINCT ct.tag) FROM content_tags ct
+          WHERE ct.content_id = c.id AND ct.tag IN (${sqlPlaceholders(tags.length)})
+        ) = ?`)
+        whereParameters.push(...tags, tags.length)
+      } else {
+        where.push(`EXISTS (
+          SELECT 1 FROM content_tags ct
+          WHERE ct.content_id = c.id AND ct.tag IN (${sqlPlaceholders(tags.length)})
+        )`)
+        whereParameters.push(...tags)
+      }
+    }
+    for (const pattern of prepared.shortTermLikePatterns) {
+      where.push(`(
+        c.title LIKE ? ESCAPE '\\' OR c.body_excerpt LIKE ? ESCAPE '\\' OR
+        c.note LIKE ? ESCAPE '\\' OR EXISTS (
+          SELECT 1 FROM content_tags keyword_tag
+          WHERE keyword_tag.content_id = c.id AND keyword_tag.tag LIKE ? ESCAPE '\\'
+        )
+      )`)
+      whereParameters.push(pattern, pattern, pattern, pattern)
+    }
+
+    const ftsParameters = prepared.ftsExpression ? [prepared.ftsExpression] : []
+    const ftsCte = prepared.ftsExpression
+      ? `WITH fts_matches AS (
+          SELECT rowid, bm25(content_fts) AS relevance
+          FROM content_fts WHERE content_fts MATCH ?
+        )`
+      : ''
+    const ftsJoin = prepared.ftsExpression ? 'JOIN fts_matches f ON f.rowid = c.rowid' : ''
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+    const baseParameters = [...ftsParameters, ...whereParameters]
+    const totalRow = this.db.prepare(`
+      ${ftsCte}
+      SELECT COUNT(*) AS count
+      FROM contents c JOIN accounts a ON a.id = c.account_id
+      ${ftsJoin}
+      ${whereSql}
+    `).get(...baseParameters) as unknown as { count: number }
+
+    const sort = query.sort ?? (prepared.terms.length > 0 ? 'relevance' : 'published')
+    const order = (query.order ?? (sort === 'relevance' && prepared.ftsExpression ? 'asc' : 'desc')).toUpperCase()
+    let sortValueSql = ''
+    let orderSql: string
+    if (sort === 'views') {
+      sortValueSql = `, (
+        SELECT cs.views FROM content_snapshots cs
+        WHERE cs.content_id = c.id
+        ORDER BY cs.captured_at DESC, cs.id DESC LIMIT 1
+      ) AS search_sort_value`
+      orderSql = `search_sort_value IS NULL ASC, search_sort_value ${order}, c.updated_at DESC, c.id ASC`
+    } else if (sort === 'interactions') {
+      sortValueSql = `, (
+        SELECT COALESCE(cs.likes, 0) + COALESCE(cs.comments, 0) +
+          COALESCE(cs.shares, 0) + COALESCE(cs.favorites, 0)
+        FROM content_snapshots cs
+        WHERE cs.content_id = c.id
+        ORDER BY cs.captured_at DESC, cs.id DESC LIMIT 1
+      ) AS search_sort_value`
+      orderSql = `search_sort_value IS NULL ASC, search_sort_value ${order}, c.updated_at DESC, c.id ASC`
+    } else if (sort === 'captured') {
+      orderSql = `COALESCE(c.last_captured_at, c.first_captured_at) ${order}, c.updated_at DESC, c.id ASC`
+    } else if (sort === 'published') {
+      orderSql = `c.published_at IS NULL ASC, c.published_at ${order}, c.updated_at DESC, c.id ASC`
+    } else if (prepared.ftsExpression) {
+      orderSql = `f.relevance ${order}, COALESCE(c.published_at, c.first_captured_at) DESC, c.id ASC`
+    } else {
+      orderSql = `COALESCE(c.published_at, c.first_captured_at) ${order}, c.updated_at DESC, c.id ASC`
+    }
+
+    const maximumLimit = clampInteger(internalMaximumLimit, 1, 5_000)
+    const limit = clampInteger(query.limit ?? 50, 1, maximumLimit)
+    const offset = clampInteger(query.offset ?? 0, 0, 1_000_000_000)
+    const rows = this.db.prepare(`
+      ${ftsCte}
+      SELECT c.*, a.alias AS account_alias, a.platform_id${sortValueSql}
+      FROM contents c JOIN accounts a ON a.id = c.account_id
+      ${ftsJoin}
+      ${whereSql}
+      ORDER BY ${orderSql}
+      LIMIT ? OFFSET ?
+    `).all(...baseParameters, limit, offset) as unknown as ContentRow[]
+    const total = Number(totalRow.count)
+    return {
+      items: this.mapContents(rows),
+      total,
+      offset,
+      limit,
+      hasMore: offset + rows.length < total,
+      searchMode: prepared.terms.length === 0
+        ? 'none'
+        : prepared.longTerms.length === 0
+          ? 'like'
+          : prepared.shortTerms.length === 0
+            ? 'fts'
+            : 'hybrid'
+    }
+  }
+
+  listContentTags(query: ContentTagFacetQuery = {}): ContentTagFacet[] {
+    const accountIds = normalizeContentIdSelection(query.accountIds ?? [], '账号')
+    const where: string[] = []
+    const parameters: Array<string | number> = []
+    if (query.search?.trim()) {
+      const normalizedSearch = query.search.normalize('NFKC').trim()
+      where.push(`ct.tag LIKE ? ESCAPE '\\'`)
+      parameters.push(toEscapedLikeContainsPattern(normalizedSearch))
+    }
+    if (accountIds.length > 0) {
+      where.push(`c.account_id IN (${sqlPlaceholders(accountIds.length)})`)
+      parameters.push(...accountIds)
+    }
+    if (query.platformId) {
+      where.push('a.platform_id = ?')
+      parameters.push(query.platformId)
+    }
+    if (query.groupId) {
+      where.push(`EXISTS (
+        SELECT 1 FROM account_groups ag
+        WHERE ag.account_id = c.account_id AND ag.group_id = ?
+      )`)
+      parameters.push(query.groupId)
+    }
+    const limit = clampInteger(query.limit ?? 50, 1, 200)
+    parameters.push(limit)
+    const rows = this.db.prepare(`
+      SELECT ct.tag, COUNT(DISTINCT ct.content_id) AS count
+      FROM content_tags ct
+      JOIN contents c ON c.id = ct.content_id
+      JOIN accounts a ON a.id = c.account_id
+      ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+      GROUP BY ct.tag
+      ORDER BY count DESC, ct.tag ASC
+      LIMIT ?
+    `).all(...parameters) as unknown as Array<{ tag: string; count: number }>
+    return rows.map((row) => ({ tag: row.tag, count: Number(row.count) }))
+  }
+
+  bulkUpdateContents(input: BulkUpdateContentsInput): BulkUpdateContentsResult {
+    const contentIds = normalizeContentIdSelection(input.contentIds, '内容')
+    if (contentIds.length === 0) throw new Error('请至少选择一条内容')
+    if (input.contentIds.length > 500 || contentIds.length > 500) throw new Error('一次最多更新 500 条内容')
+    if (input.isBookmarked === undefined && input.tagChange === undefined) {
+      throw new Error('没有需要执行的批量操作')
+    }
+    if (input.tagChange && input.tagChange.action !== 'add' && input.tagChange.action !== 'remove') {
+      throw new Error('标签操作无效')
+    }
+    const changedTags = input.tagChange ? normalizeTags(input.tagChange.tags) : []
+    if (input.tagChange && changedTags.length === 0) throw new Error('请至少提供一个标签')
+
+    const now = new Date().toISOString()
+    return this.transaction(() => {
+      const rows = this.db.prepare(`
+        SELECT c.*, a.alias AS account_alias, a.platform_id
+        FROM contents c JOIN accounts a ON a.id = c.account_id
+        WHERE c.id IN (${sqlPlaceholders(contentIds.length)})
+      `).all(...contentIds) as unknown as ContentRow[]
+      if (rows.length !== contentIds.length) throw new Error('内容不存在')
+      const rowById = new Map(rows.map((row) => [row.id, row]))
+      const update = this.db.prepare(`
+        UPDATE contents SET tags_json = ?, is_bookmarked = ?, updated_at = ? WHERE id = ?
+      `)
+      const removeTags = this.db.prepare('DELETE FROM content_tags WHERE content_id = ?')
+      const insertTag = this.db.prepare(
+        'INSERT INTO content_tags (content_id, tag) VALUES (?, ?)'
+      )
+      for (const contentId of contentIds) {
+        const row = rowById.get(contentId)!
+        const currentTags = normalizeTags(safeStringArray(row.tags_json))
+        const nextTags = applyContentTagChange(currentTags, input.tagChange, changedTags)
+        const isBookmarked = input.isBookmarked ?? Boolean(row.is_bookmarked)
+        update.run(JSON.stringify(nextTags), isBookmarked ? 1 : 0, now, contentId)
+        removeTags.run(contentId)
+        for (const tag of nextTags) insertTag.run(contentId, tag)
+        this.enqueuePluginEvent({
+          id: randomUUID(),
+          type: 'content.updated.v1',
+          schemaVersion: 1,
+          occurredAt: now,
+          source: { app: 'streamfold', pluginId: null },
+          subject: { accountId: row.account_id, contentId },
+          data: {
+            accountId: row.account_id,
+            contentId,
+            remoteId: row.remote_id,
+            note: row.note,
+            tags: nextTags,
+            isBookmarked
+          }
+        })
+      }
+      return { requestedCount: contentIds.length, updatedCount: contentIds.length }
+    })
   }
 
   getContentDetail(id: string): ContentDetail {
     const row = this.getContentRow(id)
     if (!row) throw new Error('内容不存在')
-    const summary = this.mapContent(row)
     const snapshots = this.listContentSnapshots(id, 'ASC')
+    const summary = this.mapContent(row, snapshots.slice(-2).reverse())
     const metricDefinitions = this.listContentMetricDefinitions(row.platform_id)
     return { ...summary, snapshots, metricDefinitions }
   }
 
+  listContentObservations(contentId: string): ContentObservation[] {
+    if (!this.getContentRow(contentId)) throw new Error('内容不存在')
+    const rows = this.db.prepare(`
+      SELECT id, content_id, job_id, snapshot_id, contribution_id, semantics_revision, observed_at
+      FROM content_observations
+      WHERE content_id = ?
+      ORDER BY observed_at ASC, id ASC
+    `).all(contentId) as unknown as Array<{
+      id: string
+      content_id: string
+      job_id: string | null
+      snapshot_id: string | null
+      contribution_id: string
+      semantics_revision: string
+      observed_at: string
+    }>
+    return rows.map((row) => ({
+      id: row.id,
+      contentId: row.content_id,
+      jobId: row.job_id,
+      snapshotId: row.snapshot_id,
+      contributionId: row.contribution_id,
+      semanticsRevision: row.semantics_revision,
+      observedAt: row.observed_at
+    }))
+  }
+
   private listContentMetricDefinitions(platformId: PlatformId): ContentMetricDefinition[] {
     const rows = this.db.prepare(`
-      SELECT platform_id, metric_id, label, value_kind, unit, metric_group, sort_order
+      SELECT platform_id, metric_id, label, value_kind, unit, metric_group, sort_order,
+        measurement_kind, standard_metric_id
       FROM content_metric_definitions
       WHERE platform_id = ?
       ORDER BY sort_order ASC, metric_id ASC
@@ -1015,24 +1412,45 @@ export class SocialDatabase {
 
   private upsertContentMetricDefinitions(
     platformId: PlatformId,
+    contributionId: string,
+    semanticsRevision: string,
     definitions: ContentMetricDefinition[],
     updatedAt: string
   ): ReadonlyMap<string, ContentMetricDefinition> {
     validateContentMetricDefinitions(definitions)
     const upsert = this.db.prepare(`
       INSERT INTO content_metric_definitions (
-        platform_id, metric_id, label, value_kind, unit, metric_group, sort_order, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        platform_id, metric_id, label, value_kind, unit, metric_group, sort_order,
+        measurement_kind, standard_metric_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(platform_id, metric_id) DO UPDATE SET
         label = excluded.label,
         value_kind = excluded.value_kind,
         unit = excluded.unit,
         metric_group = excluded.metric_group,
         sort_order = excluded.sort_order,
+        measurement_kind = excluded.measurement_kind,
+        standard_metric_id = excluded.standard_metric_id,
+        updated_at = excluded.updated_at
+    `)
+    const upsertSemantics = this.db.prepare(`
+      INSERT INTO content_metric_semantics (
+        contribution_id, semantics_revision, platform_id, metric_id, label, value_kind, unit, metric_group,
+        sort_order, measurement_kind, standard_metric_id, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(contribution_id, semantics_revision, metric_id) DO UPDATE SET
+        platform_id = excluded.platform_id,
+        label = excluded.label,
+        value_kind = excluded.value_kind,
+        unit = excluded.unit,
+        metric_group = excluded.metric_group,
+        sort_order = excluded.sort_order,
+        measurement_kind = excluded.measurement_kind,
+        standard_metric_id = excluded.standard_metric_id,
         updated_at = excluded.updated_at
     `)
     for (const definition of definitions) {
-      upsert.run(
+      const values = [
         platformId,
         definition.id,
         definition.label,
@@ -1040,8 +1458,12 @@ export class SocialDatabase {
         definition.unit,
         definition.group,
         definition.sortOrder,
+        definition.measurementKind ?? 'gauge',
+        definition.standardMetricId ?? null,
         updatedAt
-      )
+      ] as const
+      upsert.run(...values)
+      upsertSemantics.run(contributionId, semanticsRevision, ...values)
     }
     return new Map(this.listContentMetricDefinitions(platformId).map((definition) => [definition.id, definition]))
   }
@@ -1171,16 +1593,22 @@ export class SocialDatabase {
   updateContent(input: UpdateContentInput): ContentDetail {
     if (!this.getContentRow(input.id)) throw new Error('内容不存在')
     const current = this.getContentDetail(input.id)
+    const tags = input.tags === undefined ? current.tags : normalizeTags(input.tags)
+    const isBookmarked = input.isBookmarked ?? current.isBookmarked
     const now = new Date().toISOString()
     this.transaction(() => {
       this.db.prepare(`
-        UPDATE contents SET note = ?, tags_json = ?, updated_at = ? WHERE id = ?
+        UPDATE contents SET note = ?, tags_json = ?, is_bookmarked = ?, updated_at = ? WHERE id = ?
       `).run(
         input.note ?? current.note,
-        JSON.stringify(input.tags ?? current.tags),
+        JSON.stringify(tags),
+        isBookmarked ? 1 : 0,
         now,
         input.id
       )
+      this.db.prepare('DELETE FROM content_tags WHERE content_id = ?').run(input.id)
+      const insertTag = this.db.prepare('INSERT INTO content_tags (content_id, tag) VALUES (?, ?)')
+      for (const tag of tags) insertTag.run(input.id, tag)
       this.enqueuePluginEvent({
         id: randomUUID(),
         type: 'content.updated.v1',
@@ -1193,7 +1621,8 @@ export class SocialDatabase {
           contentId: current.id,
           remoteId: current.remoteId,
           note: input.note ?? current.note,
-          tags: input.tags ?? current.tags
+          tags,
+          isBookmarked
         }
       })
     })
@@ -1326,8 +1755,14 @@ export class SocialDatabase {
         now,
         account.id
       )
+      const adapterContributionId = account.adapterContributionId ?? job.contributionId
+      if (!adapterContributionId.trim()) throw new Error('受管同步缺少适配器贡献点')
+      const semanticsRevision = installedPackage.packageHash ||
+        `${installedPackage.manifest.id}@${installedPackage.manifest.version}`
       const metricDefinitions = this.upsertContentMetricDefinitions(
         account.platformId,
+        adapterContributionId,
+        semanticsRevision,
         payload.contentMetricDefinitions ?? [],
         payload.capturedAt
       )
@@ -1349,7 +1784,10 @@ export class SocialDatabase {
         payload.contents,
         metricDefinitions,
         payload.capturedAt,
-        now
+        now,
+        job.id,
+        adapterContributionId,
+        semanticsRevision
       )
       const resultJson = JSON.stringify({ ...stats, warnings: payload.warnings })
       const jobUpdate = this.db.prepare(`
@@ -1469,7 +1907,10 @@ export class SocialDatabase {
     sourceContents: StandardContent[],
     metricDefinitions: ReadonlyMap<string, ContentMetricDefinition>,
     firstCapturedAt: string,
-    updatedAt: string
+    updatedAt: string,
+    jobId: string,
+    contributionId: string,
+    semanticsRevision: string
   ): DatasetCommitStats {
     let newContentCount = 0
     let updatedContentCount = 0
@@ -1480,12 +1921,12 @@ export class SocialDatabase {
     const insertContent = this.db.prepare(`
       INSERT INTO contents (
         id, account_id, remote_id, type, title, body_excerpt, url, published_at,
-        first_captured_at, updated_at, note, tags_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '[]')
+        first_captured_at, last_captured_at, updated_at, note, tags_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '[]')
     `)
     const updateExistingContent = this.db.prepare(`
       UPDATE contents SET type = ?, title = ?, body_excerpt = ?, url = ?, published_at = ?,
-        updated_at = ? WHERE id = ?
+        last_captured_at = ?, updated_at = ? WHERE id = ?
     `)
     const insertSnapshot = this.db.prepare(`
       INSERT INTO content_snapshots (
@@ -1505,6 +1946,17 @@ export class SocialDatabase {
       ORDER BY captured_at DESC, id DESC
       LIMIT 1
     `)
+    const findSnapshotAtTime = this.db.prepare(`
+      SELECT id, views, likes, comments, shares, favorites, captured_at
+      FROM content_snapshots
+      WHERE content_id = ? AND captured_at = ?
+      LIMIT 1
+    `)
+    const insertObservation = this.db.prepare(`
+      INSERT INTO content_observations (
+        id, content_id, job_id, snapshot_id, contribution_id, semantics_revision, observed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `)
 
     for (const content of contents) {
       const existing = findContent.get(accountId, content.remoteId) as unknown as { id: string } | undefined
@@ -1513,21 +1965,27 @@ export class SocialDatabase {
         updatedContentCount += 1
         updateExistingContent.run(
           content.type, content.title, content.bodyExcerpt, content.url,
-          content.publishedAt, updatedAt, contentId
+          content.publishedAt, firstCapturedAt, updatedAt, contentId
         )
       } else {
         newContentCount += 1
         insertContent.run(
           contentId, accountId, content.remoteId, content.type, content.title,
-          content.bodyExcerpt, content.url, content.publishedAt, firstCapturedAt, updatedAt
+          content.bodyExcerpt, content.url, content.publishedAt, firstCapturedAt,
+          firstCapturedAt, updatedAt
         )
       }
+      let observedSnapshot: SnapshotRow | undefined
       for (const snapshot of content.snapshots) {
         const latest = findLatestSnapshot.get(contentId) as unknown as SnapshotRow | undefined
         const normalizedMetrics = validateContentSnapshotMetrics(snapshot.metrics ?? {}, metricDefinitions)
         const latestMetrics = latest ? this.snapshotMetrics(latest.id) : {}
         if (latest && sameSnapshotMetrics(latest, latestMetrics, snapshot, normalizedMetrics)) {
           skippedSnapshotCount += 1
+          if (latest.captured_at <= firstCapturedAt &&
+            (!observedSnapshot || latest.captured_at > observedSnapshot.captured_at)) {
+            observedSnapshot = latest
+          }
           continue
         }
         const snapshotId = randomUUID()
@@ -1540,8 +1998,38 @@ export class SocialDatabase {
             insertSnapshotMetric.run(snapshotId, platformId, metricId, value)
           }
           snapshotCount += 1
-        } else skippedSnapshotCount += 1
+          if (!observedSnapshot || snapshot.capturedAt > observedSnapshot.captured_at) {
+            observedSnapshot = {
+              id: snapshotId,
+              views: snapshot.views,
+              likes: snapshot.likes,
+              comments: snapshot.comments,
+              shares: snapshot.shares,
+              favorites: snapshot.favorites,
+              captured_at: snapshot.capturedAt
+            }
+          }
+        } else {
+          const atTime = findSnapshotAtTime.get(contentId, snapshot.capturedAt) as unknown as SnapshotRow | undefined
+          const atTimeMetrics = atTime ? this.snapshotMetrics(atTime.id) : {}
+          if (!atTime || !sameSnapshotMetrics(atTime, atTimeMetrics, snapshot, normalizedMetrics)) {
+            throw new Error('同一采集时间的内容指标与历史记录冲突')
+          }
+          skippedSnapshotCount += 1
+          if (!observedSnapshot || atTime.captured_at > observedSnapshot.captured_at) {
+            observedSnapshot = atTime
+          }
+        }
       }
+      insertObservation.run(
+        randomUUID(),
+        contentId,
+        jobId,
+        observedSnapshot?.id ?? null,
+        contributionId,
+        semanticsRevision,
+        firstCapturedAt
+      )
     }
 
     return { newContentCount, updatedContentCount, snapshotCount, skippedSnapshotCount }
@@ -2330,6 +2818,623 @@ export class SocialDatabase {
     }
   }
 
+  getAnalyticsSummary(query: AnalyticsSummaryQuery = {}): AnalyticsSummary {
+    const scope = normalizeAnalyticsScope(query)
+    const metricIds = normalizeAnalyticsMetricIds(query.standardMetricIds)
+    const accounts = this.loadAnalyticsAccounts(scope)
+    const contentSeries = this.loadAnalyticsContentSeries(scope, accounts)
+    const accountSeries = this.loadAnalyticsAccountSnapshotSeries(scope, accounts)
+    const metrics = buildAnalyticsMetricSummaries(metricIds, contentSeries, accountSeries)
+    const generatedAt = new Date().toISOString()
+
+    const contentByAccount = new Map<string, AnalyticsContentSeries[]>()
+    for (const series of contentSeries) {
+      const owned = contentByAccount.get(series.accountId) ?? []
+      owned.push(series)
+      contentByAccount.set(series.accountId, owned)
+    }
+    const qualityAccounts: AnalyticsAccountQuality[] = accounts.map((account) => {
+      const owned = contentByAccount.get(account.accountId) ?? []
+      return {
+        accountId: account.accountId,
+        accountAlias: account.accountAlias,
+        platformId: account.platformId,
+        contentCount: owned.length,
+        observedContentCount: owned.filter((series) => series.observations.length > 0).length,
+        missingPublishedAtCount: owned.filter((series) => series.publishedAt === null).length,
+        lastSyncedAt: account.lastSyncedAt,
+        latestObservationAt: latestObservationAt(owned)
+      }
+    })
+    const observedContentCount = contentSeries.filter((series) => series.observations.length > 0).length
+    return {
+      metrics,
+      quality: {
+        contentCount: contentSeries.length,
+        observedContentCount,
+        unobservedContentCount: contentSeries.length - observedContentCount,
+        missingPublishedAtCount: contentSeries.filter((series) => series.publishedAt === null).length,
+        missingMetricCounts: Object.fromEntries(metrics.map((metric) => [
+          metric.metricId,
+          metric.missingCount
+        ])),
+        revisionCount: sum(metrics.map((metric) => metric.revisionCount)),
+        latestObservationAt: latestObservationAt(contentSeries),
+        accounts: qualityAccounts,
+        warnings: this.loadLatestAnalyticsWarnings(scope, accounts)
+      },
+      generatedAt
+    }
+  }
+
+  getAnalyticsComparison(query: AnalyticsComparisonQuery): AnalyticsComparison {
+    const scope = normalizeAnalyticsScope(query)
+    if (query.dimension !== 'account' && query.dimension !== 'platform' && query.dimension !== 'group') {
+      throw new Error('分析对比维度无效')
+    }
+    const metricIds = normalizeAnalyticsMetricIds(query.standardMetricIds)
+    const accounts = this.loadAnalyticsAccounts(scope)
+    const contentSeries = this.loadAnalyticsContentSeries(scope, accounts)
+    const accountSeries = this.loadAnalyticsAccountSnapshotSeries(scope, accounts)
+    const accountSeriesById = new Map(accountSeries.map((series) => [series.accountId, series]))
+    const contentByAccount = new Map<string, AnalyticsContentSeries[]>()
+    for (const series of contentSeries) {
+      const owned = contentByAccount.get(series.accountId) ?? []
+      owned.push(series)
+      contentByAccount.set(series.accountId, owned)
+    }
+
+    const comparisonScopes: Array<{
+      id: string
+      label: string
+      platformId: PlatformId | null
+      accountIds: string[]
+    }> = []
+    if (query.dimension === 'account') {
+      for (const account of accounts) {
+        comparisonScopes.push({
+          id: account.accountId,
+          label: account.accountAlias,
+          platformId: account.platformId,
+          accountIds: [account.accountId]
+        })
+      }
+    } else if (query.dimension === 'platform') {
+      const byPlatform = new Map<PlatformId, string[]>()
+      for (const account of accounts) {
+        const ids = byPlatform.get(account.platformId) ?? []
+        ids.push(account.accountId)
+        byPlatform.set(account.platformId, ids)
+      }
+      for (const [platformId, accountIds] of [...byPlatform.entries()].sort(([left], [right]) => (
+        left.localeCompare(right)
+      ))) {
+        comparisonScopes.push({ id: platformId, label: platformId, platformId, accountIds })
+      }
+    } else {
+      comparisonScopes.push(...this.loadAnalyticsGroupScopes(scope, accounts))
+    }
+
+    return {
+      dimension: query.dimension,
+      rows: comparisonScopes.map((comparisonScope) => {
+        const selectedContents = comparisonScope.accountIds.flatMap((accountId) => (
+          contentByAccount.get(accountId) ?? []
+        ))
+        return {
+          id: comparisonScope.id,
+          label: comparisonScope.label,
+          platformId: comparisonScope.platformId,
+          contentCount: selectedContents.length,
+          metrics: buildAnalyticsMetricSummaries(
+            metricIds,
+            selectedContents,
+            comparisonScope.accountIds.map((accountId) => accountSeriesById.get(accountId) ?? {
+              accountId,
+              snapshots: []
+            })
+          )
+        }
+      }),
+      generatedAt: new Date().toISOString()
+    }
+  }
+
+  getContentLifecycle(query: ContentLifecycleQuery = {}): ContentLifecycleResult {
+    const scope = normalizeAnalyticsScope(query)
+    const metricId = normalizeLifecycleMetricId(query.standardMetricId)
+    const limit = clampInteger(query.limit ?? 50, 1, 100)
+    const offset = clampInteger(query.offset ?? 0, 0, 1_000_000_000)
+    const accounts = this.loadAnalyticsAccounts(scope)
+    const { contents, total } = this.loadLifecycleContentPage(scope, accounts, limit, offset)
+    const contentSeries = this.loadLifecycleObservationSeries(scope, contents)
+    const generatedAt = new Date().toISOString()
+    const asOf = scope.capturedTo && scope.capturedTo < generatedAt ? scope.capturedTo : generatedAt
+    const items = contentSeries.map((series) => {
+      return {
+        contentId: series.contentId,
+        accountId: series.accountId,
+        accountAlias: series.accountAlias,
+        platformId: series.platformId,
+        title: series.title,
+        publishedAt: series.publishedAt!,
+        milestones: deriveContentLifecycleMilestones(series, metricId, asOf)
+      }
+    })
+    const aggregateSeries = offset === 0 && contentSeries.length === total
+      ? contentSeries
+      : this.loadAllLifecycleObservationSeries(scope, accounts, asOf)
+    const aggregateMilestones = aggregateSeries.map((series) => (
+      deriveContentLifecycleMilestones(series, metricId, asOf)
+    ))
+
+    return {
+      metricId,
+      items,
+      aggregates: lifecycleMilestoneIds.map((id) => {
+        const milestones = aggregateMilestones.map((seriesMilestones) => (
+          seriesMilestones.find((milestone) => milestone.id === id)!
+        ))
+        return {
+          id,
+          medianValue: median(milestones.map((milestone) => milestone.value)),
+          medianDelta: median(milestones.map((milestone) => milestone.delta)),
+          sampleCount: milestones.filter((milestone) => milestone.value !== null).length,
+          pendingCount: milestones.filter((milestone) => milestone.status === 'pending').length,
+          missingCount: milestones.filter((milestone) => milestone.status === 'missing').length,
+          revisionCount: milestones.filter((milestone) => milestone.status === 'revision').length
+        }
+      }),
+      total,
+      generatedAt
+    }
+  }
+
+  private loadAnalyticsAccounts(scope: AnalyticsScope): AnalyticsAccountContext[] {
+    const where: string[] = []
+    const parameters: string[] = []
+    if (scope.accountIds && scope.accountIds.length > 0) {
+      where.push(`a.id IN (${sqlPlaceholders(scope.accountIds.length)})`)
+      parameters.push(...scope.accountIds)
+    }
+    if (scope.platformId) {
+      where.push('a.platform_id = ?')
+      parameters.push(scope.platformId)
+    }
+    if (scope.groupId) {
+      where.push(`EXISTS (
+        SELECT 1 FROM account_groups selected_group
+        WHERE selected_group.account_id = a.id AND selected_group.group_id = ?
+      )`)
+      parameters.push(scope.groupId)
+    }
+    const rows = this.db.prepare(`
+      SELECT a.id, a.platform_id,
+        CASE
+          WHEN trim(a.alias) <> '' THEN a.alias
+          WHEN trim(a.remote_name) <> '' THEN a.remote_name
+          ELSE '未命名账号'
+        END AS account_alias,
+        a.last_synced_at
+      FROM accounts a
+      ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY account_alias COLLATE NOCASE ASC, a.id ASC
+    `).all(...parameters) as unknown as Array<{
+      id: string
+      platform_id: PlatformId
+      account_alias: string
+      last_synced_at: string | null
+    }>
+    return rows.map((row) => ({
+      accountId: row.id,
+      accountAlias: row.account_alias,
+      platformId: row.platform_id,
+      lastSyncedAt: row.last_synced_at
+    }))
+  }
+
+  private loadAnalyticsContentSeries(
+    scope: AnalyticsScope,
+    accounts: readonly AnalyticsAccountContext[]
+  ): AnalyticsContentSeries[] {
+    if (accounts.length === 0) return []
+    const accountIds = accounts.map((account) => account.accountId)
+    const contentWhere = [`c.account_id IN (${sqlPlaceholders(accountIds.length)})`]
+    const contentParameters: string[] = [...accountIds]
+    appendPublishedScope(contentWhere, contentParameters, scope, 'c')
+    const observationWhere = ['latest_observation.content_id = sc.content_id']
+    const observationParameters: string[] = []
+    appendCapturedScope(
+      observationWhere,
+      observationParameters,
+      scope,
+      'latest_observation.observed_at'
+    )
+    const rows = this.db.prepare(`
+      WITH scoped_contents AS (
+        SELECT c.id AS content_id, c.account_id,
+          CASE
+            WHEN trim(a.alias) <> '' THEN a.alias
+            WHEN trim(a.remote_name) <> '' THEN a.remote_name
+            ELSE '未命名账号'
+          END AS account_alias,
+          a.platform_id, c.title, c.published_at, c.first_captured_at, c.last_captured_at
+        FROM contents c JOIN accounts a ON a.id = c.account_id
+        WHERE ${contentWhere.join(' AND ')}
+      ), observation_values AS (
+        SELECT sc.content_id, co.id AS observation_id, co.observed_at,
+          co.snapshot_id, cs.captured_at AS snapshot_captured_at,
+          cs.views, cs.likes, cs.comments, cs.shares, cs.favorites,
+          MAX(CASE WHEN cmd.standard_metric_id = 'views' THEN csm.value END) AS mapped_views,
+          MAX(CASE WHEN cmd.standard_metric_id = 'likes' THEN csm.value END) AS mapped_likes,
+          MAX(CASE WHEN cmd.standard_metric_id = 'comments' THEN csm.value END) AS mapped_comments,
+          MAX(CASE WHEN cmd.standard_metric_id = 'shares' THEN csm.value END) AS mapped_shares,
+          MAX(CASE WHEN cmd.standard_metric_id = 'favorites' THEN csm.value END) AS mapped_favorites,
+          MAX(CASE WHEN cmd.standard_metric_id = 'views' THEN cmd.measurement_kind END) AS views_measurement,
+          MAX(CASE WHEN cmd.standard_metric_id = 'likes' THEN cmd.measurement_kind END) AS likes_measurement,
+          MAX(CASE WHEN cmd.standard_metric_id = 'comments' THEN cmd.measurement_kind END) AS comments_measurement,
+          MAX(CASE WHEN cmd.standard_metric_id = 'shares' THEN cmd.measurement_kind END) AS shares_measurement,
+          MAX(CASE WHEN cmd.standard_metric_id = 'favorites' THEN cmd.measurement_kind END) AS favorites_measurement
+        FROM scoped_contents sc
+        JOIN content_observations co ON co.id IN (
+          SELECT latest_observation.id
+          FROM content_observations latest_observation
+          WHERE ${observationWhere.join(' AND ')}
+          ORDER BY latest_observation.observed_at DESC, latest_observation.id DESC
+          LIMIT 2
+        )
+        LEFT JOIN content_snapshots cs
+          ON cs.id = co.snapshot_id AND cs.captured_at <= co.observed_at
+        LEFT JOIN content_snapshot_metrics csm ON csm.snapshot_id = cs.id
+        LEFT JOIN content_metric_semantics cmd
+          ON cmd.contribution_id = co.contribution_id
+          AND cmd.semantics_revision = co.semantics_revision
+          AND cmd.platform_id = sc.platform_id AND cmd.metric_id = csm.metric_id
+        GROUP BY sc.content_id, co.id, co.observed_at, co.snapshot_id, cs.captured_at,
+          cs.views, cs.likes, cs.comments, cs.shares, cs.favorites
+      ), ranked_observations AS (
+        SELECT observation_values.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY content_id ORDER BY observed_at DESC, observation_id DESC
+          ) AS observation_rank
+        FROM observation_values
+      )
+      SELECT sc.*, ranked_observations.observation_id, ranked_observations.observed_at,
+        ranked_observations.snapshot_id, ranked_observations.snapshot_captured_at,
+        ranked_observations.observation_rank, ranked_observations.views,
+        ranked_observations.likes, ranked_observations.comments, ranked_observations.shares,
+        ranked_observations.favorites, ranked_observations.mapped_views,
+        ranked_observations.mapped_likes, ranked_observations.mapped_comments,
+        ranked_observations.mapped_shares, ranked_observations.mapped_favorites,
+        ranked_observations.views_measurement, ranked_observations.likes_measurement,
+        ranked_observations.comments_measurement, ranked_observations.shares_measurement,
+        ranked_observations.favorites_measurement
+      FROM scoped_contents sc
+      LEFT JOIN ranked_observations
+        ON ranked_observations.content_id = sc.content_id
+        AND ranked_observations.observation_rank <= 2
+      ORDER BY sc.content_id ASC, ranked_observations.observation_rank ASC
+    `).all(...contentParameters, ...observationParameters) as unknown as AnalyticsObservationRow[]
+    return mapAnalyticsContentSeries(rows)
+  }
+
+  private loadAnalyticsAccountSnapshotSeries(
+    scope: AnalyticsScope,
+    accounts: readonly AnalyticsAccountContext[]
+  ): AnalyticsAccountSnapshotSeries[] {
+    const result = new Map(accounts.map((account) => [account.accountId, {
+      accountId: account.accountId,
+      snapshots: [] as AccountSnapshot[]
+    }]))
+    if (accounts.length === 0) return []
+    const accountIds = accounts.map((account) => account.accountId)
+    const where = [`account_id IN (${sqlPlaceholders(accountIds.length)})`]
+    const parameters: string[] = [...accountIds]
+    appendCapturedScope(where, parameters, scope, 'captured_at')
+    const rows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT account_id, followers, following, content_count, views_total,
+          likes_favorites_total, views, likes, comments, shares, favorites, captured_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY account_id ORDER BY captured_at DESC, id DESC
+          ) AS snapshot_rank
+        FROM account_snapshots
+        WHERE ${where.join(' AND ')}
+      )
+      SELECT account_id, followers, following, content_count, views_total,
+        likes_favorites_total, views, likes, comments, shares, favorites, captured_at
+      FROM ranked WHERE snapshot_rank <= 2
+      ORDER BY account_id ASC, snapshot_rank ASC
+    `).all(...parameters) as unknown as AccountSnapshotRow[]
+    for (const row of rows) result.get(row.account_id)?.snapshots.push(mapAccountSnapshot(row))
+    return [...result.values()]
+  }
+
+  private loadLatestAnalyticsWarnings(
+    scope: AnalyticsScope,
+    accounts: readonly AnalyticsAccountContext[]
+  ): AnalyticsSummary['quality']['warnings'] {
+    if (accounts.length === 0) return []
+    const accountIds = accounts.map((account) => account.accountId)
+    const where = [
+      `account_id IN (${sqlPlaceholders(accountIds.length)})`,
+      "kind = 'managed_sync'",
+      "status = 'succeeded'",
+      'finished_at IS NOT NULL'
+    ]
+    const parameters: string[] = [...accountIds]
+    if (scope.capturedFrom || scope.capturedTo) {
+      const observationWhere = ['job_observation.job_id = jobs.id']
+      const observationParameters: string[] = []
+      appendCapturedScope(
+        observationWhere,
+        observationParameters,
+        scope,
+        'job_observation.observed_at'
+      )
+      const finishedWhere: string[] = []
+      const finishedParameters: string[] = []
+      appendCapturedScope(finishedWhere, finishedParameters, scope, 'finished_at')
+      where.push(`(
+        EXISTS (
+          SELECT 1 FROM content_observations job_observation
+          WHERE ${observationWhere.join(' AND ')}
+        ) OR (
+          NOT EXISTS (
+            SELECT 1 FROM content_observations any_job_observation
+            WHERE any_job_observation.job_id = jobs.id
+          )
+          AND ${finishedWhere.join(' AND ')}
+        )
+      )`)
+      parameters.push(...observationParameters, ...finishedParameters)
+    }
+    const rows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT id, account_id, result_json, finished_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY account_id ORDER BY finished_at DESC, id DESC
+          ) AS job_rank
+        FROM jobs WHERE ${where.join(' AND ')}
+      )
+      SELECT id, account_id, result_json, finished_at
+      FROM ranked WHERE job_rank = 1
+      ORDER BY finished_at DESC, id DESC
+    `).all(...parameters) as unknown as Array<{
+      id: string
+      account_id: string
+      result_json: string | null
+      finished_at: string
+    }>
+    return rows.flatMap((row) => {
+      const warnings = safeObject(row.result_json)?.warnings
+      if (!Array.isArray(warnings)) return []
+      return warnings.filter((warning): warning is string => (
+        typeof warning === 'string' && warning.trim().length > 0
+      )).map((warning) => ({
+        accountId: row.account_id,
+        jobId: row.id,
+        occurredAt: row.finished_at,
+        message: safeSyncErrorMessage(warning)
+      }))
+    })
+  }
+
+  private loadAnalyticsGroupScopes(
+    scope: AnalyticsScope,
+    accounts: readonly AnalyticsAccountContext[]
+  ): Array<{ id: string; label: string; platformId: null; accountIds: string[] }> {
+    if (accounts.length === 0) return []
+    const accountIds = accounts.map((account) => account.accountId)
+    const parameters: string[] = [...accountIds]
+    const groupFilter = scope.groupId ? 'AND g.id = ?' : ''
+    if (scope.groupId) parameters.push(scope.groupId)
+    const rows = this.db.prepare(`
+      SELECT g.id, g.name, g.sort_order, ag.account_id
+      FROM groups g JOIN account_groups ag ON ag.group_id = g.id
+      WHERE ag.account_id IN (${sqlPlaceholders(accountIds.length)}) ${groupFilter}
+      ORDER BY g.sort_order ASC, g.name COLLATE NOCASE ASC, g.id ASC, ag.account_id ASC
+    `).all(...parameters) as unknown as Array<{
+      id: string
+      name: string
+      sort_order: number
+      account_id: string
+    }>
+    const groups: Array<{ id: string; label: string; platformId: null; accountIds: string[] }> = []
+    const byId = new Map<string, (typeof groups)[number]>()
+    for (const row of rows) {
+      let group = byId.get(row.id)
+      if (!group) {
+        group = { id: row.id, label: row.name, platformId: null, accountIds: [] }
+        byId.set(row.id, group)
+        groups.push(group)
+      }
+      group.accountIds.push(row.account_id)
+    }
+    if (!scope.groupId) {
+      const groupedAccountIds = new Set(rows.map((row) => row.account_id))
+      const ungrouped = accountIds.filter((accountId) => !groupedAccountIds.has(accountId))
+      if (ungrouped.length > 0) {
+        groups.push({ id: '__ungrouped__', label: '未分组', platformId: null, accountIds: ungrouped })
+      }
+    }
+    return groups
+  }
+
+  private loadLifecycleContentPage(
+    scope: AnalyticsScope,
+    accounts: readonly AnalyticsAccountContext[],
+    limit: number,
+    offset: number
+  ): { contents: AnalyticsContentRow[]; total: number } {
+    if (accounts.length === 0) return { contents: [], total: 0 }
+    const accountIds = accounts.map((account) => account.accountId)
+    const where = [
+      `c.account_id IN (${sqlPlaceholders(accountIds.length)})`,
+      'c.published_at IS NOT NULL'
+    ]
+    const parameters: Array<string | number> = [...accountIds]
+    appendPublishedScope(where, parameters, scope, 'c')
+    const totalRow = this.db.prepare(`
+      SELECT COUNT(*) AS count FROM contents c WHERE ${where.join(' AND ')}
+    `).get(...parameters) as unknown as { count: number }
+    const rows = this.db.prepare(`
+      SELECT c.id AS content_id, c.account_id,
+        CASE
+          WHEN trim(a.alias) <> '' THEN a.alias
+          WHEN trim(a.remote_name) <> '' THEN a.remote_name
+          ELSE '未命名账号'
+        END AS account_alias,
+        a.platform_id, c.title, c.published_at, c.first_captured_at, c.last_captured_at
+      FROM contents c JOIN accounts a ON a.id = c.account_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY c.published_at DESC, c.id ASC
+      LIMIT ? OFFSET ?
+    `).all(...parameters, limit, offset) as unknown as AnalyticsContentRow[]
+    return { contents: rows, total: Number(totalRow.count) }
+  }
+
+  private loadLifecycleObservationSeries(
+    scope: AnalyticsScope,
+    contents: readonly AnalyticsContentRow[]
+  ): AnalyticsContentSeries[] {
+    const result = new Map(contents.map((content) => [content.content_id, {
+      contentId: content.content_id,
+      accountId: content.account_id,
+      accountAlias: content.account_alias,
+      platformId: content.platform_id,
+      title: content.title,
+      publishedAt: content.published_at,
+      observations: [] as AnalyticsObservedSnapshot[]
+    }]))
+    if (contents.length === 0) return []
+    const contentIds = contents.map((content) => content.content_id)
+    const where = [`co.content_id IN (${sqlPlaceholders(contentIds.length)})`]
+    const parameters: string[] = [...contentIds]
+    appendCapturedScope(where, parameters, scope, 'co.observed_at')
+    const rows = this.db.prepare(`
+      SELECT co.content_id, c.account_id, a.alias AS account_alias, a.platform_id,
+        c.title, c.published_at, co.id AS observation_id, co.observed_at,
+        co.snapshot_id, cs.captured_at AS snapshot_captured_at, 1 AS observation_rank,
+        cs.views, cs.likes, cs.comments, cs.shares, cs.favorites,
+        MAX(CASE WHEN cmd.standard_metric_id = 'views' THEN csm.value END) AS mapped_views,
+        MAX(CASE WHEN cmd.standard_metric_id = 'likes' THEN csm.value END) AS mapped_likes,
+        MAX(CASE WHEN cmd.standard_metric_id = 'comments' THEN csm.value END) AS mapped_comments,
+        MAX(CASE WHEN cmd.standard_metric_id = 'shares' THEN csm.value END) AS mapped_shares,
+        MAX(CASE WHEN cmd.standard_metric_id = 'favorites' THEN csm.value END) AS mapped_favorites,
+        MAX(CASE WHEN cmd.standard_metric_id = 'views' THEN cmd.measurement_kind END) AS views_measurement,
+        MAX(CASE WHEN cmd.standard_metric_id = 'likes' THEN cmd.measurement_kind END) AS likes_measurement,
+        MAX(CASE WHEN cmd.standard_metric_id = 'comments' THEN cmd.measurement_kind END) AS comments_measurement,
+        MAX(CASE WHEN cmd.standard_metric_id = 'shares' THEN cmd.measurement_kind END) AS shares_measurement,
+        MAX(CASE WHEN cmd.standard_metric_id = 'favorites' THEN cmd.measurement_kind END) AS favorites_measurement
+      FROM content_observations co
+      JOIN contents c ON c.id = co.content_id
+      JOIN accounts a ON a.id = c.account_id
+      LEFT JOIN content_snapshots cs
+        ON cs.id = co.snapshot_id AND cs.captured_at <= co.observed_at
+      LEFT JOIN content_snapshot_metrics csm ON csm.snapshot_id = cs.id
+      LEFT JOIN content_metric_semantics cmd
+        ON cmd.contribution_id = co.contribution_id
+        AND cmd.semantics_revision = co.semantics_revision
+        AND cmd.platform_id = a.platform_id AND cmd.metric_id = csm.metric_id
+      WHERE ${where.join(' AND ')}
+      GROUP BY co.content_id, c.account_id, a.alias, a.platform_id, c.title, c.published_at,
+        co.id, co.observed_at, co.snapshot_id, cs.captured_at,
+        cs.views, cs.likes, cs.comments, cs.shares, cs.favorites
+      ORDER BY co.content_id ASC, co.observed_at ASC, co.id ASC
+    `).all(...parameters) as unknown as AnalyticsObservationRow[]
+    for (const row of rows) {
+      if (!row.observation_id || !row.observed_at) continue
+      result.get(row.content_id)?.observations.push(mapAnalyticsObservation(row))
+    }
+    return contents.map((content) => result.get(content.content_id)!)
+  }
+
+  private loadAllLifecycleObservationSeries(
+    scope: AnalyticsScope,
+    accounts: readonly AnalyticsAccountContext[],
+    asOf: string
+  ): AnalyticsContentSeries[] {
+    if (accounts.length === 0) return []
+    const accountIds = accounts.map((account) => account.accountId)
+    const contentWhere = [
+      `c.account_id IN (${sqlPlaceholders(accountIds.length)})`,
+      'c.published_at IS NOT NULL'
+    ]
+    const contentParameters: string[] = [...accountIds]
+    appendPublishedScope(contentWhere, contentParameters, scope, 'c')
+    const candidateWhere = [
+      'candidate.observed_at <= ?',
+      `julianday(candidate.observed_at) BETWEEN
+        julianday(sc.published_at) + m.target_days - m.tolerance_days AND
+        julianday(sc.published_at) + m.target_days + m.tolerance_days`
+    ]
+    const candidateParameters: string[] = [asOf]
+    appendCapturedScope(candidateWhere, candidateParameters, scope, 'candidate.observed_at')
+    const rows = this.db.prepare(`
+      WITH scoped_contents AS (
+        SELECT c.id AS content_id, c.account_id,
+          CASE
+            WHEN trim(a.alias) <> '' THEN a.alias
+            WHEN trim(a.remote_name) <> '' THEN a.remote_name
+            ELSE '未命名账号'
+          END AS account_alias,
+          a.platform_id, c.title, c.published_at
+        FROM contents c JOIN accounts a ON a.id = c.account_id
+        WHERE ${contentWhere.join(' AND ')}
+      ), milestones(milestone_id, target_days, tolerance_days) AS (
+        VALUES ('24h', 1.0, 0.25), ('7d', 7.0, 1.0), ('30d', 30.0, 3.0)
+      ), milestone_candidates AS (
+        SELECT sc.content_id, m.milestone_id, candidate.id AS observation_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY sc.content_id, m.milestone_id
+            ORDER BY
+              candidate.id IS NULL ASC,
+              ABS(julianday(candidate.observed_at) -
+                (julianday(sc.published_at) + m.target_days)) ASC,
+              candidate.observed_at ASC,
+              candidate.id ASC
+          ) AS candidate_rank
+        FROM scoped_contents sc CROSS JOIN milestones AS m
+        LEFT JOIN content_observations candidate
+          ON candidate.content_id = sc.content_id AND ${candidateWhere.join(' AND ')}
+      ), selected_observations AS (
+        SELECT content_id, milestone_id, observation_id
+        FROM milestone_candidates WHERE candidate_rank = 1
+      )
+      SELECT sc.content_id, sc.account_id, sc.account_alias, sc.platform_id,
+        sc.title, sc.published_at, co.id AS observation_id, co.observed_at,
+        co.snapshot_id, cs.captured_at AS snapshot_captured_at,
+        CASE selected.milestone_id WHEN '24h' THEN 1 WHEN '7d' THEN 2 ELSE 3 END AS observation_rank,
+        cs.views, cs.likes, cs.comments, cs.shares, cs.favorites,
+        MAX(CASE WHEN cmd.standard_metric_id = 'views' THEN csm.value END) AS mapped_views,
+        MAX(CASE WHEN cmd.standard_metric_id = 'likes' THEN csm.value END) AS mapped_likes,
+        MAX(CASE WHEN cmd.standard_metric_id = 'comments' THEN csm.value END) AS mapped_comments,
+        MAX(CASE WHEN cmd.standard_metric_id = 'shares' THEN csm.value END) AS mapped_shares,
+        MAX(CASE WHEN cmd.standard_metric_id = 'favorites' THEN csm.value END) AS mapped_favorites,
+        MAX(CASE WHEN cmd.standard_metric_id = 'views' THEN cmd.measurement_kind END) AS views_measurement,
+        MAX(CASE WHEN cmd.standard_metric_id = 'likes' THEN cmd.measurement_kind END) AS likes_measurement,
+        MAX(CASE WHEN cmd.standard_metric_id = 'comments' THEN cmd.measurement_kind END) AS comments_measurement,
+        MAX(CASE WHEN cmd.standard_metric_id = 'shares' THEN cmd.measurement_kind END) AS shares_measurement,
+        MAX(CASE WHEN cmd.standard_metric_id = 'favorites' THEN cmd.measurement_kind END) AS favorites_measurement
+      FROM scoped_contents sc
+      JOIN selected_observations selected ON selected.content_id = sc.content_id
+      LEFT JOIN content_observations co ON co.id = selected.observation_id
+      LEFT JOIN content_snapshots cs
+        ON cs.id = co.snapshot_id AND cs.captured_at <= co.observed_at
+      LEFT JOIN content_snapshot_metrics csm ON csm.snapshot_id = cs.id
+      LEFT JOIN content_metric_semantics cmd
+        ON cmd.contribution_id = co.contribution_id
+        AND cmd.semantics_revision = co.semantics_revision
+        AND cmd.platform_id = sc.platform_id AND cmd.metric_id = csm.metric_id
+      GROUP BY sc.content_id, sc.account_id, sc.account_alias, sc.platform_id,
+        sc.title, sc.published_at, selected.milestone_id, co.id, co.observed_at,
+        co.snapshot_id, cs.captured_at, cs.views, cs.likes, cs.comments, cs.shares, cs.favorites
+      ORDER BY sc.content_id ASC, observation_rank ASC
+    `).all(...contentParameters, ...candidateParameters) as unknown as AnalyticsObservationRow[]
+    return mapAnalyticsContentSeries(rows)
+  }
+
   getAnalytics(query: AnalyticsQuery = {}): AnalyticsOverview {
     const days = query.days ?? 30
     const now = new Date()
@@ -2347,9 +3452,7 @@ export class SocialDatabase {
       FROM contents c JOIN accounts a ON a.id = c.account_id
       ORDER BY c.updated_at DESC
     `).all() as unknown as ContentRow[]
-    const contents = contentRows
-      .filter((row) => accountIds.has(row.account_id))
-      .map((row) => this.mapContent(row))
+    const contents = this.mapContents(contentRows.filter((row) => accountIds.has(row.account_id)))
       .filter((content) => new Date(content.publishedAt ?? content.firstCapturedAt) >= start)
 
     const followersByAccount = new Map<string, number>()
@@ -2395,7 +3498,7 @@ export class SocialDatabase {
       SELECT c.*, a.alias AS account_alias, a.platform_id
       FROM contents c JOIN accounts a ON a.id = c.account_id
     `).all() as unknown as ContentRow[]
-    const contents = contentRows.map((row) => this.mapContent(row))
+    const contents = this.mapContents(contentRows)
     const reminders: DashboardOverview['reminders'] = []
     for (const account of accounts) {
       const accountName = localAccountName(account)
@@ -2456,8 +3559,13 @@ export class SocialDatabase {
     return row ?? null
   }
 
-  private mapContent(row: ContentRow): ContentSummary {
-    const snapshots = this.listContentSnapshots(row.id, 'DESC', 2)
+  private mapContents(rows: ContentRow[]): ContentSummary[] {
+    const snapshotsByContent = this.latestContentSnapshotsByContentIds(rows.map((row) => row.id))
+    return rows.map((row) => this.mapContent(row, snapshotsByContent.get(row.id) ?? []))
+  }
+
+  private mapContent(row: ContentRow, suppliedSnapshots?: readonly ContentSnapshot[]): ContentSummary {
+    const snapshots = suppliedSnapshots ?? this.listContentSnapshots(row.id, 'DESC', 2)
     return {
       id: row.id,
       accountId: row.account_id,
@@ -2470,39 +3578,76 @@ export class SocialDatabase {
       url: row.url,
       publishedAt: row.published_at,
       firstCapturedAt: row.first_captured_at,
+      lastCapturedAt: row.last_captured_at ?? row.first_captured_at,
       updatedAt: row.updated_at,
       note: row.note,
       tags: safeStringArray(row.tags_json),
+      isBookmarked: Boolean(row.is_bookmarked),
       latestSnapshot: snapshots[0] ?? null,
       previousSnapshot: snapshots[1] ?? null
     }
   }
 
+  private latestContentSnapshotsByContentIds(contentIds: string[]): Map<string, ContentSnapshot[]> {
+    const snapshotsByContent = new Map<string, ContentSnapshot[]>()
+    if (contentIds.length === 0) return snapshotsByContent
+
+    const rows: RankedContentSnapshotRow[] = []
+    for (let offset = 0; offset < contentIds.length; offset += 500) {
+      const ids = contentIds.slice(offset, offset + 500)
+      rows.push(...this.db.prepare(`
+        WITH ranked AS (
+          SELECT id, content_id, views, likes, comments, shares, favorites, captured_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY content_id ORDER BY captured_at DESC, id DESC
+            ) AS snapshot_rank
+          FROM content_snapshots
+          WHERE content_id IN (${sqlPlaceholders(ids.length)})
+        )
+        SELECT id, content_id, views, likes, comments, shares, favorites, captured_at,
+          snapshot_rank
+        FROM ranked
+        WHERE snapshot_rank <= 2
+        ORDER BY content_id ASC, snapshot_rank ASC
+      `).all(...ids) as unknown as RankedContentSnapshotRow[])
+    }
+    const metricsBySnapshot = this.contentMetricsBySnapshotIds(rows.map((row) => row.id))
+    for (const row of rows) {
+      const snapshots = snapshotsByContent.get(row.content_id) ?? []
+      snapshots.push(mapSnapshot(row, metricsBySnapshot.get(row.id) ?? {}))
+      snapshotsByContent.set(row.content_id, snapshots)
+    }
+    return snapshotsByContent
+  }
+
   private listContentSnapshots(contentId: string, order: 'ASC' | 'DESC', limit?: number): ContentSnapshot[] {
     const rows = this.db.prepare(`
       SELECT id, views, likes, comments, shares, favorites, captured_at
-      FROM content_snapshots WHERE content_id = ? ORDER BY captured_at ${order}
+      FROM content_snapshots WHERE content_id = ? ORDER BY captured_at ${order}, id ${order}
       ${limit === undefined ? '' : 'LIMIT ?'}
     `).all(...(limit === undefined ? [contentId] : [contentId, limit])) as unknown as SnapshotRow[]
     if (rows.length === 0) return []
-    const metricRows: ContentSnapshotMetricRow[] = []
-    for (let offset = 0; offset < rows.length; offset += 500) {
-      const snapshotIds = rows.slice(offset, offset + 500).map((row) => row.id)
-      const placeholders = snapshotIds.map(() => '?').join(', ')
-      metricRows.push(...this.db.prepare(`
+    const metricsBySnapshot = this.contentMetricsBySnapshotIds(rows.map((row) => row.id))
+    return rows.map((row) => mapSnapshot(row, metricsBySnapshot.get(row.id) ?? {}))
+  }
+
+  private contentMetricsBySnapshotIds(snapshotIds: string[]): Map<string, Record<string, number | null>> {
+    const metricsBySnapshot = new Map<string, Record<string, number | null>>()
+    for (let offset = 0; offset < snapshotIds.length; offset += 500) {
+      const ids = snapshotIds.slice(offset, offset + 500)
+      const rows = this.db.prepare(`
         SELECT snapshot_id, metric_id, value
         FROM content_snapshot_metrics
-        WHERE snapshot_id IN (${placeholders})
+        WHERE snapshot_id IN (${sqlPlaceholders(ids.length)})
         ORDER BY snapshot_id, metric_id
-      `).all(...snapshotIds) as unknown as ContentSnapshotMetricRow[])
+      `).all(...ids) as unknown as ContentSnapshotMetricRow[]
+      for (const row of rows) {
+        const metrics = metricsBySnapshot.get(row.snapshot_id) ?? {}
+        metrics[row.metric_id] = nullableNumber(row.value)
+        metricsBySnapshot.set(row.snapshot_id, metrics)
+      }
     }
-    const metricsBySnapshot = new Map<string, Record<string, number | null>>()
-    for (const metric of metricRows) {
-      const metrics = metricsBySnapshot.get(metric.snapshot_id) ?? {}
-      metrics[metric.metric_id] = nullableNumber(metric.value)
-      metricsBySnapshot.set(metric.snapshot_id, metrics)
-    }
-    return rows.map((row) => mapSnapshot(row, metricsBySnapshot.get(row.id) ?? {}))
+    return metricsBySnapshot
   }
 
   private assertRemoteIdentityAvailable(accountId: string, platformId: PlatformId, remoteId: string | null): void {
@@ -2570,6 +3715,335 @@ export class SocialDatabase {
       throw error
     }
   }
+}
+
+const STANDARD_ANALYTICS_LABELS: Record<StandardAnalyticsMetricId, string> = {
+  views: '浏览量',
+  likes: '点赞',
+  comments: '评论',
+  shares: '分享',
+  favorites: '收藏',
+  followers: '粉丝',
+  content_count: '内容数'
+}
+
+const STANDARD_ANALYTICS_METRIC_ID_SET = new Set<StandardAnalyticsMetricId>(
+  standardAnalyticsMetricIds
+)
+const STANDARD_LIFECYCLE_METRIC_ID_SET = new Set<StandardContentMetricId>([
+  'views', 'likes', 'comments', 'shares', 'favorites'
+])
+const LIFECYCLE_TARGET_HOURS: Record<(typeof lifecycleMilestoneIds)[number], number> = {
+  '24h': 24,
+  '7d': 7 * 24,
+  '30d': 30 * 24
+}
+
+interface AnalyticsMetricSample {
+  current: number | null
+  previous: number | null
+  measurement: MetricMeasurement
+}
+
+function normalizeAnalyticsScope(scope: AnalyticsScope): AnalyticsScope {
+  validateContentSearchRange(scope.publishedFrom, scope.publishedTo, '发布时间')
+  validateContentSearchRange(scope.capturedFrom, scope.capturedTo, '观察时间')
+  return {
+    accountIds: normalizeContentIdSelection(scope.accountIds ?? [], '账号'),
+    platformId: scope.platformId,
+    groupId: scope.groupId,
+    publishedFrom: scope.publishedFrom,
+    publishedTo: scope.publishedTo,
+    capturedFrom: scope.capturedFrom,
+    capturedTo: scope.capturedTo
+  }
+}
+
+function normalizeAnalyticsMetricIds(
+  values: readonly StandardAnalyticsMetricId[] | undefined
+): StandardAnalyticsMetricId[] {
+  if (values === undefined) return [...standardAnalyticsMetricIds]
+  if (!Array.isArray(values) || values.length > standardAnalyticsMetricIds.length) {
+    throw new Error('标准分析指标无效')
+  }
+  const result: StandardAnalyticsMetricId[] = []
+  const seen = new Set<StandardAnalyticsMetricId>()
+  for (const value of values) {
+    if (!STANDARD_ANALYTICS_METRIC_ID_SET.has(value) || seen.has(value)) {
+      throw new Error('标准分析指标无效')
+    }
+    seen.add(value)
+    result.push(value)
+  }
+  return result
+}
+
+function normalizeLifecycleMetricId(value: StandardContentMetricId | undefined): StandardContentMetricId {
+  const normalized = value ?? 'views'
+  if (!STANDARD_LIFECYCLE_METRIC_ID_SET.has(normalized)) throw new Error('生命周期指标无效')
+  return normalized
+}
+
+function appendPublishedScope(
+  where: string[],
+  parameters: Array<string | number>,
+  scope: AnalyticsScope,
+  contentAlias: string
+): void {
+  if (scope.publishedFrom) {
+    where.push(`${contentAlias}.published_at >= ?`)
+    parameters.push(scope.publishedFrom)
+  }
+  if (scope.publishedTo) {
+    where.push(`${contentAlias}.published_at <= ?`)
+    parameters.push(scope.publishedTo)
+  }
+}
+
+function appendCapturedScope(
+  where: string[],
+  parameters: Array<string | number>,
+  scope: AnalyticsScope,
+  column: string
+): void {
+  if (scope.capturedFrom) {
+    where.push(`${column} >= ?`)
+    parameters.push(scope.capturedFrom)
+  }
+  if (scope.capturedTo) {
+    where.push(`${column} <= ?`)
+    parameters.push(scope.capturedTo)
+  }
+}
+
+function mapAnalyticsContentSeries(rows: readonly AnalyticsObservationRow[]): AnalyticsContentSeries[] {
+  const result: AnalyticsContentSeries[] = []
+  const byId = new Map<string, AnalyticsContentSeries>()
+  for (const row of rows) {
+    let series = byId.get(row.content_id)
+    if (!series) {
+      series = {
+        contentId: row.content_id,
+        accountId: row.account_id,
+        accountAlias: row.account_alias,
+        platformId: row.platform_id,
+        title: row.title,
+        publishedAt: row.published_at,
+        observations: []
+      }
+      byId.set(row.content_id, series)
+      result.push(series)
+    }
+    if (row.observation_id && row.observed_at) series.observations.push(mapAnalyticsObservation(row))
+  }
+  return result
+}
+
+function mapAnalyticsObservation(row: AnalyticsObservationRow): AnalyticsObservedSnapshot {
+  const measurements: Partial<Record<StandardContentMetricId, MetricMeasurement>> = {}
+  const snapshot = row.snapshot_id === null
+    ? null
+    : {
+        views: preferFixedMetric(row.views, row.mapped_views),
+        likes: preferFixedMetric(row.likes, row.mapped_likes),
+        comments: preferFixedMetric(row.comments, row.mapped_comments),
+        shares: preferFixedMetric(row.shares, row.mapped_shares),
+        favorites: preferFixedMetric(row.favorites, row.mapped_favorites),
+        metrics: {},
+        capturedAt: row.snapshot_captured_at ?? row.observed_at!
+      }
+  measurements.views = row.views !== null ? 'cumulative' : row.views_measurement ?? 'cumulative'
+  measurements.likes = row.likes !== null ? 'cumulative' : row.likes_measurement ?? 'cumulative'
+  measurements.comments = row.comments !== null ? 'cumulative' : row.comments_measurement ?? 'cumulative'
+  measurements.shares = row.shares !== null ? 'cumulative' : row.shares_measurement ?? 'cumulative'
+  measurements.favorites = row.favorites !== null ? 'cumulative' : row.favorites_measurement ?? 'cumulative'
+  return {
+    observationId: row.observation_id!,
+    observedAt: row.observed_at!,
+    snapshotId: row.snapshot_id,
+    snapshot,
+    measurements
+  }
+}
+
+function preferFixedMetric(fixed: number | null, mapped: number | null): number | null {
+  return nullableNumber(fixed) ?? nullableNumber(mapped)
+}
+
+function buildAnalyticsMetricSummaries(
+  metricIds: readonly StandardAnalyticsMetricId[],
+  contentSeries: readonly AnalyticsContentSeries[],
+  accountSeries: readonly AnalyticsAccountSnapshotSeries[]
+): AnalyticsMetricSummary[] {
+  return metricIds.map((metricId) => summarizeAnalyticsMetric(
+    metricId,
+    metricId === 'followers' || metricId === 'content_count'
+      ? accountSeries.map((series) => accountMetricSample(series, metricId))
+      : contentSeries.map((series) => contentMetricSample(series, metricId))
+  ))
+}
+
+function contentMetricSample(
+  series: AnalyticsContentSeries,
+  metricId: StandardContentMetricId
+): AnalyticsMetricSample {
+  const current = series.observations[0] ?? null
+  const previous = series.observations[1] ?? null
+  return {
+    current: current === null ? null : contentMetricValue(current, metricId),
+    previous: previous === null ? null : contentMetricValue(previous, metricId),
+    measurement: current === null ? 'cumulative' : contentMetricMeasurement(current, metricId)
+  }
+}
+
+function accountMetricSample(
+  series: AnalyticsAccountSnapshotSeries,
+  metricId: 'followers' | 'content_count'
+): AnalyticsMetricSample {
+  const current = series.snapshots[0] ?? null
+  const previous = series.snapshots[1] ?? null
+  return {
+    current: current === null ? null : accountMetricValue(current, metricId),
+    previous: previous === null ? null : accountMetricValue(previous, metricId),
+    measurement: 'gauge'
+  }
+}
+
+function summarizeAnalyticsMetric(
+  metricId: StandardAnalyticsMetricId,
+  samples: readonly AnalyticsMetricSample[]
+): AnalyticsMetricSummary {
+  let current = 0
+  let delta = 0
+  let comparableCurrent = 0
+  let comparablePrevious = 0
+  let sampleCount = 0
+  let deltaSampleCount = 0
+  let growthSampleCount = 0
+  let revisionCount = 0
+
+  for (const sample of samples) {
+    const value = deriveAnalyticsValue({
+      measurement: sample.measurement,
+      current: sample.current,
+      previous: sample.previous,
+      coverage: { observed: sample.current === null ? 0 : 1, total: 1 }
+    })
+    if (value.value !== null) {
+      current += value.value
+      sampleCount += 1
+    }
+    if (value.status === 'revision') revisionCount += 1
+    if (value.delta !== null) {
+      delta += value.delta
+      deltaSampleCount += 1
+    }
+    if (sample.measurement !== 'period_total' && value.status !== 'revision' &&
+      sample.current !== null && sample.previous !== null) {
+      comparableCurrent += sample.current
+      comparablePrevious += sample.previous
+      growthSampleCount += 1
+    }
+  }
+
+  const missingCount = samples.length - sampleCount
+  const status: AnalyticsMetricSummary['status'] = sampleCount === 0
+    ? 'missing'
+    : revisionCount > 0
+      ? 'revision'
+      : missingCount > 0 || deltaSampleCount < sampleCount
+        ? 'partial'
+        : 'complete'
+  return {
+    metricId,
+    label: STANDARD_ANALYTICS_LABELS[metricId],
+    current: sampleCount > 0 ? current : null,
+    delta: deltaSampleCount > 0 ? delta : null,
+    growthRate: growthSampleCount > 0 && comparablePrevious !== 0
+      ? (comparableCurrent - comparablePrevious) / comparablePrevious
+      : null,
+    sampleCount,
+    missingCount,
+    revisionCount,
+    status
+  }
+}
+
+function contentMetricValue(
+  observation: AnalyticsObservedSnapshot,
+  metricId: StandardContentMetricId
+): number | null {
+  return nullableNumber(observation.snapshot?.[metricId] ?? null)
+}
+
+function contentMetricMeasurement(
+  observation: AnalyticsObservedSnapshot,
+  metricId: StandardContentMetricId
+): MetricMeasurement {
+  return observation.measurements[metricId] ?? 'cumulative'
+}
+
+function accountMetricValue(
+  snapshot: AccountSnapshot,
+  metricId: 'followers' | 'content_count'
+): number | null {
+  return metricId === 'followers' ? snapshot.followers : snapshot.contentCount
+}
+
+function latestObservationAt(series: readonly AnalyticsContentSeries[]): string | null {
+  let latest: string | null = null
+  for (const item of series) {
+    for (const observation of item.observations) {
+      if (latest === null || observation.observedAt > latest) latest = observation.observedAt
+    }
+  }
+  return latest
+}
+
+function deriveContentLifecycleMilestones(
+  series: AnalyticsContentSeries,
+  metricId: StandardContentMetricId,
+  asOf: string
+): ContentLifecycleResult['items'][number]['milestones'] {
+  let previousReliable: AnalyticsObservedSnapshot | null = null
+  return deriveLifecycleMilestones({
+    publishedAt: series.publishedAt,
+    observations: series.observations,
+    asOf
+  }).map((milestone) => {
+    const targetHours = LIFECYCLE_TARGET_HOURS[milestone.milestone]
+    if (milestone.status !== 'complete' || milestone.observation === null) {
+      return {
+        id: milestone.milestone,
+        targetHours,
+        status: milestone.status,
+        value: null,
+        delta: null,
+        growthRate: null,
+        observedAt: null
+      }
+    }
+    const current = contentMetricValue(milestone.observation, metricId)
+    const previous = previousReliable === null
+      ? null
+      : contentMetricValue(previousReliable, metricId)
+    const value = deriveAnalyticsValue({
+      measurement: contentMetricMeasurement(milestone.observation, metricId),
+      current,
+      previous,
+      coverage: { observed: current === null ? 0 : 1, total: 1 }
+    })
+    if (current !== null) previousReliable = milestone.observation
+    return {
+      id: milestone.milestone,
+      targetHours,
+      status: value.status,
+      value: value.value,
+      delta: value.delta,
+      growthRate: value.growthRate,
+      observedAt: milestone.observedAt
+    }
+  })
 }
 
 function sameSnapshotMetrics(
@@ -2674,7 +4148,9 @@ function mapContentMetricDefinition(row: ContentMetricDefinitionRow): ContentMet
     valueKind: row.value_kind,
     unit: row.unit,
     group: row.metric_group,
-    sortOrder: Number(row.sort_order)
+    sortOrder: Number(row.sort_order),
+    measurementKind: row.measurement_kind,
+    standardMetricId: row.standard_metric_id
   }
 }
 
@@ -2966,9 +4442,55 @@ function validateStandardDataset(payload: StandardDataset): void {
     if (!content.remoteId.trim()) throw new Error('数据集内容缺少 remoteId')
     for (const snapshot of content.snapshots) {
       if (!isIsoDate(snapshot.capturedAt)) throw new Error('内容快照时间无效')
+      if (Date.parse(snapshot.capturedAt) > Date.parse(payload.capturedAt)) {
+        throw new Error('内容快照时间不能晚于本次采集时间')
+      }
       validateContentSnapshotMetricShape(snapshot.metrics ?? {})
     }
   }
+}
+
+const CONTENT_SEARCH_SORTS = new Set<NonNullable<ContentSearchQuery['sort']>>([
+  'relevance', 'published', 'captured', 'views', 'interactions'
+])
+
+function normalizeContentIdSelection(values: readonly string[], label: string): string[] {
+  if (!Array.isArray(values) || values.length > 500) throw new Error(`${label}选择无效`)
+  const normalized: string[] = []
+  const seen = new Set<string>()
+  for (const value of values) {
+    if (typeof value !== 'string' || value.length < 1 || value.length > 80 || value.trim() !== value ||
+      /[\u0000-\u001f\u007f]/u.test(value)) {
+      throw new Error(`${label}选择无效`)
+    }
+    if (!seen.has(value)) {
+      seen.add(value)
+      normalized.push(value)
+    }
+  }
+  return normalized
+}
+
+function validateContentSearchRange(from: string | undefined, to: string | undefined, label: string): void {
+  if (from !== undefined && !isIsoDate(from)) throw new Error(`${label}开始时间无效`)
+  if (to !== undefined && !isIsoDate(to)) throw new Error(`${label}结束时间无效`)
+  if (from && to && from > to) throw new Error(`${label}范围无效`)
+}
+
+function sqlPlaceholders(count: number): string {
+  if (!Number.isSafeInteger(count) || count < 1 || count > 500) throw new Error('查询参数数量无效')
+  return Array.from({ length: count }, () => '?').join(', ')
+}
+
+function applyContentTagChange(
+  currentTags: string[],
+  change: BulkUpdateContentsInput['tagChange'] | undefined,
+  changedTags: string[]
+): string[] {
+  if (!change) return currentTags
+  if (change.action === 'add') return normalizeTags([...currentTags, ...changedTags])
+  const removed = new Set(changedTags)
+  return currentTags.filter((tag) => !removed.has(tag))
 }
 
 const CONTENT_METRIC_ID_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/
@@ -2981,11 +4503,18 @@ const CONTENT_METRIC_UNITS = new Set<ContentMetricDefinition['unit']>([
 const CONTENT_METRIC_GROUPS = new Set<ContentMetricDefinition['group']>([
   'reach', 'engagement', 'conversion', 'other'
 ])
+const CONTENT_METRIC_MEASUREMENTS = new Set<NonNullable<ContentMetricDefinition['measurementKind']>>([
+  'cumulative', 'period_total', 'gauge'
+])
+const STANDARD_CONTENT_METRIC_IDS = new Set<NonNullable<ContentMetricDefinition['standardMetricId']>>([
+  'views', 'likes', 'comments', 'shares', 'favorites'
+])
 const ACCOUNT_METRIC_PERIODS = new Set<AccountMetricPeriod>(accountMetricPeriods)
 
 function validateContentMetricDefinitions(definitions: ContentMetricDefinition[]): void {
   if (!Array.isArray(definitions) || definitions.length > 100) throw new Error('内容指标定义数量无效')
   const ids = new Set<string>()
+  const standardIds = new Set<string>()
   for (const definition of definitions) {
     if (!definition || typeof definition !== 'object') throw new Error('内容指标定义无效')
     if (!CONTENT_METRIC_ID_PATTERN.test(definition.id) || ids.has(definition.id)) {
@@ -3002,6 +4531,18 @@ function validateContentMetricDefinitions(definitions: ContentMetricDefinition[]
       !CONTENT_METRIC_GROUPS.has(definition.group)) {
       throw new Error('内容指标定义类型无效')
     }
+    if (definition.measurementKind !== undefined &&
+      !CONTENT_METRIC_MEASUREMENTS.has(definition.measurementKind)) {
+      throw new Error('内容指标定义计量语义无效')
+    }
+    if (definition.standardMetricId !== undefined && definition.standardMetricId !== null &&
+      !STANDARD_CONTENT_METRIC_IDS.has(definition.standardMetricId)) {
+      throw new Error('内容指标定义标准映射无效')
+    }
+    if (definition.standardMetricId && standardIds.has(definition.standardMetricId)) {
+      throw new Error('同一平台的标准内容指标映射不能重复')
+    }
+    if (definition.standardMetricId) standardIds.add(definition.standardMetricId)
     const expectedUnit: Record<ContentMetricDefinition['valueKind'], ContentMetricDefinition['unit']> = {
       count: 'count',
       ratio: 'ratio',
@@ -3282,6 +4823,23 @@ function sanitizePortablePluginState(database: DatabaseSync): void {
     try { database.exec('ROLLBACK') } catch {}
     throw error
   }
+}
+
+function stripPortableDerivedState(database: DatabaseSync): void {
+  if (!databaseObjectExists(database, 'content_fts')) return
+  database.exec(`INSERT INTO content_fts(content_fts) VALUES ('delete-all')`)
+  database.exec('VACUUM')
+}
+
+function rebuildContentSearchIndex(database: DatabaseSync): void {
+  if (!databaseObjectExists(database, 'content_fts')) return
+  database.exec(`INSERT INTO content_fts(content_fts) VALUES ('rebuild')`)
+}
+
+function databaseObjectExists(database: DatabaseSync, name: string): boolean {
+  return Boolean(database.prepare(`
+    SELECT 1 FROM sqlite_master WHERE name = ? LIMIT 1
+  `).get(name))
 }
 
 function removeSqliteSidecars(path: string): void {

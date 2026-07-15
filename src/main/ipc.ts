@@ -18,7 +18,9 @@ import type { UpdateService } from './update-service'
 import { isTrustedShellUrl } from './shell-security'
 import {
   parseAccountMetricQuery,
+  parseAnalyticsComparisonQuery,
   parseAnalyticsQuery,
+  parseAnalyticsSummaryQuery,
   parseBoolean,
   parseBulkUpdateAccounts,
   parseConfirmApiIdentity,
@@ -26,9 +28,14 @@ import {
   parseCreatePluginSchedule,
   parseCreateEncryptedBackup,
   parseContentQuery,
+  parseContentLifecycleQuery,
+  parseContentSearchQuery,
+  parseContentTagFacetQuery,
+  parseBulkUpdateContents,
   parseCreateAccount,
   parseCreateGroup,
   parseExportData,
+  parseExportFilteredContents,
   parseId,
   parseMoveGroup,
   parsePluginConfig,
@@ -260,6 +267,22 @@ export function registerIpc(
   }))
 
   ipcMain.handle('content:list', trusted((_event, value) => database.listContents(parseContentQuery(value))))
+  ipcMain.handle('content:search', trusted((_event, value) => (
+    database.searchContents(parseContentSearchQuery(value))
+  )))
+  ipcMain.handle('content:bulk-update', trusted((_event, value) => {
+    const result = database.bulkUpdateContents(parseBulkUpdateContents(value))
+    notifyContentChanged()
+    return result
+  }))
+  ipcMain.handle('content:list-tags', trusted((_event, value) => (
+    database.listContentTags(parseContentTagFacetQuery(value))
+  )))
+  ipcMain.handle('content:export-filtered', trusted(async (_event, value) => {
+    const result = await services.exporter.exportFiltered(parseExportFilteredContents(value))
+    if (!result.cancelled) services.settings.markExportCompleted()
+    return result
+  }))
   ipcMain.handle('content:detail', trusted((_event, value) => database.getContentDetail(parseId(value))))
   ipcMain.handle('content:open-original', trusted(async (_event, value) => {
     const content = database.getContentDetail(parseId(value))
@@ -269,7 +292,9 @@ export function registerIpc(
     return browser.openAt(content.accountId, content.url)
   }))
   ipcMain.handle('content:update', trusted((_event, value) => {
-    return database.updateContent(parseUpdateContent(value))
+    const result = database.updateContent(parseUpdateContent(value))
+    notifyContentChanged()
+    return result
   }))
   ipcMain.handle('content:clear-account', trusted((_event, value) => {
     const result = database.clearAccountData(parseId(value))
@@ -277,6 +302,15 @@ export function registerIpc(
     return result
   }))
   ipcMain.handle('analytics:overview', trusted((_event, value) => database.getAnalytics(parseAnalyticsQuery(value))))
+  ipcMain.handle('analytics:summary', trusted((_event, value) => (
+    database.getAnalyticsSummary(parseAnalyticsSummaryQuery(value))
+  )))
+  ipcMain.handle('analytics:compare', trusted((_event, value) => (
+    database.getAnalyticsComparison(parseAnalyticsComparisonQuery(value))
+  )))
+  ipcMain.handle('analytics:content-lifecycle', trusted((_event, value) => (
+    database.getContentLifecycle(parseContentLifecycleQuery(value))
+  )))
   ipcMain.handle('analytics:account-metrics', trusted((_event, value) => (
     database.getAccountMetricHistory(parseAccountMetricQuery(value))
   )))
@@ -540,11 +574,18 @@ export function unregisterIpc(): void {
     'groups:remove',
     'browser:open',
     'content:list',
+    'content:search',
+    'content:bulk-update',
+    'content:list-tags',
+    'content:export-filtered',
     'content:detail',
     'content:open-original',
     'content:update',
     'content:clear-account',
     'analytics:overview',
+    'analytics:summary',
+    'analytics:compare',
+    'analytics:content-lifecycle',
     'analytics:account-metrics',
     'analytics:dashboard',
     'tasks:summary',

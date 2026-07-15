@@ -144,7 +144,7 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
     const payload = dataset('stable-owner')
     payload.contentMetricDefinitions = [{
       id: 'cover_click_rate', label: '封面点击率', valueKind: 'ratio', unit: 'ratio',
-      group: 'reach', sortOrder: 1
+      group: 'reach', sortOrder: 1, measurementKind: 'gauge', standardMetricId: null
     }]
     const firstContent = (payload.contents as Array<Record<string, unknown>>)[0]!
     const firstSnapshot = (firstContent.snapshots as Array<Record<string, unknown>>)[0]!
@@ -156,7 +156,9 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
 
     expect(repository.commitManagedSync).toHaveBeenCalledWith(
       expect.objectContaining({
-        contentMetricDefinitions: [expect.objectContaining({ id: 'cover_click_rate' })],
+        contentMetricDefinitions: [expect.objectContaining({
+          id: 'cover_click_rate', measurementKind: 'gauge', standardMetricId: null
+        })],
         contents: [expect.objectContaining({
           snapshots: [expect.objectContaining({ metrics: { cover_click_rate: 0.174 } })]
         })]
@@ -209,6 +211,34 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
       }),
       expect.any(Object)
     )
+  })
+
+  it('rejects undeclared measurement semantics and standard mappings before commit', async () => {
+    const repository = repositoryFixture()
+    const invalidMeasurement = dataset('stable-owner')
+    invalidMeasurement.contentMetricDefinitions = [{
+      id: 'views', label: '浏览', valueKind: 'count', unit: 'count', group: 'reach',
+      sortOrder: 1, measurementKind: 'counter', standardMetricId: 'views'
+    }]
+    const first = createAdapter(
+      repository,
+      runtimeSequence([identity('stable-owner'), invalidMeasurement]),
+      jobsFixture()
+    )
+    await expect(first.sync('account-1')).rejects.toThrow('测量语义无效')
+
+    const invalidMapping = dataset('stable-owner')
+    invalidMapping.contentMetricDefinitions = [{
+      id: 'views', label: '浏览', valueKind: 'count', unit: 'count', group: 'reach',
+      sortOrder: 1, measurementKind: 'cumulative', standardMetricId: 'impressions'
+    }]
+    const second = createAdapter(
+      repository,
+      runtimeSequence([identity('stable-owner'), invalidMapping]),
+      jobsFixture()
+    )
+    await expect(second.sync('account-1')).rejects.toThrow('标准内容指标无效')
+    expect(repository.commitManagedSync).not.toHaveBeenCalled()
   })
 })
 

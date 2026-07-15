@@ -186,6 +186,10 @@ export interface SocialVaultApi {
   content: {
     onChanged(callback: () => void): () => void
     list(query?: import('./content-contracts').ContentQuery): Promise<import('./content-contracts').ContentSummary[]>
+    search(query?: import('./content-contracts').ContentSearchQuery): Promise<import('./content-contracts').ContentSearchPage>
+    bulkUpdate(input: import('./content-contracts').BulkUpdateContentsInput): Promise<import('./content-contracts').BulkUpdateContentsResult>
+    listTags(query?: import('./content-contracts').ContentTagFacetQuery): Promise<import('./content-contracts').ContentTagFacet[]>
+    exportFiltered(input: import('./content-contracts').ExportFilteredContentsInput): Promise<import('./settings-contracts').ExportDataResult>
     detail(id: string): Promise<import('./content-contracts').ContentDetail>
     openOriginal(id: string): Promise<BrowserState>
     update(input: import('./content-contracts').UpdateContentInput): Promise<import('./content-contracts').ContentDetail>
@@ -193,6 +197,9 @@ export interface SocialVaultApi {
   }
   analytics: {
     overview(query?: import('./content-contracts').AnalyticsQuery): Promise<import('./content-contracts').AnalyticsOverview>
+    summary(query?: import('./content-contracts').AnalyticsSummaryQuery): Promise<import('./content-contracts').AnalyticsSummary>
+    compare(query: import('./content-contracts').AnalyticsComparisonQuery): Promise<import('./content-contracts').AnalyticsComparison>
+    contentLifecycle(query?: import('./content-contracts').ContentLifecycleQuery): Promise<import('./content-contracts').ContentLifecycleResult>
     accountMetrics(query: import('./content-contracts').AccountMetricQuery): Promise<import('./content-contracts').AccountMetricHistory>
     dashboard(): Promise<import('./content-contracts').DashboardOverview>
   }

@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   Account,
   AccountMetricHistory,
-  AccountMetricSnapshot
+  AccountMetricSnapshot,
+  ContentSummary
 } from '../shared/contracts'
 
 const { showSaveDialog, writeFile } = vi.hoisted(() => ({
@@ -57,6 +58,9 @@ describe('ExportService JSON export', () => {
         }
       },
       listContents: () => [],
+      searchContents: () => ({
+        items: [], total: 0, offset: 0, limit: 100, hasMore: false, searchMode: 'none' as const
+      }),
       getContentDetail: () => { throw new Error('unexpected content detail read') }
     }
 
@@ -69,5 +73,42 @@ describe('ExportService JSON export', () => {
     expect(parsed.schemaVersion).toBe(3)
     expect(parsed.accounts).toEqual([expect.not.objectContaining({ sessionPartition: expect.anything() })])
     expect((parsed.accountMetricHistories as AccountMetricHistory[])[0]?.snapshots).toHaveLength(5_001)
+  })
+
+  it('exports every page in the current content filter', async () => {
+    const template: ContentSummary = {
+      id: 'content-0', accountId: 'account-1', accountAlias: '测试账号', platformId: 'zhihu',
+      remoteId: 'remote-0', type: 'article', title: '筛选结果', bodyExcerpt: '', url: '',
+      publishedAt: null, firstCapturedAt: '2026-07-15T00:00:00.000Z',
+      lastCapturedAt: '2026-07-15T01:00:00.000Z', updatedAt: '2026-07-15T01:00:00.000Z',
+      note: '', tags: ['研究'], isBookmarked: true, latestSnapshot: null, previousSnapshot: null
+    }
+    const contents = Array.from({ length: 5_001 }, (_, index) => ({
+      ...template,
+      id: `content-${index}`,
+      remoteId: `remote-${index}`
+    }))
+    const offsets: number[] = []
+    const database = {
+      listAccounts: () => [],
+      listGroups: () => [],
+      listAccountSnapshots: () => [],
+      getAccountMetricHistory: () => { throw new Error('unexpected account metric read') },
+      listContents: () => [],
+      searchContents: ({ offset = 0, limit = 100 }: { offset?: number; limit?: number }) => {
+        offsets.push(offset)
+        const items = contents.slice(offset, offset + limit)
+        return { items, total: contents.length, offset, limit, hasMore: offset + items.length < contents.length, searchMode: 'none' as const }
+      },
+      getContentDetail: () => { throw new Error('unexpected content detail read') }
+    }
+
+    await expect(new ExportService({} as never, database).exportFiltered({
+      query: { keyword: '筛选' },
+      format: 'csv'
+    })).resolves.toMatchObject({ cancelled: false, exportedContentCount: 5_001 })
+
+    expect(offsets).toEqual([0, 5_000])
+    expect(writeFile.mock.calls[0]?.[1]).toContain('is_bookmarked')
   })
 })

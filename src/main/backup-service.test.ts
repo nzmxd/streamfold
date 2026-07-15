@@ -116,7 +116,7 @@ describe('BackupService', () => {
     directory = mkdtempSync(join(tmpdir(), 'social-vault-backup-service-'))
     const path = join(directory, 'oversized.svbackup')
     writeFileSync(path, '')
-    truncateSync(path, 96 * 1024 * 1024 + 1)
+    truncateSync(path, 512 * 1024 * 1024 + 1)
     let restored = false
     const service = new BackupService({
       dialog: {

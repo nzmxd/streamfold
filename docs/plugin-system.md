@@ -165,7 +165,7 @@ module.exports = {
 }
 ```
 
-内容类型只允许 `article`、`post`、`image`、`video`、`answer`。五项通用指标继续使用快照固定字段；平台扩展指标必须先在 `contentMetricDefinitions` 中声明，再写入快照 `metrics`。定义包含稳定 ID、标签、值类型、单位、分组和排序，宿主会验证计数、0 到 1 的比例与秒制时长。缺失指标使用 `null`；原帖 URL 必须匹配 Manifest 的 `contentUrls`。宿主统一执行本人确认、同步前后身份复验、账号互斥、同适配器串行、限频、任务状态和 SQLite 原子提交。切换适配器时，新适配器必须返回相同稳定账号 ID，历史数据不会迁移或重写。
+内容类型只允许 `article`、`post`、`image`、`video`、`answer`。五项通用指标继续使用快照固定字段；平台扩展指标必须先在 `contentMetricDefinitions` 中声明，再写入快照 `metrics`。定义包含稳定 ID、标签、值类型、单位、分组、排序，以及可选的 `measurementKind` 和 `standardMetricId`。测量语义只允许累计值 `cumulative`、平台已聚合的周期值 `period_total` 和瞬时值 `gauge`；旧插件未声明时按 `gauge` 展示，不自动累计增量。只有口径一致的指标才映射为标准指标参与跨平台比较。宿主按贡献点和已安装包哈希固化每次观察使用的指标语义，后续更新或切换适配器不会追溯改写历史口径。宿主会验证计数、0 到 1 的比例与秒制时长。缺失指标使用 `null`；原帖 URL 必须匹配 Manifest 的 `contentUrls`。宿主统一执行本人确认、同步前后身份复验、账号互斥、同适配器串行、限频、任务状态和 SQLite 原子提交。切换适配器时，新适配器必须返回相同稳定账号 ID，历史数据不会迁移或重写。
 
 ## 4. 宿主 API 与权限
 

@@ -4,7 +4,8 @@ import { TestSessionApiPluginGate } from './plugins/session-api-plugin-gate.test
 import { JobService } from './services/job-service'
 import {
   ZhihuApiService,
-  ZHIHU_API_PLUGIN_ID
+  ZHIHU_API_PLUGIN_ID,
+  ZHIHU_CONTENT_METRIC_DEFINITIONS
 } from './zhihu-api-service'
 import {
   ZHIHU_API_ENDPOINTS,
@@ -33,6 +34,35 @@ describe('ZhihuApiService', () => {
   })
 
   afterEach(() => database.close())
+
+  it('declares conservative content metric measurement and standard mappings', () => {
+    expect(ZHIHU_CONTENT_METRIC_DEFINITIONS.every((definition) => (
+      definition.measurementKind !== undefined &&
+      Object.prototype.hasOwnProperty.call(definition, 'standardMetricId')
+    ))).toBe(true)
+    expect(ZHIHU_CONTENT_METRIC_DEFINITIONS
+      .filter(({ measurementKind }) => measurementKind === 'cumulative')
+      .map(({ id }) => id)).toEqual([
+        'likes', 'impressions', 'plays', 'content_likes', 'reactions',
+        'reposts', 'likes_and_reactions'
+      ])
+    expect(ZHIHU_CONTENT_METRIC_DEFINITIONS
+      .filter(({ measurementKind }) => measurementKind === 'period_total')
+      .map(({ id }) => id)).toEqual([
+        'new_upvotes', 'new_likes', 'upvote_increases', 'upvote_decreases',
+        'like_increases', 'like_decreases'
+      ])
+    expect(ZHIHU_CONTENT_METRIC_DEFINITIONS
+      .filter(({ measurementKind }) => measurementKind === 'gauge')
+      .map(({ id }) => id)).toEqual([
+        'click_rate', 'read_completion_rate', 'play_completion_rate',
+        'positive_interaction_rate'
+      ])
+    expect(ZHIHU_CONTENT_METRIC_DEFINITIONS
+      .filter(({ standardMetricId }) => standardMetricId !== null)
+      .map(({ id, standardMetricId }) => [id, standardMetricId]))
+      .toEqual([['likes', 'likes']])
+  })
 
   it('requires a preview and a second matching API read before first binding', async () => {
     enablePlugin()
@@ -267,8 +297,18 @@ describe('ZhihuApiService', () => {
       })
     ]))
     expect(database.getContentDetail(contents[0]!.id).metricDefinitions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'likes', label: '赞同' }),
-      expect.objectContaining({ id: 'content_likes', label: '喜欢' })
+      expect.objectContaining({
+        id: 'likes', label: '赞同', measurementKind: 'cumulative', standardMetricId: 'likes'
+      }),
+      expect.objectContaining({
+        id: 'content_likes', label: '喜欢', measurementKind: 'cumulative', standardMetricId: null
+      }),
+      expect.objectContaining({
+        id: 'new_upvotes', measurementKind: 'period_total', standardMetricId: null
+      }),
+      expect.objectContaining({
+        id: 'click_rate', measurementKind: 'gauge', standardMetricId: null
+      })
     ]))
     expect(transport.getJson.mock.calls.map(([endpoint]) => endpoint)).toEqual([
       ZHIHU_API_ENDPOINTS.identity,

@@ -16,8 +16,8 @@ import { decryptJsonBackup, encryptJsonBackup, type JsonValue } from './backup'
 
 const DATABASE_BACKUP_FORMAT = 'social-vault-sqlite-image'
 const DATABASE_BACKUP_VERSION = 1
-const MAX_DATABASE_BYTES = 48 * 1024 * 1024
-const MAX_ENCRYPTED_BACKUP_BYTES = 96 * 1024 * 1024
+const MAX_DATABASE_BYTES = 256 * 1024 * 1024
+const MAX_ENCRYPTED_BACKUP_BYTES = 512 * 1024 * 1024
 
 interface BackupDialog {
   showSaveDialog(options: SaveDialogOptions): Promise<SaveDialogReturnValue>
@@ -60,7 +60,7 @@ export class BackupService {
     let encrypted: Buffer | undefined
     try {
       if (image.length === 0 || image.length > MAX_DATABASE_BYTES) {
-        throw new Error('本地数据库超过 48 MB 备份上限')
+        throw new Error('本地数据库超过 256 MB 备份上限')
       }
       const payload: JsonValue = {
         format: DATABASE_BACKUP_FORMAT,

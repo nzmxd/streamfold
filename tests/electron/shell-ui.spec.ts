@@ -42,7 +42,9 @@ test.afterAll(async () => {
   if (reviewUserData) await rm(reviewUserData, { recursive: true, force: true })
 })
 
-async function openSection(section: 'accounts' | 'tasks' | 'settings' | 'plugins'): Promise<void> {
+async function openSection(
+  section: 'accounts' | 'content' | 'analytics' | 'tasks' | 'settings' | 'plugins'
+): Promise<void> {
   const navigation = page.locator(`[data-section="${section}"]`)
   await navigation.click()
   await expect(navigation).toHaveAttribute('aria-current', 'page')
@@ -100,6 +102,49 @@ test('任务中心在最小窗口下完整展示摘要与筛选', async () => {
   await expect(taskPage.getByText('没有符合条件的任务')).toBeVisible()
 
   const layout = await taskPage.evaluate((element) => ({
+    horizontalOverflow: element.scrollWidth - element.clientWidth,
+    pageScrollable: element.scrollHeight >= element.clientHeight
+  }))
+  expect(layout.horizontalOverflow).toBeLessThanOrEqual(1)
+  expect(layout.pageScrollable).toBe(true)
+})
+
+test('内容中心在最小窗口下提供分页筛选且没有横向溢出', async () => {
+  await openSection('content')
+  const contentPage = page.locator('.content-page')
+  await expect(contentPage).toBeVisible()
+  await expect(contentPage.locator('.feature-loading')).toHaveCount(0)
+  await expect(contentPage.getByPlaceholder('搜索标题、摘要、标签或备注')).toBeVisible()
+  await expect(contentPage.getByText('没有匹配的内容')).toBeVisible()
+  await contentPage.getByRole('button', { name: '更多筛选' }).click()
+  await expect(contentPage.locator('.content-filter-advanced')).toBeVisible()
+  await expect(contentPage.getByText('第 1 / 1 页')).toBeVisible()
+
+  const layout = await contentPage.evaluate((element) => ({
+    horizontalOverflow: element.scrollWidth - element.clientWidth,
+    pageScrollable: element.scrollHeight >= element.clientHeight,
+    workspaceWidth: element.querySelector<HTMLElement>('.content-workspace')?.getBoundingClientRect().width ?? 0
+  }))
+  expect(layout.horizontalOverflow).toBeLessThanOrEqual(1)
+  expect(layout.pageScrollable).toBe(true)
+  expect(layout.workspaceWidth).toBeGreaterThan(500)
+})
+
+test('可靠分析四个视图在最小窗口下可切换且明确显示缺失数据', async () => {
+  await openSection('analytics')
+  const analysisPage = page.locator('.analysis-page')
+  await expect(analysisPage).toBeVisible()
+  await expect(analysisPage.locator('.analysis-state.loading')).toHaveCount(0)
+  const tabs = analysisPage.locator('.analysis-tabs')
+  for (const label of ['概览', '对比', '生命周期', '数据质量']) {
+    await expect(tabs.getByRole('button', { name: label, exact: true })).toBeVisible()
+  }
+  await expect(analysisPage.locator('.summary-grid .metric-card')).toHaveCount(7)
+  await expect(analysisPage.getByText('无可靠当前值').first()).toBeVisible()
+  await tabs.getByRole('button', { name: '数据质量', exact: true }).click()
+  await expect(analysisPage.getByRole('heading', { name: '账号覆盖' })).toBeVisible()
+
+  const layout = await analysisPage.evaluate((element) => ({
     horizontalOverflow: element.scrollWidth - element.clientWidth,
     pageScrollable: element.scrollHeight >= element.clientHeight
   }))

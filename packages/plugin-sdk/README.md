@@ -51,7 +51,7 @@ module.exports = {
 
 QuickJS 环境不提供 `process`、`require`、`Buffer`、`fetch` 或 DOM。网络、平台 Session JSON 和本地数据访问只能通过声明权限后的宿主 API 完成。
 
-平台适配器可使用 `definePlatformAdapter()` 获得标准数据集类型检查。五项通用内容指标写入快照固定字段；其他平台指标先在 `contentMetricDefinitions` 中声明，再写入快照 `metrics`。比率统一为 `0..1`，时长单位为秒，缺失值使用 `null`。
+平台适配器可使用 `definePlatformAdapter()` 获得标准数据集类型检查。五项通用内容指标写入快照固定字段；其他平台指标先在 `contentMetricDefinitions` 中声明，再写入快照 `metrics`。比率统一为 `0..1`，时长单位为秒，缺失值使用 `null`。`measurementKind` 可声明 `cumulative`、`period_total` 或 `gauge`；未声明的旧插件按 `gauge` 处理。只有语义完全一致的指标才应通过 `standardMetricId` 映射到通用指标，否则仅在同平台内展示。
 
 ## 测试宿主
 

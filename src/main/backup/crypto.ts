@@ -29,8 +29,11 @@ const SCRYPT_MAXMEM = 96 * 1024 * 1024
 
 const MIN_PASSWORD_BYTES = 8
 const MAX_PASSWORD_BYTES = 1_024
-const MAX_PLAINTEXT_BYTES = 64 * 1024 * 1024
-const MAX_ENVELOPE_BYTES = 96 * 1024 * 1024
+// A 256 MiB SQLite image expands to roughly 342 MiB when embedded as base64.
+// The encrypted envelope adds one more base64 layer, so the paired limits must
+// be sized together rather than treating the database image as the JSON size.
+const MAX_PLAINTEXT_BYTES = 384 * 1024 * 1024
+const MAX_ENVELOPE_BYTES = 512 * 1024 * 1024
 
 const ENVELOPE_KEYS = ['format', 'version', 'kdf', 'cipher', 'checksum', 'ciphertext']
 const KDF_KEYS = ['name', 'salt', 'N', 'r', 'p', 'keyLength']

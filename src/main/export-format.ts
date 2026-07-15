@@ -24,7 +24,8 @@ export function serializeContentCsv(contents: ContentSummary[]): string {
   )))].sort()
   const header = [
     'platform_id', 'account_alias', 'remote_id', 'type', 'title', 'body_excerpt', 'url',
-    'published_at', 'captured_at', 'views', 'likes', 'comments', 'shares', 'favorites',
+    'published_at', 'last_captured_at', 'snapshot_captured_at', 'is_bookmarked',
+    'views', 'likes', 'comments', 'shares', 'favorites',
     ...dynamicMetricIds.map((id) => `metric:${id}`),
     'note', 'tags'
   ]
@@ -39,7 +40,9 @@ export function serializeContentCsv(contents: ContentSummary[]): string {
       content.bodyExcerpt,
       content.url,
       content.publishedAt ?? '',
+      content.lastCapturedAt,
       metrics?.capturedAt ?? '',
+      content.isBookmarked ? 1 : 0,
       metrics?.views ?? '',
       metrics?.likes ?? '',
       metrics?.comments ?? '',

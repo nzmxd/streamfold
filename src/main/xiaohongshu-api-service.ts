@@ -28,16 +28,46 @@ import {
 
 export const XIAOHONGSHU_API_PLUGIN_ID = 'xiaohongshu-session-api'
 export const XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS: ContentMetricDefinition[] = [
-  { id: 'impressions', label: '曝光', valueKind: 'count', unit: 'count', group: 'reach', sortOrder: 1 },
-  { id: 'views', label: '观看', valueKind: 'count', unit: 'count', group: 'reach', sortOrder: 2 },
-  { id: 'cover_click_rate', label: '封面点击率', valueKind: 'ratio', unit: 'ratio', group: 'conversion', sortOrder: 3 },
-  { id: 'likes', label: '点赞', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 4 },
-  { id: 'comments', label: '评论', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 5 },
-  { id: 'favorites', label: '收藏', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 6 },
-  { id: 'followers_gained', label: '涨粉', valueKind: 'count', unit: 'count', group: 'conversion', sortOrder: 7 },
-  { id: 'shares', label: '分享', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 8 },
-  { id: 'average_view_duration', label: '人均观看时长', valueKind: 'duration', unit: 'seconds', group: 'engagement', sortOrder: 9 },
-  { id: 'danmaku', label: '弹幕', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 10 }
+  {
+    id: 'impressions', label: '曝光', valueKind: 'count', unit: 'count', group: 'reach', sortOrder: 1,
+    measurementKind: 'cumulative', standardMetricId: null
+  },
+  {
+    id: 'views', label: '观看', valueKind: 'count', unit: 'count', group: 'reach', sortOrder: 2,
+    measurementKind: 'cumulative', standardMetricId: 'views'
+  },
+  {
+    id: 'cover_click_rate', label: '封面点击率', valueKind: 'ratio', unit: 'ratio', group: 'conversion', sortOrder: 3,
+    measurementKind: 'gauge', standardMetricId: null
+  },
+  {
+    id: 'likes', label: '点赞', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 4,
+    measurementKind: 'cumulative', standardMetricId: 'likes'
+  },
+  {
+    id: 'comments', label: '评论', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 5,
+    measurementKind: 'cumulative', standardMetricId: 'comments'
+  },
+  {
+    id: 'favorites', label: '收藏', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 6,
+    measurementKind: 'cumulative', standardMetricId: 'favorites'
+  },
+  {
+    id: 'followers_gained', label: '涨粉', valueKind: 'count', unit: 'count', group: 'conversion', sortOrder: 7,
+    measurementKind: 'cumulative', standardMetricId: null
+  },
+  {
+    id: 'shares', label: '分享', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 8,
+    measurementKind: 'cumulative', standardMetricId: 'shares'
+  },
+  {
+    id: 'average_view_duration', label: '人均观看时长', valueKind: 'duration', unit: 'seconds', group: 'engagement', sortOrder: 9,
+    measurementKind: 'gauge', standardMetricId: null
+  },
+  {
+    id: 'danmaku', label: '弹幕', valueKind: 'count', unit: 'count', group: 'engagement', sortOrder: 10,
+    measurementKind: 'cumulative', standardMetricId: null
+  }
 ]
 const PREVIEW_TTL_MS = 5 * 60_000
 const MAX_PREVIEWS = 50

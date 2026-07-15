@@ -72,6 +72,10 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
     content: {
       onChanged: (callback) => subscribe('content:changed', () => callback()),
       list: (query) => invoke('content:list', query),
+      search: (query) => invoke('content:search', query),
+      bulkUpdate: (input) => invoke('content:bulk-update', input),
+      listTags: (query) => invoke('content:list-tags', query),
+      exportFiltered: (input) => invoke('content:export-filtered', input),
       detail: (id) => invoke('content:detail', id),
       openOriginal: (id) => invoke('content:open-original', id),
       update: (input) => invoke('content:update', input),
@@ -79,6 +83,9 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
     },
     analytics: {
       overview: (query) => invoke('analytics:overview', query),
+      summary: (query) => invoke('analytics:summary', query),
+      compare: (query) => invoke('analytics:compare', query),
+      contentLifecycle: (query) => invoke('analytics:content-lifecycle', query),
       accountMetrics: (query) => invoke('analytics:account-metrics', query),
       dashboard: () => invoke('analytics:dashboard')
     },

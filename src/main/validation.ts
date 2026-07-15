@@ -1,15 +1,25 @@
 import {
   accountMetricPeriods,
+  contentSearchSorts,
   contentTypes,
+  standardAnalyticsMetricIds,
+  standardContentMetricIds,
   type AccountMetricQuery,
   type AnalyticsQuery,
+  type AnalyticsComparisonQuery,
+  type AnalyticsSummaryQuery,
+  type BulkUpdateContentsInput,
   type BulkUpdateAccountsInput,
   type ConfirmSessionApiIdentityInput,
   type ContentQuery,
+  type ContentLifecycleQuery,
+  type ContentSearchQuery,
+  type ContentTagFacetQuery,
   type CreateAccountInput,
   type CreateEncryptedBackupInput,
   type CreateGroupInput,
   type ExportDataInput,
+  type ExportFilteredContentsInput,
   type MoveGroupInput,
   pluginPermissions,
   type CreatePluginScheduleInput,
@@ -188,11 +198,80 @@ export function parseContentQuery(value: unknown): ContentQuery {
   return result
 }
 
+export function parseContentSearchQuery(value: unknown): ContentSearchQuery {
+  if (value === undefined || value === null) return {}
+  const record = asRecord(value)
+  const result: ContentSearchQuery = {}
+  if (record.keyword !== undefined) result.keyword = asText(record.keyword, '搜索词', 0, 200)
+  if (record.accountIds !== undefined) result.accountIds = asStringArray(record.accountIds, '账号', 500, 80)
+  if (record.platformId !== undefined) result.platformId = asPlatformId(record.platformId)
+  if (record.groupId !== undefined) result.groupId = asId(record.groupId)
+  if (record.type !== undefined) result.type = asEnum(record.type, contentTypes, '内容类型')
+  if (record.tags !== undefined) result.tags = asStringArray(record.tags, '内容标签', 20, 24)
+  if (record.tagMatch !== undefined) result.tagMatch = asEnum(record.tagMatch, ['all', 'any'] as const, '标签匹配方式')
+  if (record.bookmarked !== undefined) result.bookmarked = asBoolean(record.bookmarked, '收藏状态')
+  if (record.publishedFrom !== undefined) result.publishedFrom = asDate(record.publishedFrom, '发布开始时间')
+  if (record.publishedTo !== undefined) result.publishedTo = asDate(record.publishedTo, '发布结束时间')
+  if (record.capturedFrom !== undefined) result.capturedFrom = asDate(record.capturedFrom, '采集开始时间')
+  if (record.capturedTo !== undefined) result.capturedTo = asDate(record.capturedTo, '采集结束时间')
+  if (record.sort !== undefined) result.sort = asEnum(record.sort, contentSearchSorts, '排序字段')
+  if (record.order !== undefined) result.order = asEnum(record.order, ['asc', 'desc'] as const, '排序方向')
+  if (record.limit !== undefined) result.limit = asInteger(record.limit, '返回数量', 1, 100)
+  if (record.offset !== undefined) result.offset = asInteger(record.offset, '分页位置', 0, 1_000_000_000)
+  validateRange(result.publishedFrom, result.publishedTo, '发布时间')
+  validateRange(result.capturedFrom, result.capturedTo, '采集时间')
+  return result
+}
+
+export function parseContentTagFacetQuery(value: unknown): ContentTagFacetQuery {
+  if (value === undefined || value === null) return {}
+  const record = asRecord(value)
+  const result: ContentTagFacetQuery = {}
+  if (record.search !== undefined) result.search = asText(record.search, '标签搜索词', 0, 24)
+  if (record.accountIds !== undefined) result.accountIds = asStringArray(record.accountIds, '账号', 500, 80)
+  if (record.platformId !== undefined) result.platformId = asPlatformId(record.platformId)
+  if (record.groupId !== undefined) result.groupId = asId(record.groupId)
+  if (record.limit !== undefined) result.limit = asInteger(record.limit, '返回数量', 1, 200)
+  return result
+}
+
+export function parseBulkUpdateContents(value: unknown): BulkUpdateContentsInput {
+  const record = asRecord(value)
+  const result: BulkUpdateContentsInput = {
+    contentIds: asStringArray(record.contentIds, '内容', 500, 80)
+  }
+  if (result.contentIds.length === 0) throw new Error('请至少选择一条内容')
+  if (record.isBookmarked !== undefined) result.isBookmarked = asBoolean(record.isBookmarked, '收藏状态')
+  if (record.tagChange !== undefined) {
+    const tagChange = asRecord(record.tagChange)
+    const tags = asStringArray(tagChange.tags, '内容标签', 20, 24)
+    if (tags.length === 0) throw new Error('请至少提供一个标签')
+    result.tagChange = {
+      action: asEnum(tagChange.action, ['add', 'remove'] as const, '标签操作'),
+      tags
+    }
+  }
+  if (result.isBookmarked === undefined && result.tagChange === undefined) throw new Error('没有需要执行的批量操作')
+  return result
+}
+
+export function parseExportFilteredContents(value: unknown): ExportFilteredContentsInput {
+  const record = asRecord(value)
+  return {
+    query: parseContentSearchQuery(record.query),
+    format: asEnum(record.format, ['json', 'csv'] as const, '导出格式'),
+    ...(record.includeSnapshots === undefined ? {} : {
+      includeSnapshots: asBoolean(record.includeSnapshots, '快照导出选项')
+    })
+  }
+}
+
 export function parseUpdateContent(value: unknown): UpdateContentInput {
   const record = asRecord(value)
   const result: UpdateContentInput = { id: asId(record.id) }
   if (record.note !== undefined) result.note = asText(record.note, '内容备注', 0, 1000)
   if (record.tags !== undefined) result.tags = asStringArray(record.tags, '内容标签', 20, 24)
+  if (record.isBookmarked !== undefined) result.isBookmarked = asBoolean(record.isBookmarked, '收藏状态')
   return result
 }
 
@@ -207,6 +286,49 @@ export function parseAnalyticsQuery(value: unknown): AnalyticsQuery {
     if (![7, 30, 90, 365].includes(days)) throw new Error('统计周期无效')
     result.days = days as 7 | 30 | 90 | 365
   }
+  return result
+}
+
+export function parseAnalyticsSummaryQuery(value: unknown): AnalyticsSummaryQuery {
+  return parseAnalyticsScope(value)
+}
+
+export function parseAnalyticsComparisonQuery(value: unknown): AnalyticsComparisonQuery {
+  const record = asRecord(value)
+  return {
+    ...parseAnalyticsScope(record),
+    dimension: asEnum(record.dimension, ['account', 'platform', 'group'] as const, '对比维度')
+  }
+}
+
+export function parseContentLifecycleQuery(value: unknown): ContentLifecycleQuery {
+  const record = value === undefined || value === null ? {} : asRecord(value)
+  const result: ContentLifecycleQuery = parseAnalyticsScope(record)
+  if (record.standardMetricId !== undefined) {
+    result.standardMetricId = asEnum(record.standardMetricId, standardContentMetricIds, '标准指标')
+  }
+  if (record.limit !== undefined) result.limit = asInteger(record.limit, '返回数量', 1, 100)
+  if (record.offset !== undefined) result.offset = asInteger(record.offset, '分页位置', 0, 1_000_000_000)
+  return result
+}
+
+function parseAnalyticsScope(value: unknown): AnalyticsSummaryQuery {
+  if (value === undefined || value === null) return {}
+  const record = asRecord(value)
+  const result: AnalyticsSummaryQuery = {}
+  if (record.accountIds !== undefined) result.accountIds = asStringArray(record.accountIds, '账号', 500, 80)
+  if (record.platformId !== undefined) result.platformId = asPlatformId(record.platformId)
+  if (record.groupId !== undefined) result.groupId = asId(record.groupId)
+  if (record.publishedFrom !== undefined) result.publishedFrom = asDate(record.publishedFrom, '发布开始时间')
+  if (record.publishedTo !== undefined) result.publishedTo = asDate(record.publishedTo, '发布结束时间')
+  if (record.capturedFrom !== undefined) result.capturedFrom = asDate(record.capturedFrom, '采集开始时间')
+  if (record.capturedTo !== undefined) result.capturedTo = asDate(record.capturedTo, '采集结束时间')
+  if (record.standardMetricIds !== undefined) {
+    result.standardMetricIds = asStringArray(record.standardMetricIds, '标准指标', standardAnalyticsMetricIds.length, 20)
+      .map((metricId) => asEnum(metricId, standardAnalyticsMetricIds, '标准指标'))
+  }
+  validateRange(result.publishedFrom, result.publishedTo, '发布时间')
+  validateRange(result.capturedFrom, result.capturedTo, '采集时间')
   return result
 }
 
@@ -384,6 +506,10 @@ function asCalendarDate(value: unknown, label: string): string {
     throw new Error(`${label}无效`)
   }
   return text
+}
+
+function validateRange(from: string | undefined, to: string | undefined, label: string): void {
+  if (from && to && from > to) throw new Error(`${label}范围无效`)
 }
 
 function asStringArray(value: unknown, label: string, maxItems: number, maxLength: number): string[] {

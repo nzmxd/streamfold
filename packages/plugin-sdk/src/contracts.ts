@@ -30,6 +30,8 @@ export type ContentType = 'article' | 'post' | 'image' | 'video' | 'answer'
 export type ContentMetricValueKind = 'count' | 'ratio' | 'duration'
 export type ContentMetricUnit = 'count' | 'ratio' | 'seconds'
 export type ContentMetricGroup = 'reach' | 'engagement' | 'conversion' | 'other'
+export type MetricMeasurement = 'cumulative' | 'period_total' | 'gauge'
+export type StandardContentMetricId = 'views' | 'likes' | 'comments' | 'shares' | 'favorites'
 
 export interface ContentMetricDefinition {
   id: string
@@ -38,6 +40,8 @@ export interface ContentMetricDefinition {
   unit: ContentMetricUnit
   group: ContentMetricGroup
   sortOrder: number
+  measurementKind?: MetricMeasurement
+  standardMetricId?: StandardContentMetricId | null
 }
 
 export interface StandardContentSnapshot {

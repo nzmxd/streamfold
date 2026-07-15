@@ -29,7 +29,8 @@
     "plugin:official-webhook:verify": "pnpm sdk:build && node scripts/build-official-webhook.mjs verify",
     "test:package-plugins": "pnpm sdk:build && node scripts/verify-packaged-plugins.mjs",
     "test:package-runtime": "node scripts/smoke-packaged.mjs",
-    "test:update-artifacts": "node scripts/verify-update-artifacts.mjs"
+    "test:update-artifacts": "node scripts/verify-update-artifacts.mjs",
+    "benchmark:content-search": "node scripts/run-content-search-benchmark.mjs"
   },
   "dependencies": {
     "electron-updater": "6.8.9",

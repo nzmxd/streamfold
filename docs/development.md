@@ -33,6 +33,7 @@ pnpm dev
 | `pnpm test:package-plugins -- release` | 检查安装目录中的沙箱入口、QuickJS 依赖和签名插件资源 |
 | `pnpm test:package-runtime -- release` | 启动安装目录应用并在真实 Utility Process 中执行 QuickJS Smoke |
 | `pnpm test:update-artifacts` | 按环境变量校验更新清单引用、SHA-512、blockmap 和安装目录更新源 |
+| `pnpm benchmark:content-search` | 生成 10 万条本地内容并记录 FTS 首屏查询延迟；结果用于回归比较，不作为跨设备承诺 |
 | `pnpm preview` | 预览生产构建 |
 | `pnpm dist:dir` | 生成未打包安装器的应用目录 |
 | `pnpm dist:win` | 生成 Windows NSIS 和 ZIP |
@@ -40,6 +41,10 @@ pnpm dev
 | `pnpm dist:linux` | 生成 Linux AppImage 和 `tar.gz` |
 
 安装包输出到 `release/`。应在目标操作系统的原生 runner 上构建对应平台包；本地跨平台打包结果不能替代原生验收。
+
+### 10 万条内容基准
+
+`pnpm benchmark:content-search` 使用确定性内存数据集，排除建库时间，记录而不硬编码跨设备阈值。2026-07-15 的 Windows 开发环境以 10 万条内容、20 万条观察和快照运行：普通 FTS 关键词首屏 5 次中位数 `2.11 ms`；20 页内部批量分页读取为 `5528.08 ms`；约 `22.37 MB` CSV 序列化为 `382.58 ms`；全量可靠指标摘要为 `7065.87 ms`。这些数字只用于同环境回归对比，发布验收仍需结合真实磁盘数据库、更多动态指标和目标机器。
 
 ## 3. 源码地图
 
