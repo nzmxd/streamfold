@@ -921,6 +921,48 @@ describe('SocialDatabase', () => {
     expect(database.getJob(job.id)?.status).toBe('validating')
   })
 
+  it('round-trips calendar schedules and explicit task attention resolutions', () => {
+    database.upsertPluginPackage(xiaohongshuPluginManifestV2, {
+      source: 'builtin',
+      status: 'active',
+      enabled: true,
+      packageHash: 'builtin:xiaohongshu-session-api@0.3.0',
+      publisherKeyId: xiaohongshuPluginManifestV2.publisher.keyId
+    })
+    const schedule = database.createPluginSchedule({
+      pluginId: xiaohongshuPluginManifestV2.id,
+      contributionId: XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID,
+      accountIds: [],
+      groupIds: [],
+      cadence: { type: 'weekly', weekdays: [1, 3, 5], time: '09:30' },
+      intervalMinutes: 7 * 24 * 60,
+      enabled: false,
+      nextRunAt: null,
+      lastRunAt: null,
+      consecutiveFailures: 0,
+      suspendedReason: ''
+    })
+    expect(database.getPluginSchedule(schedule.id)).toMatchObject({
+      cadence: { type: 'weekly', weekdays: [1, 3, 5], time: '09:30' },
+      intervalMinutes: 7 * 24 * 60
+    })
+
+    expect(database.markTaskAttentionHandled(
+      'plugin-run',
+      'failed-run',
+      '2026-07-15T12:00:00.000Z'
+    )).toEqual({
+      source: 'plugin-run',
+      taskId: 'failed-run',
+      resolvedAt: '2026-07-15T12:00:00.000Z'
+    })
+    expect(database.listTaskAttentionResolutions()).toEqual([{
+      source: 'plugin-run',
+      taskId: 'failed-run',
+      resolvedAt: '2026-07-15T12:00:00.000Z'
+    }])
+  })
+
   it('round-trips typed settings and supports a missing-value fallback', () => {
     expect(database.getSetting('rawRetentionDays', 30)).toBe(30)
     expect(database.setSetting('rawRetentionDays', 90)).toBe(90)
@@ -1399,6 +1441,56 @@ describe('SocialDatabase migrations', () => {
       'account_metric_values'
     ])
     inspected.close()
+  })
+
+  it('migrates v13 interval schedules and adds task attention storage', () => {
+    directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
+    const path = join(directory, 'v13.sqlite')
+    database = new SocialDatabase(path)
+    database.upsertPluginPackage(xiaohongshuPluginManifestV2, {
+      source: 'builtin',
+      status: 'active',
+      enabled: true,
+      packageHash: 'builtin:xiaohongshu-session-api@0.3.0',
+      publisherKeyId: xiaohongshuPluginManifestV2.publisher.keyId
+    })
+    const schedule = database.createPluginSchedule({
+      pluginId: xiaohongshuPluginManifestV2.id,
+      contributionId: XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID,
+      accountIds: [],
+      groupIds: [],
+      cadence: { type: 'interval', intervalMinutes: 90 },
+      intervalMinutes: 90,
+      enabled: false,
+      nextRunAt: null,
+      lastRunAt: null,
+      consecutiveFailures: 0,
+      suspendedReason: ''
+    })
+    database.close()
+    database = null
+
+    const previous = new DatabaseSync(path)
+    previous.exec(`
+      DROP TABLE task_attention_resolutions;
+      ALTER TABLE plugin_schedules DROP COLUMN cadence_json;
+      PRAGMA user_version = 13;
+    `)
+    previous.close()
+
+    database = new SocialDatabase(path)
+
+    expect(database.getSchemaVersion()).toBe(CURRENT_SCHEMA_VERSION)
+    expect(database.getPluginSchedule(schedule.id)).toMatchObject({
+      cadence: { type: 'interval', intervalMinutes: 90 },
+      intervalMinutes: 90
+    })
+    expect(database.listTaskAttentionResolutions()).toEqual([])
+    expect(database.markTaskAttentionHandled(
+      'job',
+      'legacy-failure',
+      '2026-07-15T12:00:00.000Z'
+    )).toMatchObject({ source: 'job', taskId: 'legacy-failure' })
   })
 })
 

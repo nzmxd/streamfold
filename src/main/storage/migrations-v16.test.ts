@@ -2,16 +2,16 @@ import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { CURRENT_SCHEMA_VERSION, migrateDatabase, readUserVersion } from './migrations'
 
-describe('SQLite v14 migration', () => {
-  it('migrates v13 content data and backfills organization, provenance and search state', () => {
-    const db = createV13Database()
+describe('SQLite v16 migration', () => {
+  it('migrates v15 content data and backfills organization, provenance and search state', () => {
+    const db = createV15Database()
     try {
-      seedV13Content(db)
+      seedV15Content(db)
 
       migrateDatabase(db)
 
       expect(readUserVersion(db)).toBe(CURRENT_SCHEMA_VERSION)
-      expect(CURRENT_SCHEMA_VERSION).toBe(14)
+      expect(CURRENT_SCHEMA_VERSION).toBe(16)
       expect(columnNames(db, 'contents')).toEqual(expect.arrayContaining([
         'is_bookmarked',
         'last_captured_at'
@@ -122,7 +122,7 @@ describe('SQLite v14 migration', () => {
   })
 
   it('maintains external FTS rows and applies observation and tag foreign keys', () => {
-    const db = createV13Database()
+    const db = createV15Database()
     try {
       migrateDatabase(db)
       db.prepare(`
@@ -186,12 +186,12 @@ describe('SQLite v14 migration', () => {
     }
   })
 
-  it('migrates a brand-new v0 database through v14', () => {
+  it('migrates a brand-new v0 database through v16', () => {
     const db = new DatabaseSync(':memory:')
     try {
       migrateDatabase(db)
 
-      expect(readUserVersion(db)).toBe(14)
+      expect(readUserVersion(db)).toBe(16)
       expect(db.prepare(`
         SELECT name FROM sqlite_master
         WHERE name IN ('content_tags', 'content_observations', 'content_metric_semantics', 'content_fts')
@@ -208,7 +208,7 @@ describe('SQLite v14 migration', () => {
   })
 })
 
-function createV13Database(): DatabaseSync {
+function createV15Database(): DatabaseSync {
   const db = new DatabaseSync(':memory:')
   db.exec(`
     PRAGMA foreign_keys = ON;
@@ -265,12 +265,12 @@ function createV13Database(): DatabaseSync {
 
     INSERT INTO accounts (id, platform_id, adapter_contribution_id)
     VALUES ('owner', 'xiaohongshu', 'xiaohongshu-session-api.platform');
-    PRAGMA user_version = 13;
+    PRAGMA user_version = 15;
   `)
   return db
 }
 
-function seedV13Content(db: DatabaseSync): void {
+function seedV15Content(db: DatabaseSync): void {
   const insertContent = db.prepare(`
     INSERT INTO contents (
       id, account_id, remote_id, type, title, body_excerpt, url, published_at,

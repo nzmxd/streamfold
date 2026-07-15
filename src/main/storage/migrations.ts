@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-export const CURRENT_SCHEMA_VERSION = 14
+export const CURRENT_SCHEMA_VERSION = 16
 
 export function migrateDatabase(db: DatabaseSync): void {
   db.exec('PRAGMA foreign_keys = ON')
@@ -65,6 +65,14 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
   if (version < 14) {
     inTransaction(db, () => migrateV13ToV14(db))
+    version = 14
+  }
+  if (version < 15) {
+    inTransaction(db, () => migrateV14ToV15(db))
+    version = 15
+  }
+  if (version < 16) {
+    inTransaction(db, () => migrateV15ToV16(db))
   }
 }
 
@@ -685,7 +693,7 @@ function migrateV12ToV13(db: DatabaseSync): void {
 }
 
 /** Adds local content organization, observation provenance and full-text search. */
-function migrateV13ToV14(db: DatabaseSync): void {
+function migrateV15ToV16(db: DatabaseSync): void {
   addColumn(db, 'contents', 'is_bookmarked INTEGER NOT NULL DEFAULT 0 CHECK (is_bookmarked IN (0, 1))')
   addColumn(db, 'contents', 'last_captured_at TEXT')
   addColumn(db, 'content_metric_definitions', `measurement_kind TEXT NOT NULL DEFAULT 'gauge' CHECK (
@@ -845,7 +853,34 @@ function migrateV13ToV14(db: DatabaseSync): void {
     END;
 
     INSERT INTO content_fts(content_fts) VALUES ('rebuild');
+    PRAGMA user_version = 16;
+  `)
+}
+
+/** Adds structured calendar recurrences while retaining interval-only schedules. */
+function migrateV13ToV14(db: DatabaseSync): void {
+  addColumn(db, 'plugin_schedules', "cadence_json TEXT NOT NULL DEFAULT ''")
+  db.exec(`
+    UPDATE plugin_schedules
+    SET cadence_json = '{"type":"interval","intervalMinutes":' || interval_minutes || '}'
+    WHERE cadence_json = '';
     PRAGMA user_version = 14;
+  `)
+}
+
+/** Tracks user-resolved task failures without changing immutable task history. */
+function migrateV14ToV15(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_attention_resolutions (
+      task_source TEXT NOT NULL CHECK (task_source IN ('job', 'plugin-run')),
+      task_id TEXT NOT NULL,
+      resolved_at TEXT NOT NULL,
+      PRIMARY KEY (task_source, task_id)
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS idx_task_attention_resolved_at
+      ON task_attention_resolutions(resolved_at DESC);
+    PRAGMA user_version = 15;
   `)
 }
 

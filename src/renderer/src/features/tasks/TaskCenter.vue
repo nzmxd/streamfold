@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Account, PlatformDefinition } from '../../../../shared/contracts'
 import type {
   TaskBatchView,
+  TaskAttentionFilter,
   TaskQuery,
   TaskStatus,
   TaskSummary,
@@ -17,6 +18,7 @@ import {
   canCancelTask,
   canRetryTask,
   summarizeTaskBatches,
+  taskAttentionLabel,
   taskKindLabel,
   taskNeedsLogin,
   taskStatusLabel,
@@ -49,6 +51,7 @@ const toast = ref('')
 const busyTaskId = ref<string | null>(null)
 const viewMode = ref<TaskViewMode>('tasks')
 const statusFilter = ref<'all' | TaskStatus>('all')
+const attentionFilter = ref<'all' | TaskAttentionFilter>('all')
 const triggerFilter = ref<'all' | TaskTrigger>('all')
 const platformFilter = ref('all')
 const accountFilter = ref('all')
@@ -72,7 +75,7 @@ const filteredAccounts = computed(() => platformFilter.value === 'all'
   ? accounts.value
   : accounts.value.filter((account) => account.platformId === platformFilter.value))
 
-watch([statusFilter, triggerFilter, platformFilter, accountFilter, timeRange], () => {
+watch([statusFilter, attentionFilter, triggerFilter, platformFilter, accountFilter, timeRange], () => {
   if (!initialized) return
   if (accountFilter.value !== 'all' && !filteredAccounts.value.some((item) => item.id === accountFilter.value)) {
     accountFilter.value = 'all'
@@ -104,6 +107,7 @@ onBeforeUnmount(() => {
 function buildQuery(): TaskQuery {
   const query: TaskQuery = { offset: (page.value - 1) * pageSize, limit: pageSize }
   if (statusFilter.value !== 'all') query.statuses = [statusFilter.value]
+  if (attentionFilter.value !== 'all') query.attention = attentionFilter.value
   if (triggerFilter.value !== 'all') query.triggers = [triggerFilter.value]
   if (platformFilter.value !== 'all') query.platformId = platformFilter.value
   if (accountFilter.value !== 'all') query.accountId = accountFilter.value
@@ -172,6 +176,8 @@ async function reload(): Promise<void> {
 
 function matchesTaskFilters(task: TaskView): boolean {
   if (statusFilter.value !== 'all' && task.status !== statusFilter.value) return false
+  if (attentionFilter.value === 'pending' && task.attentionState !== 'pending') return false
+  if (attentionFilter.value === 'resolved' && task.attentionState !== 'handled' && task.attentionState !== 'superseded') return false
   if (triggerFilter.value !== 'all' && task.trigger !== triggerFilter.value) return false
   if (platformFilter.value !== 'all' && task.platformId !== platformFilter.value) return false
   if (accountFilter.value !== 'all' && task.accountId !== accountFilter.value) return false
@@ -232,6 +238,33 @@ async function retryTask(task: TaskView): Promise<void> {
   }
 }
 
+async function markTaskHandled(task: TaskView): Promise<void> {
+  if (busyTaskId.value || task.attentionState !== 'pending') return
+  const confirmed = await confirmDialog({
+    title: '将这个失败标为已处理？',
+    description: '任务的失败状态和错误详情会继续保留，但不再计入“需要处理”。',
+    confirmLabel: '标为已处理'
+  })
+  if (!confirmed) return
+  busyTaskId.value = task.id
+  try {
+    const handled = await window.socialVault.tasks.markHandled({
+      source: task.source,
+      taskId: task.id
+    })
+    if (selectedTask.value?.id === task.id && selectedTask.value.source === task.source) {
+      selectedTask.value = handled
+    }
+    showToast('已从需要处理列表移除，失败记录仍保留。')
+    await reload()
+    if (selectedBatch.value) await openBatch(selectedBatch.value.batch.id)
+  } catch (cause) {
+    error.value = messageOf(cause)
+  } finally {
+    busyTaskId.value = null
+  }
+}
+
 async function openAccountBrowser(task: TaskView): Promise<void> {
   if (!task.accountId || busyTaskId.value) return
   busyTaskId.value = task.id
@@ -277,6 +310,7 @@ async function inspectTask(task: TaskView): Promise<void> {
 
 function resetFilters(): void {
   statusFilter.value = 'all'
+  attentionFilter.value = 'all'
   triggerFilter.value = 'all'
   platformFilter.value = 'all'
   accountFilter.value = 'all'
@@ -320,7 +354,7 @@ function showToast(value: string): void {
         <span>运行中</span><strong>{{ summary.runningCount }}</strong><small>正在处理</small>
       </article>
       <article class="feature-card tone-warning">
-        <span>需要处理</span><strong>{{ summary.needsAttentionCount }}</strong><small>失败、中断或暂停</small>
+        <span>需要处理</span><strong>{{ summary.needsAttentionCount }}</strong><small>尚未解决的失败或中断</small>
       </article>
       <article class="feature-card tone-success">
         <span>今日完成</span><strong>{{ summary.completedTodayCount }}</strong><small>{{ summary.failedTodayCount }} 个今日失败</small>
@@ -333,6 +367,7 @@ function showToast(value: string): void {
         <button type="button" :class="{ active: viewMode === 'batches' }" role="tab" :aria-selected="viewMode === 'batches'" @click="viewMode = 'batches'">批次</button>
       </div>
       <label>状态<select v-model="statusFilter"><option value="all">全部状态</option><option value="queued">排队中</option><option value="running">运行中</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="interrupted">已中断</option><option value="paused">已暂停</option><option value="cancelled">已取消</option></select></label>
+      <label>处置<select v-model="attentionFilter"><option value="all">全部处置</option><option value="pending">需要处理</option><option value="resolved">已解决</option></select></label>
       <label>触发<select v-model="triggerFilter"><option value="all">全部来源</option><option value="manual">手动</option><option value="scheduled">定时</option><option value="event">事件</option><option value="retry">重试</option></select></label>
       <label>平台<select v-model="platformFilter"><option value="all">全部平台</option><option v-for="platform in platforms" :key="platform.id" :value="platform.id">{{ platform.name }}</option></select></label>
       <label>账号<select v-model="accountFilter"><option value="all">全部账号</option><option v-for="account in filteredAccounts" :key="account.id" :value="account.id">{{ account.alias || account.remoteName || account.id }}</option></select></label>
@@ -354,6 +389,7 @@ function showToast(value: string): void {
       :busy-task-id="busyTaskId"
       @cancel="cancelTask"
       @retry="retryTask"
+      @handle="markTaskHandled"
       @open-browser="openAccountBrowser"
       @inspect="inspectTask"
     />
@@ -388,7 +424,7 @@ function showToast(value: string): void {
           <div><span class="page-eyebrow">批次详情</span><h2 id="task-batch-title">{{ selectedBatch ? `同步批次 · ${formatDate(selectedBatch.batch.createdAt, true)}` : '正在读取批次' }}</h2><p v-if="selectedBatch">{{ taskTriggerLabel(selectedBatch.batch.trigger) }}触发 · 同步范围 {{ selectedBatch.batch.requestedScope === 'account_default' ? '按账号默认设置' : selectedBatch.batch.requestedScope === 'profile_only' ? '仅资料' : selectedBatch.batch.requestedScope === 'recent_20' ? '最近 20 条' : '最近 100 条' }}</p></div>
           <button type="button" aria-label="关闭批次详情" @click="closeBatchDialog">×</button>
         </div>
-        <div v-if="selectedBatch" class="batch-dialog-summary"><span>共 {{ selectedBatch.totalCount }}</span><span>{{ selectedBatch.succeededCount }} 完成</span><span>{{ selectedBatch.runningCount }} 运行中</span><span>{{ selectedBatch.failedCount + selectedBatch.interruptedCount + selectedBatch.pausedCount }} 需处理</span></div>
+        <div v-if="selectedBatch" class="batch-dialog-summary"><span>共 {{ selectedBatch.totalCount }}</span><span>{{ selectedBatch.succeededCount }} 完成</span><span>{{ selectedBatch.runningCount }} 运行中</span><span>{{ selectedBatch.needsAttentionCount }} 需处理</span></div>
         <div class="batch-dialog-content">
           <div v-if="batchLoading" class="task-loading">正在读取批次任务…</div>
           <TaskList
@@ -399,6 +435,7 @@ function showToast(value: string): void {
             :busy-task-id="busyTaskId"
             @cancel="cancelTask"
             @retry="retryTask"
+            @handle="markTaskHandled"
             @open-browser="openAccountBrowser"
             @inspect="inspectTask"
           />
@@ -417,9 +454,10 @@ function showToast(value: string): void {
           <div><dt>创建时间</dt><dd>{{ formatDate(selectedTask.createdAt, true) }}</dd></div>
           <div v-if="selectedTask.startedAt"><dt>开始时间</dt><dd>{{ formatDate(selectedTask.startedAt, true) }}</dd></div>
           <div v-if="selectedTask.finishedAt"><dt>结束时间</dt><dd>{{ formatDate(selectedTask.finishedAt, true) }}</dd></div>
+          <div v-if="selectedTask.attentionState"><dt>处置状态</dt><dd>{{ taskAttentionLabel(selectedTask.attentionState) }}<span v-if="selectedTask.attentionResolvedAt"> · {{ formatDate(selectedTask.attentionResolvedAt, true) }}</span></dd></div>
           <div v-if="selectedTask.errorCode || selectedTask.errorMessage" class="detail-error"><dt>错误</dt><dd><b v-if="selectedTask.errorCode">{{ selectedTask.errorCode }}</b>{{ selectedTask.errorMessage }}</dd></div>
         </dl>
-        <div class="modal-actions"><button class="button" type="button" @click="selectedTask = null">关闭</button><button v-if="selectedTask.kind !== 'account.sync'" class="button" type="button" @click="emit('navigate', 'plugins'); selectedTask = null">打开插件中心</button><button v-if="taskNeedsLogin(selectedTask)" class="button" type="button" :disabled="busyTaskId === selectedTask.id" @click="openAccountBrowser(selectedTask)">处理登录</button><button v-if="canCancelTask(selectedTask)" class="button" type="button" :disabled="busyTaskId === selectedTask.id" @click="cancelTask(selectedTask)">取消任务</button><button v-if="canRetryTask(selectedTask)" class="button primary" type="button" :disabled="busyTaskId === selectedTask.id" @click="retryTask(selectedTask)">重试</button></div>
+        <div class="modal-actions"><button class="button" type="button" @click="selectedTask = null">关闭</button><button v-if="selectedTask.kind !== 'account.sync'" class="button" type="button" @click="emit('navigate', 'plugins'); selectedTask = null">打开插件中心</button><button v-if="taskNeedsLogin(selectedTask)" class="button" type="button" :disabled="busyTaskId === selectedTask.id" @click="openAccountBrowser(selectedTask)">处理登录</button><button v-if="canCancelTask(selectedTask)" class="button" type="button" :disabled="busyTaskId === selectedTask.id" @click="cancelTask(selectedTask)">取消任务</button><button v-if="selectedTask.attentionState === 'pending'" class="button" type="button" :disabled="busyTaskId === selectedTask.id" @click="markTaskHandled(selectedTask)">标为已处理</button><button v-if="canRetryTask(selectedTask)" class="button primary" type="button" :disabled="busyTaskId === selectedTask.id" @click="retryTask(selectedTask)">重试</button></div>
       </section>
     </div>
 
@@ -440,7 +478,7 @@ function showToast(value: string): void {
 .task-summary-grid span, .task-summary-grid small { color: var(--text-tertiary); font-size: var(--font-secondary); line-height: var(--line-secondary); }
 .task-summary-grid strong { color: var(--text); font-size: var(--font-metric); line-height: var(--line-metric); letter-spacing: -.02em; }
 .task-summary-grid small { font-size: var(--font-caption); line-height: var(--line-caption); }
-.task-filter-card { display: grid; grid-template-columns: auto repeat(5, minmax(120px, 1fr)) auto; align-items: end; gap: 9px; margin-bottom: 12px; padding: 11px; }
+.task-filter-card { display: grid; grid-template-columns: auto repeat(6, minmax(110px, 1fr)) auto; align-items: end; gap: 9px; margin-bottom: 12px; padding: 11px; }
 .task-filter-card label { display: grid; gap: 4px; color: var(--text-secondary); font-size: var(--font-caption); line-height: var(--line-caption); }
 .task-filter-card select { min-height: 36px; padding-block: 7px; }
 .task-view-switch { display: flex; min-height: 36px; padding: 3px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 9px; }

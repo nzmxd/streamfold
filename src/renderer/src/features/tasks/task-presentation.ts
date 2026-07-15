@@ -1,4 +1,5 @@
 import type {
+  TaskAttentionState,
   TaskStatus,
   TaskTrigger,
   TaskView
@@ -59,6 +60,13 @@ export function taskKindLabel(kind: TaskView['kind']): string {
   } satisfies Record<TaskView['kind'], string>)[kind]
 }
 
+export function taskAttentionLabel(state: TaskAttentionState | null): string {
+  if (state === 'pending') return '需要处理'
+  if (state === 'handled') return '已手动处理'
+  if (state === 'superseded') return '后续任务已成功'
+  return ''
+}
+
 export function canCancelTask(task: TaskView): boolean {
   return task.kind === 'account.sync' && task.status === 'queued'
 }
@@ -68,7 +76,7 @@ export function canRetryTask(task: TaskView): boolean {
 }
 
 export function taskNeedsLogin(task: TaskView): boolean {
-  return Boolean(task.accountId) && (
+  return task.attentionState === 'pending' && Boolean(task.accountId) && (
     loginErrorPattern.test(task.errorCode) ||
     loginErrorPattern.test(task.errorMessage) ||
     (task.status === 'paused' && loginErrorPattern.test(task.stage))
@@ -99,9 +107,7 @@ export function summarizeTaskBatches(tasks: TaskView[]): TaskBatchSummary[] {
       queuedCount: batch.filter((task) => task.status === 'queued').length,
       runningCount: batch.filter((task) => task.status === 'running').length,
       succeededCount: batch.filter((task) => task.status === 'succeeded').length,
-      needsAttentionCount: batch.filter((task) => (
-        task.status === 'failed' || task.status === 'interrupted' || task.status === 'paused'
-      )).length,
+      needsAttentionCount: batch.filter((task) => task.attentionState === 'pending').length,
       cancelledCount: batch.filter((task) => task.status === 'cancelled').length
     }
   }).sort((left, right) => right.createdAt.localeCompare(left.createdAt))
@@ -109,6 +115,6 @@ export function summarizeTaskBatches(tasks: TaskView[]): TaskBatchSummary[] {
 
 export function batchProgress(summary: TaskBatchSummary): number {
   if (summary.totalCount === 0) return 0
-  const settled = summary.succeededCount + summary.needsAttentionCount + summary.cancelledCount
+  const settled = summary.totalCount - summary.queuedCount - summary.runningCount
   return Math.round((settled / summary.totalCount) * 100)
 }

@@ -209,6 +209,7 @@ export interface SocialVaultApi {
     get(id: string): Promise<import('./job-contracts').TaskView | null>
     cancel(id: string): Promise<import('./job-contracts').TaskView>
     retry(id: string): Promise<import('./job-contracts').TaskView>
+    markHandled(input: import('./job-contracts').MarkTaskHandledInput): Promise<import('./job-contracts').TaskView>
     listBatch(batchId: string): Promise<import('./job-contracts').TaskBatchView | null>
     listBatches(): Promise<import('./job-contracts').TaskBatchView[]>
     onChanged(callback: () => void): () => void

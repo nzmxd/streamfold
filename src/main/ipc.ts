@@ -37,6 +37,7 @@ import {
   parseExportData,
   parseExportFilteredContents,
   parseId,
+  parseMarkTaskHandled,
   parseMoveGroup,
   parsePluginConfig,
   parsePluginGrant,
@@ -362,6 +363,11 @@ export function registerIpc(
     if (!task) throw new Error('重试任务未创建')
     return task
   }))
+  ipcMain.handle('tasks:mark-handled', trusted(async (_event, value) => {
+    const task = await services.tasks.markHandled(parseMarkTaskHandled(value))
+    notifyTasksChanged()
+    return task
+  }))
   ipcMain.handle('plugins:packages', trusted(() => services.pluginHost.listPackages()))
   ipcMain.handle('plugins:contributions', trusted(() => services.pluginHost.listContributions()))
   ipcMain.handle('plugins:set-package-enabled', trusted((_event, id, enabled) => {
@@ -595,6 +601,7 @@ export function unregisterIpc(): void {
     'tasks:retry',
     'tasks:list-batch',
     'tasks:list-batches',
+    'tasks:mark-handled',
     'plugins:packages',
     'plugins:contributions',
     'plugins:set-package-enabled',

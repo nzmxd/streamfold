@@ -14,8 +14,10 @@ import {
   parseContentTagFacetQuery,
   parseCreateAccount,
   parseCreateEncryptedBackup,
+  parseCreatePluginSchedule,
   parseExportData,
   parseExportFilteredContents,
+  parseMarkTaskHandled,
   parseMoveGroup,
   parseRestoreEncryptedBackup,
   parseTaskQuery,
@@ -174,12 +176,14 @@ describe('IPC validation', () => {
     expect(parseTaskQuery({
       statuses: ['queued', 'paused'],
       triggers: ['manual'],
+      attention: 'pending',
       platformId: 'xiaohongshu',
       limit: 50,
       offset: 100
     })).toEqual({
       statuses: ['queued', 'paused'],
       triggers: ['manual'],
+      attention: 'pending',
       platformId: 'xiaohongshu',
       limit: 50,
       offset: 100
@@ -187,7 +191,53 @@ describe('IPC validation', () => {
     expect(() => parseEnqueueSyncBatch({ accountIds: [], groupIds: [] })).toThrow('至少选择一个账号或分组')
     expect(() => parseEnqueueSyncBatch({ accountIds: ['a'], trigger: 'scheduled' })).toThrow('触发来源无效')
     expect(() => parseTaskQuery({ statuses: ['unknown'] })).toThrow('任务状态无效')
+    expect(() => parseTaskQuery({ attention: 'unknown' })).toThrow('任务处理状态无效')
     expect(() => parseTaskQuery({ limit: 201 })).toThrow('返回数量无效')
+  })
+
+  it('validates task attention mutations and every schedule cadence', () => {
+    expect(parseMarkTaskHandled({ source: 'plugin-run', taskId: 'run-1' })).toEqual({
+      source: 'plugin-run',
+      taskId: 'run-1'
+    })
+    expect(() => parseMarkTaskHandled({ source: 'event', taskId: 'run-1' }))
+      .toThrow('任务来源无效')
+
+    const common = {
+      pluginId: 'example.plugin',
+      contributionId: 'example.schedule',
+      accountIds: ['account-1'],
+      groupIds: [],
+      enabled: true
+    }
+    expect(parseCreatePluginSchedule({ ...common, intervalMinutes: 60 })).toMatchObject({
+      ...common,
+      cadence: { type: 'interval', intervalMinutes: 60 }
+    })
+    expect(parseCreatePluginSchedule({
+      ...common,
+      cadence: { type: 'daily', time: '09:30' }
+    })).toMatchObject({ cadence: { type: 'daily', time: '09:30' } })
+    expect(parseCreatePluginSchedule({
+      ...common,
+      cadence: { type: 'weekly', weekdays: [5, 1, 5], time: '18:00' }
+    })).toMatchObject({
+      cadence: { type: 'weekly', weekdays: [1, 5], time: '18:00' }
+    })
+    expect(parseCreatePluginSchedule({
+      ...common,
+      cadence: { type: 'monthly', monthDays: [31, 1], time: '08:05' }
+    })).toMatchObject({
+      cadence: { type: 'monthly', monthDays: [1, 31], time: '08:05' }
+    })
+    expect(() => parseCreatePluginSchedule({
+      ...common,
+      cadence: { type: 'daily', time: '25:00' }
+    })).toThrow('执行时间无效')
+    expect(() => parseCreatePluginSchedule({
+      ...common,
+      cadence: { type: 'weekly', weekdays: [], time: '09:00' }
+    })).toThrow('每周执行日无效')
   })
 
   it('validates settings and export requests', () => {

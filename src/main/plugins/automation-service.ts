@@ -13,6 +13,7 @@ import type {
   PluginRunRecord,
   PluginSchedule
 } from '../../shared/plugin-host-contracts'
+import { nextPluginScheduleOccurrence } from './schedule-recurrence'
 
 export interface PluginExecutionRequest {
   pluginId: string
@@ -284,7 +285,7 @@ export class PluginAutomationService {
       this.repository.updatePluginSchedule(schedule.id, {
         enabled: suspended ? false : schedule.enabled,
         lastRunAt: this.now(),
-        nextRunAt: suspended ? null : new Date(now.getTime() + schedule.intervalMinutes * 60_000).toISOString(),
+        nextRunAt: suspended ? null : nextPluginScheduleOccurrence(schedule.cadence, now).toISOString(),
         consecutiveFailures: failures,
         suspendedReason: suspended
       })

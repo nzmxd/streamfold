@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type { Account, PlatformId } from '../shared/contracts'
 import { SocialDatabase } from './database'
 
-describe('SocialDatabase v14 content queries', () => {
+describe('SocialDatabase v16 content queries', () => {
   let database: SocialDatabase
 
   beforeEach(() => {

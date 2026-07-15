@@ -6,7 +6,8 @@ import type {
   PluginConfigProperty,
   PluginContributionState,
   PluginPermission,
-  PluginSchedule
+  PluginSchedule,
+  PluginScheduleCadence
 } from '../../../../shared/contracts'
 import { confirmDialog } from '../../ui/dialog'
 import { formatDate, messageOf } from '../shared/format'
@@ -24,7 +25,9 @@ import {
   contributionKindLabel,
   defaultScheduleMinutes,
   minimumScheduleMinutes,
-  permissionLabel
+  permissionLabel,
+  scheduleCadenceLabel,
+  scheduleWeekdayOptions
 } from './plugin-presentation'
 
 const props = defineProps<{
@@ -64,12 +67,25 @@ const grantDraft = reactive<{
   dataScopes: []
 })
 
+type ScheduleCadenceType = PluginScheduleCadence['type']
+
 const scheduleDraft = reactive({
   accountIds: [] as string[],
   groupIds: [] as string[],
+  cadenceType: 'interval' as ScheduleCadenceType,
   intervalMinutes: defaultScheduleMinutes(props.contribution.contribution),
+  time: '09:00',
+  weekdays: [1, 2, 3, 4, 5] as number[],
+  monthDays: [1] as number[],
   enabled: false
 })
+const monthDayOptions = Array.from({ length: 31 }, (_, index) => index + 1)
+const scheduleCadenceOptions = [
+  { type: 'interval', label: '间隔' },
+  { type: 'daily', label: '每天' },
+  { type: 'weekly', label: '每周' },
+  { type: 'monthly', label: '每月' }
+] as const
 
 const selectedSchedules = computed(() => props.schedules.filter((schedule) => (
   schedule.pluginId === props.contribution.pluginId
@@ -79,6 +95,9 @@ const scheduleCapable = computed(() => props.contribution.contribution.permissio
 const visibleAccounts = computed(() => accountsForContribution(props.contribution.contribution, props.accounts))
 const dataScopes = computed(() => availableDataScopes(props.contribution.contribution.permissions))
 const minimumMinutes = computed(() => minimumScheduleMinutes(props.contribution.contribution))
+const scheduleEnableHint = computed(() => scheduleDraft.cadenceType === 'interval'
+  ? '启用后从创建时间开始计时，不会立即执行'
+  : '启用后等待下一个设定时间，不会立即执行')
 
 async function initialize(): Promise<void> {
   grantDraft.dataScopes = dataScopes.value.map((scope) => scope.id)
@@ -146,6 +165,34 @@ function toggleAccount(id: string, target: 'grant' | 'schedule'): void {
 function toggleGroup(id: string, target: 'grant' | 'schedule'): void {
   if (target === 'grant') grantDraft.groupIds = toggleListValue(grantDraft.groupIds, id)
   else scheduleDraft.groupIds = toggleListValue(scheduleDraft.groupIds, id)
+}
+
+function toggleScheduleWeekday(day: number): void {
+  scheduleDraft.weekdays = toggleNumberValue(scheduleDraft.weekdays, day)
+}
+
+function toggleScheduleMonthDay(day: number): void {
+  scheduleDraft.monthDays = toggleNumberValue(scheduleDraft.monthDays, day)
+}
+
+function toggleNumberValue(values: readonly number[], value: number): number[] {
+  return (values.includes(value)
+    ? values.filter((item) => item !== value)
+    : [...values, value]
+  ).sort((left, right) => left - right)
+}
+
+function scheduleCadenceFromDraft(): PluginScheduleCadence {
+  if (scheduleDraft.cadenceType === 'interval') {
+    return { type: 'interval', intervalMinutes: scheduleDraft.intervalMinutes }
+  }
+  if (scheduleDraft.cadenceType === 'daily') {
+    return { type: 'daily', time: scheduleDraft.time }
+  }
+  if (scheduleDraft.cadenceType === 'weekly') {
+    return { type: 'weekly', weekdays: [...scheduleDraft.weekdays], time: scheduleDraft.time }
+  }
+  return { type: 'monthly', monthDays: [...scheduleDraft.monthDays], time: scheduleDraft.time }
 }
 
 function toggleDataScope(scope: PluginDataScope): void {
@@ -289,9 +336,23 @@ async function createSchedule(): Promise<void> {
     error.value = '请选择计划适用的账号或分组。'
     return
   }
-  if (!Number.isInteger(scheduleDraft.intervalMinutes)
-    || scheduleDraft.intervalMinutes < minimumMinutes.value) {
+  if (scheduleDraft.cadenceType === 'interval' && (
+    !Number.isInteger(scheduleDraft.intervalMinutes)
+      || scheduleDraft.intervalMinutes < minimumMinutes.value
+  )) {
     error.value = `运行间隔不能少于 ${minimumMinutes.value} 分钟。`
+    return
+  }
+  if (scheduleDraft.cadenceType !== 'interval' && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(scheduleDraft.time)) {
+    error.value = '请选择有效的执行时间。'
+    return
+  }
+  if (scheduleDraft.cadenceType === 'weekly' && scheduleDraft.weekdays.length === 0) {
+    error.value = '请至少选择一个星期执行日。'
+    return
+  }
+  if (scheduleDraft.cadenceType === 'monthly' && scheduleDraft.monthDays.length === 0) {
+    error.value = '请至少选择一个每月执行日。'
     return
   }
   busy.value = true
@@ -301,7 +362,7 @@ async function createSchedule(): Promise<void> {
       contributionId: props.contribution.contribution.id,
       accountIds: [...scheduleDraft.accountIds],
       groupIds: [...scheduleDraft.groupIds],
-      intervalMinutes: scheduleDraft.intervalMinutes,
+      cadence: scheduleCadenceFromDraft(),
       enabled: scheduleDraft.enabled
     })
     emit('schedules-updated', [...props.schedules, created])
@@ -332,7 +393,7 @@ async function removeSchedule(schedule: PluginSchedule): Promise<void> {
   if (busy.value) return
   const confirmed = await confirmDialog({
     title: '删除这个运行计划？',
-    description: '删除后不会再按这个间隔触发插件，已有运行记录会继续保留。',
+    description: '删除后不会再按这个计划触发插件，已有运行记录会继续保留。',
     confirmLabel: '删除计划',
     tone: 'warning'
   })
@@ -448,14 +509,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
         <div v-if="selectedSchedules.length" class="schedule-list">
           <article v-for="schedule in selectedSchedules" :key="schedule.id" :class="{ suspended: schedule.suspendedReason }">
-            <header><div><strong>每 {{ schedule.intervalMinutes }} 分钟</strong><span>{{ schedule.enabled ? '运行中' : '已暂停' }}</span></div><button class="switch-control update-switch" role="switch" :aria-checked="schedule.enabled" :disabled="busy" :class="{ active: schedule.enabled }" @click="toggleSchedule(schedule)"><i></i></button></header>
+            <header><div><strong>{{ scheduleCadenceLabel(schedule.cadence) }}</strong><span>{{ schedule.enabled ? '运行中' : '已暂停' }}</span></div><button class="switch-control update-switch" role="switch" :aria-label="schedule.enabled ? '暂停计划' : '启用计划'" :aria-checked="schedule.enabled" :disabled="busy" :class="{ active: schedule.enabled }" @click="toggleSchedule(schedule)"><i></i></button></header>
             <p>{{ schedule.accountIds.map(accountLabel).join('、') || schedule.groupIds.map(groupLabel).join('、') || '未选择范围' }}</p>
             <dl><div><dt>下次运行</dt><dd>{{ formatDate(schedule.nextRunAt, true) }}</dd></div><div><dt>上次运行</dt><dd>{{ formatDate(schedule.lastRunAt, true) }}</dd></div><div><dt>连续失败</dt><dd>{{ schedule.consecutiveFailures }} 次</dd></div></dl>
             <div v-if="schedule.suspendedReason" class="schedule-warning">{{ schedule.suspendedReason }}</div>
             <footer><span>创建于 {{ formatDate(schedule.createdAt, true) }}</span><button type="button" :disabled="busy" @click="removeSchedule(schedule)">删除</button></footer>
           </article>
         </div>
-        <div v-else class="compact-empty"><strong>还没有运行计划</strong><span>选择账号或分组并设置间隔后创建。</span></div>
+        <div v-else class="compact-empty"><strong>还没有运行计划</strong><span>选择账号或分组并设置执行方式后创建。</span></div>
 
         <section class="schedule-create">
           <h3>创建计划</h3>
@@ -464,8 +525,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
             <fieldset class="manager-fieldset scope-list"><legend>适用分组</legend><p v-if="groups.length === 0">还没有账号分组。</p><label v-for="group in groups" :key="group.id" class="check-row"><input type="checkbox" :checked="scheduleDraft.groupIds.includes(group.id)" @change="toggleGroup(group.id, 'schedule')"><span><strong>{{ group.name }}</strong><small>{{ group.accountCount }} 个账号</small></span></label></fieldset>
           </div>
           <div class="schedule-controls">
-            <label>运行间隔（分钟）<input v-model.number="scheduleDraft.intervalMinutes" type="number" :min="minimumMinutes" step="1"><small>最短 {{ minimumMinutes }} 分钟</small></label>
-            <label class="enable-on-create"><input v-model="scheduleDraft.enabled" type="checkbox"><span><strong>创建后立即启用</strong><small>启用后从创建时间开始计时，不会立即执行</small></span></label>
+            <fieldset class="cadence-config">
+              <legend>执行方式</legend>
+              <div class="cadence-segments" role="tablist" aria-label="计划执行方式">
+                <button v-for="option in scheduleCadenceOptions" :key="option.type" type="button" role="tab" :aria-selected="scheduleDraft.cadenceType === option.type" :class="{ active: scheduleDraft.cadenceType === option.type }" @click="scheduleDraft.cadenceType = option.type">{{ option.label }}</button>
+              </div>
+              <label v-if="scheduleDraft.cadenceType === 'interval'" class="cadence-value">运行间隔（分钟）<input v-model.number="scheduleDraft.intervalMinutes" type="number" :min="minimumMinutes" step="1"><small>最短 {{ minimumMinutes }} 分钟</small></label>
+              <label v-else class="cadence-value">执行时间<input v-model="scheduleDraft.time" type="time" step="60"><small>按当前系统时区执行</small></label>
+              <fieldset v-if="scheduleDraft.cadenceType === 'weekly'" class="cadence-days weekday-grid">
+                <legend>星期</legend>
+                <label v-for="option in scheduleWeekdayOptions" :key="option.value"><input type="checkbox" :checked="scheduleDraft.weekdays.includes(option.value)" @change="toggleScheduleWeekday(option.value)"><span>{{ option.label }}</span></label>
+              </fieldset>
+              <fieldset v-if="scheduleDraft.cadenceType === 'monthly'" class="cadence-days month-day-grid">
+                <legend>日期</legend>
+                <label v-for="day in monthDayOptions" :key="day"><input type="checkbox" :checked="scheduleDraft.monthDays.includes(day)" @change="toggleScheduleMonthDay(day)"><span>{{ day }}</span></label>
+              </fieldset>
+            </fieldset>
+            <label class="enable-on-create"><input v-model="scheduleDraft.enabled" type="checkbox"><span><strong>创建后立即启用</strong><small>{{ scheduleEnableHint }}</small></span></label>
           </div>
           <button class="button primary" type="button" :disabled="busy || !contribution.granted" @click="createSchedule">{{ busy ? '正在创建' : '创建运行计划' }}</button>
           <small v-if="!contribution.granted" class="schedule-grant-hint">创建前需要先保存包含“按计划运行”的授权。</small>
@@ -525,7 +601,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 .schedule-list > article { display: grid; gap: 8px; padding: 12px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 10px; }
 .schedule-list > article.suspended { border-color: color-mix(in srgb, var(--warning) 30%, var(--border)); }
 .schedule-list article > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.schedule-list article > header div { display: flex; align-items: baseline; gap: 8px; }
+.schedule-list article > header div { display: flex; min-width: 0; flex: 1; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.schedule-list article > header strong { min-width: 0; overflow-wrap: anywhere; }
 .schedule-list article > header span, .schedule-list article > p, .schedule-list article > footer { color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
 .schedule-list dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0; }
 .schedule-list dl div { display: grid; gap: 2px; padding: 7px 8px; background: var(--surface); border-radius: 7px; }
@@ -536,8 +613,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 .schedule-list footer button { padding: 2px 4px; color: var(--danger); background: transparent; border: 0; cursor: pointer; font-size: var(--font-caption); line-height: var(--line-caption); }
 .schedule-create { display: grid; gap: 10px; margin-top: 13px; padding-top: 13px; border-top: 1px solid var(--border); }
 .schedule-create h3 { font-size: var(--font-body); line-height: var(--line-body); }
-.schedule-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr); gap: 10px; }
-.enable-on-create { display: flex !important; min-height: 82px; align-items: center; gap: 10px; padding: 12px 14px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 9px; cursor: pointer; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease; }
+.schedule-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr); align-items: start; gap: 10px; }
+.cadence-config { display: grid; min-width: 0; gap: 10px; margin: 0; padding: 11px; border: 1px solid var(--border); border-radius: 8px; }
+.cadence-config > legend, .cadence-days > legend { padding: 0 5px; color: var(--text-secondary); font-size: var(--font-caption); line-height: var(--line-caption); font-weight: 600; }
+.cadence-segments { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; padding: 3px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 8px; }
+.cadence-segments button { min-width: 0; min-height: 32px; padding: 5px 7px; color: var(--text-secondary); background: transparent; border: 0; border-radius: 5px; cursor: pointer; font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.cadence-segments button:hover { color: var(--text); background: var(--surface-hover); }
+.cadence-segments button.active { color: var(--text); background: var(--surface); box-shadow: var(--shadow-sm); font-weight: 620; }
+.cadence-value { display: grid; min-width: 0; gap: 5px; color: var(--text-secondary); font-size: var(--font-secondary); line-height: var(--line-secondary); }
+.cadence-value small { color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.cadence-days { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
+.cadence-days label { display: flex; min-width: 0; min-height: 30px; align-items: center; justify-content: center; gap: 4px; padding: 4px 5px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; color: var(--text-secondary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.cadence-days label:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+.cadence-days label:has(input:checked) { color: var(--brand); background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 28%, var(--border)); }
+.cadence-days input { width: 14px; height: 14px; min-height: 14px; margin: 0; padding: 0; accent-color: var(--brand); }
+.weekday-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.month-day-grid { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.enable-on-create { display: flex !important; min-height: 82px; align-items: center; gap: 10px; padding: 12px 14px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease; }
 .enable-on-create:hover { background: var(--surface-hover); border-color: var(--border-strong); }
 .enable-on-create:has(input:checked) { background: var(--brand-soft); border-color: color-mix(in srgb, var(--brand) 28%, var(--border)); }
 .enable-on-create:has(input:focus-visible) { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 15%, transparent); }
@@ -548,5 +640,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 .schedule-grant-hint { color: var(--warning); font-size: var(--font-caption); line-height: var(--line-caption); }
 @media (max-width: 960px) {
   .scope-columns, .schedule-controls { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .weekday-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .month-day-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
 </style>

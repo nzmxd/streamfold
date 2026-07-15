@@ -68,8 +68,29 @@ export const taskKinds = [
 ] as const
 export type TaskKind = (typeof taskKinds)[number]
 
+export const taskSources = ['job', 'plugin-run'] as const
+export type TaskSource = (typeof taskSources)[number]
+
+export const taskAttentionStates = ['pending', 'handled', 'superseded'] as const
+export type TaskAttentionState = (typeof taskAttentionStates)[number]
+
+export const taskAttentionFilters = ['pending', 'resolved'] as const
+export type TaskAttentionFilter = (typeof taskAttentionFilters)[number]
+
+export interface TaskAttentionResolutionRecord {
+  source: TaskSource
+  taskId: string
+  resolvedAt: string
+}
+
+export interface MarkTaskHandledInput {
+  source: TaskSource
+  taskId: string
+}
+
 export interface TaskView {
   id: string
+  source: TaskSource
   batchId: string | null
   kind: TaskKind
   trigger: TaskTrigger
@@ -88,6 +109,9 @@ export interface TaskView {
   startedAt: string | null
   finishedAt: string | null
   nextAttemptAt: string | null
+  attentionState: TaskAttentionState | null
+  attentionResolvedAt: string | null
+  attentionSupersededByTaskId: string | null
 }
 
 export interface TaskQuery {
@@ -102,6 +126,7 @@ export interface TaskQuery {
   createdFrom?: string
   createdTo?: string
   search?: string
+  attention?: TaskAttentionFilter
   offset?: number
   limit?: number
 }
@@ -133,6 +158,7 @@ export interface TaskBatchView {
   cancelledCount: number
   interruptedCount: number
   pausedCount: number
+  needsAttentionCount: number
 }
 
 export type SyncBatchPreviewStatus =

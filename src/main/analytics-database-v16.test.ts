@@ -9,7 +9,7 @@ import {
 } from './plugins/builtin-manifests'
 import { SocialDatabase } from './database'
 
-describe('SocialDatabase reliable analytics', () => {
+describe('SocialDatabase v16 reliable analytics', () => {
   let database: SocialDatabase
 
   beforeEach(() => {

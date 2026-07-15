@@ -6,6 +6,7 @@ import { formatDate } from '../shared/format'
 import {
   canCancelTask,
   canRetryTask,
+  taskAttentionLabel,
   taskKindLabel,
   taskNeedsLogin,
   taskStatusLabel,
@@ -27,6 +28,7 @@ const emit = defineEmits<{
   retry: [task: TaskView]
   openBrowser: [task: TaskView]
   inspect: [task: TaskView]
+  handle: [task: TaskView]
 }>()
 
 const accountMap = computed(() => new Map(props.accounts.map((account) => [account.id, account])))
@@ -64,11 +66,16 @@ function progressValue(task: TaskView): number {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="task in tasks" :key="task.id">
+        <tr v-for="task in tasks" :key="`${task.source}:${task.id}`">
           <td>
             <span class="task-status" :class="`tone-${taskStatusTone(task.status)}`">
               <i />{{ taskStatusLabel(task.status) }}
             </span>
+            <small
+              v-if="task.attentionState"
+              class="task-attention"
+              :class="`attention-${task.attentionState}`"
+            >{{ taskAttentionLabel(task.attentionState) }}</small>
           </td>
           <td>
             <button class="task-title" type="button" :title="`查看任务 ${task.id}`" @click="emit('inspect', task)">
@@ -119,7 +126,13 @@ function progressValue(task: TaskView): number {
                 :disabled="busyTaskId === task.id"
                 @click="emit('retry', task)"
               >{{ busyTaskId === task.id ? '处理中…' : '重试' }}</button>
-              <button v-if="!taskNeedsLogin(task) && !canCancelTask(task) && !canRetryTask(task)" type="button" @click="emit('inspect', task)">详情</button>
+              <button
+                v-if="task.attentionState === 'pending'"
+                type="button"
+                :disabled="busyTaskId === task.id"
+                @click="emit('handle', task)"
+              >标为已处理</button>
+              <button v-if="!taskNeedsLogin(task) && !canCancelTask(task) && !canRetryTask(task) && task.attentionState !== 'pending'" type="button" @click="emit('inspect', task)">详情</button>
             </div>
           </td>
         </tr>
@@ -153,6 +166,9 @@ function progressValue(task: TaskView): number {
 .task-status.tone-success { color: var(--success); background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 26%, var(--border)); }
 .task-status.tone-warning { color: var(--warning); background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 26%, var(--border)); }
 .task-status.tone-danger { color: var(--danger); background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 26%, var(--border)); }
+.task-attention { width: max-content; }
+.task-attention.attention-pending { color: var(--warning); }
+.task-attention.attention-handled, .task-attention.attention-superseded { color: var(--success); }
 .task-progress-cell { min-width: 155px; }
 .task-progress { display: grid; grid-template-columns: minmax(80px, 1fr) 32px; align-items: center; gap: 8px; }
 .task-progress > span { display: block; height: 6px; overflow: hidden; background: var(--surface-hover); border-radius: 99px; }

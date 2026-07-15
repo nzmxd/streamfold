@@ -34,12 +34,16 @@ import {
 } from '../shared/contracts'
 import {
   syncBatchScopes,
+  taskAttentionFilters,
   taskKinds,
+  taskSources,
   taskStatuses,
   taskTriggers,
   type EnqueueSyncBatchInput,
+  type MarkTaskHandledInput,
   type TaskQuery
 } from '../shared/job-contracts'
+import { normalizePluginScheduleCadence } from './plugins/schedule-recurrence'
 
 const syncModes = ['profile_only', 'recent_20', 'recent_100', 'disabled'] as const
 
@@ -170,9 +174,20 @@ export function parseTaskQuery(value: unknown): TaskQuery {
   if (record.createdFrom !== undefined) result.createdFrom = asDate(record.createdFrom, '开始时间')
   if (record.createdTo !== undefined) result.createdTo = asDate(record.createdTo, '结束时间')
   if (record.search !== undefined) result.search = asText(record.search, '搜索词', 0, 200)
+  if (record.attention !== undefined) {
+    result.attention = asEnum(record.attention, taskAttentionFilters, '任务处理状态')
+  }
   if (record.offset !== undefined) result.offset = asInteger(record.offset, '分页位置', 0, 1_000_000)
   if (record.limit !== undefined) result.limit = asInteger(record.limit, '返回数量', 1, 200)
   return result
+}
+
+export function parseMarkTaskHandled(value: unknown): MarkTaskHandledInput {
+  const record = asRecord(value)
+  return {
+    source: asEnum(record.source, taskSources, '任务来源'),
+    taskId: asId(record.taskId)
+  }
 }
 
 export function parseId(value: unknown): string {
@@ -431,7 +446,7 @@ export function parseCreatePluginSchedule(value: unknown): CreatePluginScheduleI
     contributionId: asText(record.contributionId, '贡献点 ID', 1, 160),
     accountIds: asStringArray(record.accountIds, '账号', 500, 160),
     groupIds: asStringArray(record.groupIds, '分组', 500, 160),
-    intervalMinutes: asInteger(record.intervalMinutes, '调度间隔', 5, 525_600),
+    cadence: normalizePluginScheduleCadence(record.cadence, record.intervalMinutes),
     enabled: asBoolean(record.enabled, '计划开关')
   }
 }
