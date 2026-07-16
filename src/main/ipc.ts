@@ -1,5 +1,5 @@
 import { dialog, ipcMain, nativeTheme, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
-import type { AppearanceState, ThemePreference } from '../shared/contracts'
+import { DEFAULT_THEME_COLOR, type AppearanceState, type ThemePreference } from '../shared/contracts'
 import type { BrowserManager } from './browser-manager'
 import type { BackupService } from './backup-service'
 import type { AppLogService } from './app-log-service'
@@ -84,6 +84,7 @@ export function registerIpc(
   let maintenance = false
   let maintenanceMessage = '本地数据库正在恢复，请稍候'
   let activeOperations = 0
+  let themeColor = storedThemeColor(database)
   const idleWaiters = new Set<() => void>()
   const notifyAccountsChanged = (): void => {
     if (!window.isDestroyed()) window.webContents.send('accounts:changed')
@@ -148,6 +149,11 @@ export function registerIpc(
     })
   }
 
+  const currentAppearance = (): AppearanceState => ({
+    preference: nativeTheme.themeSource,
+    resolved: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+    themeColor
+  })
   const broadcastAppearance = (): AppearanceState => {
     const state = currentAppearance()
     if (!window.isDestroyed()) {
@@ -190,6 +196,11 @@ export function registerIpc(
     const preference = parseThemePreference(value)
     database.setSetting('appearance.theme', preference)
     nativeTheme.themeSource = preference
+    return broadcastAppearance()
+  }))
+  handleIpc('appearance:set-theme-color', trusted((_event, value) => {
+    themeColor = parseThemeColor(value)
+    database.setSetting('appearance.themeColor', themeColor)
     return broadcastAppearance()
   }))
 
@@ -582,6 +593,12 @@ export function registerIpc(
       const result = await services.backup.restore(input)
       const restoredSettings = await services.settings.overview()
       services.updates.setAutomaticChecks(restoredSettings.autoCheckUpdates)
+      const restoredTheme = database.getSetting<string>('appearance.theme', 'system')
+      nativeTheme.themeSource = restoredTheme === 'light' || restoredTheme === 'dark' || restoredTheme === 'system'
+        ? restoredTheme
+        : 'system'
+      themeColor = storedThemeColor(database)
+      broadcastAppearance()
       notifyAccountsChanged()
       notifyContentChanged()
       return result
@@ -605,6 +622,13 @@ export function registerIpc(
     nativeTheme.themeSource = preference
     return broadcastAppearance()
   })
+  handleIpc('browser-workspace:set-theme-color', (event, value) => {
+    browser.assertTrustedSender(event)
+    if (maintenance) throw new Error(maintenanceMessage)
+    themeColor = parseThemeColor(value)
+    database.setSetting('appearance.themeColor', themeColor)
+    return broadcastAppearance()
+  })
   handleIpc('browser-workspace:back', (event) => browser.backForSender(event))
   handleIpc('browser-workspace:forward', (event) => browser.forwardForSender(event))
   handleIpc('browser-workspace:reload', (event) => browser.reloadForSender(event))
@@ -624,6 +648,7 @@ export function unregisterIpc(): void {
   for (const channel of [
     'appearance:get',
     'appearance:set',
+    'appearance:set-theme-color',
     'platforms:list',
     'accounts:list',
     'accounts:create',
@@ -706,6 +731,7 @@ export function unregisterIpc(): void {
     'browser-workspace:get-state',
     'browser-workspace:get-appearance',
     'browser-workspace:set-appearance',
+    'browser-workspace:set-theme-color',
     'browser-workspace:back',
     'browser-workspace:forward',
     'browser-workspace:reload',
@@ -714,16 +740,21 @@ export function unregisterIpc(): void {
   ]) ipcMain.removeHandler(channel)
 }
 
-function currentAppearance(): AppearanceState {
-  return {
-    preference: nativeTheme.themeSource,
-    resolved: nativeTheme.shouldUseDarkColors ? 'dark' : 'light'
-  }
-}
-
 function parseThemePreference(value: unknown): ThemePreference {
   if (value === 'light' || value === 'dark' || value === 'system') return value
   throw new Error('主题设置无效')
+}
+
+function parseThemeColor(value: unknown): string {
+  if (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)) return value.toLowerCase()
+  throw new Error('主题色无效')
+}
+
+function storedThemeColor(database: SocialDatabase): string {
+  const value = database.getSetting<unknown>('appearance.themeColor', DEFAULT_THEME_COLOR)
+  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+    ? value.toLowerCase()
+    : DEFAULT_THEME_COLOR
 }
 
 function assertTrustedSender(window: BrowserWindow, event: IpcMainInvokeEvent): void {

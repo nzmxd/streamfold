@@ -88,6 +88,23 @@ describe('social vault renderer facade', () => {
     )
   })
 
+  it('serializes custom theme colors through the fixed appearance channel', async () => {
+    const invoke = vi.fn(async () => ({
+      preference: 'system',
+      resolved: 'light',
+      themeColor: '#0f8a80'
+    }))
+    const bridge: SocialVaultBridge = {
+      runtime: { platform: 'win32' },
+      invoke,
+      on: vi.fn(() => () => undefined)
+    }
+
+    await createSocialVaultApi(bridge).appearance.setThemeColor('#0f8a80')
+
+    expect(invoke).toHaveBeenCalledWith('appearance:set-theme-color', '["#0f8a80"]')
+  })
+
   it('subscribes to task changes through the fixed event channel', () => {
     const listener = vi.fn()
     const on = vi.fn(() => () => undefined)

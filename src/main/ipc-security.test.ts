@@ -33,6 +33,8 @@ describe('IPC trust and maintenance boundary', () => {
   beforeEach(() => {
     electronMock.handlers.clear()
     vi.clearAllMocks()
+    electronMock.nativeTheme.themeSource = 'system'
+    electronMock.nativeTheme.shouldUseDarkColors = false
   })
 
   afterEach(() => {
@@ -91,6 +93,37 @@ describe('IPC trust and maintenance boundary', () => {
       accountId: 'account-1',
       period: 'daily'
     })).rejects.toThrow('远程页面')
+  })
+
+  it('restores, persists and broadcasts only valid custom theme colors', async () => {
+    const fixture = ipcFixture()
+    fixture.settings.set('appearance.themeColor', '#C2416C')
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+    const event = eventFixture(fixture)
+
+    await expect(requiredHandler('appearance:get')(event)).resolves.toEqual({
+      preference: 'system',
+      resolved: 'light',
+      themeColor: '#c2416c'
+    })
+    await expect(requiredHandler('appearance:set-theme-color')(event, '#0F8A80')).resolves.toEqual({
+      preference: 'system',
+      resolved: 'light',
+      themeColor: '#0f8a80'
+    })
+
+    expect(fixture.database.setSetting).toHaveBeenCalledWith('appearance.themeColor', '#0f8a80')
+    expect(fixture.window.webContents.send).toHaveBeenCalledWith(
+      'appearance:changed',
+      expect.objectContaining({ themeColor: '#0f8a80' })
+    )
+    expect(fixture.browser.applyAppearance).toHaveBeenCalledWith(
+      expect.objectContaining({ themeColor: '#0f8a80' })
+    )
+
+    await expect(requiredHandler('appearance:set-theme-color')(event, '#fff'))
+      .rejects.toThrow('主题色无效')
+    expect(fixture.database.setSetting).toHaveBeenCalledOnce()
   })
 
   it('records the failing IPC channel with its trusted sender origin', async () => {
@@ -211,7 +244,15 @@ function ipcFixture() {
     jobs: { onChanged: vi.fn(() => vi.fn()) },
     updates
   } as unknown as IpcServices
+  const settings = new Map<string, unknown>()
   const database = {
+    getSetting: vi.fn((key: string, fallback: unknown = null) => (
+      settings.has(key) ? settings.get(key) : fallback
+    )),
+    setSetting: vi.fn((key: string, value: unknown) => {
+      settings.set(key, value)
+      return value
+    }),
     getAccountMetricHistory: vi.fn(() => ({
       accountId: 'account-1',
       platformId: 'zhihu',
@@ -229,6 +270,7 @@ function ipcFixture() {
     updates,
     services,
     database,
+    settings,
     browser: { applyAppearance: vi.fn() } as unknown as Parameters<typeof registerIpc>[2]
   }
 }

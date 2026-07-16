@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import type {
   Account,
   EncryptedBackupResult,
@@ -9,6 +9,7 @@ import type {
 } from '../../../../shared/contracts'
 import { confirmDialog } from '../../ui/dialog'
 import {
+  themeColorPresets,
   useTheme,
   type DensityPreference,
   type FontSizePreference
@@ -36,6 +37,9 @@ const backupBusy = ref(false)
 const restoreBusy = ref(false)
 const backupResult = ref<EncryptedBackupResult | null>(null)
 const appearance = useTheme()
+const customThemeColorActive = computed(() => !themeColorPresets.some((option) => (
+  option.value === appearance.themeColor.value
+)))
 const appearanceThemes: Array<{ value: ThemePreference; label: string }> = [
   { value: 'light', label: '浅色' },
   { value: 'dark', label: '深色' },
@@ -50,6 +54,11 @@ const appearanceDensities: Array<{ value: DensityPreference; label: string; deta
   { value: 'compact', label: '紧凑', detail: '展示更多内容' },
   { value: 'comfortable', label: '舒适', detail: '增加控件留白' }
 ]
+
+function chooseCustomThemeColor(event: Event): void {
+  const input = event.target
+  if (input instanceof HTMLInputElement) void appearance.setThemeColor(input.value)
+}
 
 function displayName(account: Account): string {
   return accountDisplayName(account, platformLabel(account.platformId))
@@ -249,6 +258,35 @@ onMounted(() => void load())
                 :class="{ active: appearance.density.value === option.value }"
                 @click="appearance.setDensity(option.value)"
               >{{ option.label }}</button>
+            </div>
+          </fieldset>
+          <fieldset class="appearance-setting appearance-color-setting">
+            <legend>主题色</legend>
+            <div class="settings-theme-colors" role="group" aria-label="应用主题色">
+              <button
+                v-for="option in themeColorPresets"
+                :key="option.value"
+                class="settings-color-swatch"
+                type="button"
+                :aria-label="`${option.label}主题色`"
+                :aria-pressed="appearance.themeColor.value === option.value"
+                :title="option.label"
+                :style="{ '--swatch-color': option.value }"
+                @click="appearance.setThemeColor(option.value)"
+              ><span aria-hidden="true" /></button>
+              <label
+                class="settings-color-custom"
+                :class="{ active: customThemeColorActive }"
+                title="自定义主题色"
+              >
+                <input
+                  type="color"
+                  :value="appearance.themeColor.value"
+                  aria-label="自定义主题色"
+                  @input="chooseCustomThemeColor"
+                />
+              </label>
+              <output>{{ appearance.themeColor.value.toUpperCase() }}</output>
             </div>
           </fieldset>
         </div>

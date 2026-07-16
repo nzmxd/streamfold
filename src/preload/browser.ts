@@ -10,6 +10,7 @@ const api: BrowserWorkspaceApi = {
   appearance: {
     get: () => ipcRenderer.invoke('browser-workspace:get-appearance'),
     set: (preference) => ipcRenderer.invoke('browser-workspace:set-appearance', preference),
+    setThemeColor: (themeColor) => ipcRenderer.invoke('browser-workspace:set-theme-color', themeColor),
     onChanged: (callback) => {
       const listener = (_event: Electron.IpcRendererEvent, state: AppearanceState): void => callback(state)
       ipcRenderer.on('appearance:changed', listener)

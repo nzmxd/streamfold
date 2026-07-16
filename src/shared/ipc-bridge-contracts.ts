@@ -3,6 +3,7 @@ import type { RuntimePlatform } from './contracts'
 export const socialVaultInvokeChannels = [
   'appearance:get',
   'appearance:set',
+  'appearance:set-theme-color',
   'updates:get-state',
   'updates:check',
   'updates:download',

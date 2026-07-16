@@ -23,6 +23,9 @@ describe('preload social vault transport', () => {
       'analytics:account-metrics',
       { accountId: 'account', period: 'last_7_days' }
     )
+
+    await expect(bridge.invoke('appearance:set-theme-color', '["#0f8a80"]')).resolves.toBe('ok')
+    expect(invoke).toHaveBeenCalledWith('appearance:set-theme-color', '#0f8a80')
   })
 
   it('rejects channels outside the explicit allowlist', () => {

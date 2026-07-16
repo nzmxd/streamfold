@@ -709,7 +709,7 @@ test('六个主要工作区在 900 与 1280 宽度下完成真实截图且无横
   })
 })
 
-test('浅色与深色主题都能在真实窗口中应用', async () => {
+test('浅色、深色与自定义主题色都能在真实窗口中应用并持久化', async ({}, testInfo) => {
   const trigger = page.getByRole('button', { name: /切换主题/ })
   await trigger.click()
   await page.getByRole('menuitemradio', { name: '浅色' }).click()
@@ -728,6 +728,71 @@ test('浅色与深色主题都能在真实窗口中应用', async () => {
 
   await trigger.click()
   const themeMenu = page.locator('.theme-menu')
+  const themeColorGroup = themeMenu.getByRole('group', { name: '主题色', exact: true })
+  await themeColorGroup.getByRole('button', { name: '青绿主题色' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme-color', '0f8a80')
+  await expect.poll(() => page.evaluate(async () => (
+    (await (globalThis as unknown as {
+      socialVault: { appearance: { get(): Promise<{ themeColor: string }> } }
+    }).socialVault.appearance.get()).themeColor
+  ))).toBe('#0f8a80')
+  await trigger.click()
+
+  await openSection('settings')
+  await expect(page.locator('.settings-page .feature-loading')).toHaveCount(0)
+  const customColor = page.locator('.settings-color-custom input[type="color"]')
+  await customColor.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error('custom theme color input is unavailable')
+    element.value = '#eab308'
+    element.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await expect(page.locator('html')).toHaveAttribute('data-theme-color', 'eab308')
+  await expect(page.locator('.settings-color-custom')).toHaveClass(/active/)
+  await expect(page.locator('.settings-theme-colors output')).toHaveText('#EAB308')
+  await expect.poll(() => page.evaluate(async () => (
+    (await (globalThis as unknown as {
+      socialVault: { appearance: { get(): Promise<{ themeColor: string }> } }
+    }).socialVault.appearance.get()).themeColor
+  ))).toBe('#eab308')
+
+  const darkBrand = await page.locator('html').evaluate((element) => (
+    getComputedStyle(element).getPropertyValue('--brand').trim()
+  ))
+  const appliedBrandColors = await page.evaluate(() => {
+    const root = document.documentElement
+    const navIcon = document.querySelector<HTMLElement>('.main-nav nav button.active .nav-icon')
+    const navCopy = document.querySelector<HTMLElement>('.main-nav nav button.active .nav-copy')
+    const primaryButton = document.querySelector<HTMLElement>('.settings-page .button.primary')
+    const probe = document.createElement('span')
+    probe.style.color = getComputedStyle(root).getPropertyValue('--brand')
+    document.body.append(probe)
+    const normalizedBrand = getComputedStyle(probe).color
+    probe.remove()
+    return {
+      brand: normalizedBrand,
+      navIcon: navIcon ? getComputedStyle(navIcon).color : null,
+      navCopy: navCopy ? getComputedStyle(navCopy).color : null,
+      primaryButton: primaryButton ? getComputedStyle(primaryButton).backgroundColor : null
+    }
+  })
+  expect(appliedBrandColors.navIcon).toBe(appliedBrandColors.brand)
+  expect(appliedBrandColors.navCopy).toBe(appliedBrandColors.brand)
+  expect(appliedBrandColors.primaryButton).toBe(appliedBrandColors.brand)
+  await page.screenshot({
+    path: testInfo.outputPath('ui-920x640-settings-custom-theme-dark.png'),
+    animations: 'disabled'
+  })
+
+  await trigger.click()
+  await page.getByRole('menuitemradio', { name: '浅色' }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  await expect(page.locator('html')).toHaveAttribute('data-theme-color', 'eab308')
+  const lightBrand = await page.locator('html').evaluate((element) => (
+    getComputedStyle(element).getPropertyValue('--brand').trim()
+  ))
+  expect(lightBrand).not.toBe(darkBrand)
+
+  await trigger.click()
   await themeMenu.getByRole('group', { name: '界面字号' }).getByRole('button', { name: '大', exact: true }).click()
   await themeMenu.getByRole('group', { name: '界面密度' }).getByRole('button', { name: '舒适', exact: true }).click()
   await expect(page.locator('html')).toHaveAttribute('data-font-size', 'large')
@@ -735,8 +800,11 @@ test('浅色与深色主题都能在真实窗口中应用', async () => {
 
   await page.reload()
   await page.locator('#app').waitFor({ state: 'visible' })
+  await expect(page.locator('html')).toHaveAttribute('data-theme-color', 'eab308')
   await expect(page.locator('html')).toHaveAttribute('data-font-size', 'large')
   await expect(page.locator('html')).toHaveAttribute('data-density', 'comfortable')
+  await openSection('settings')
+  await expect(page.locator('.settings-theme-colors output')).toHaveText('#EAB308')
 })
 
 test('最小窗口在大字号与舒适密度下保持六个工作区可用', async ({}, testInfo) => {

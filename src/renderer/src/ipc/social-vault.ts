@@ -24,6 +24,7 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
     appearance: {
       get: () => invoke('appearance:get'),
       set: (preference) => invoke('appearance:set', preference),
+      setThemeColor: (themeColor) => invoke('appearance:set-theme-color', themeColor),
       onChanged: (callback) => subscribe('appearance:changed', (state) => callback(state as AppearanceState))
     },
     updates: {

@@ -132,17 +132,20 @@ export interface BrowserState {
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
+export const DEFAULT_THEME_COLOR = '#5859de'
 export type RuntimePlatform = 'win32' | 'darwin' | 'linux'
 export type AppNavigationTarget = 'dashboard' | 'accounts' | 'content' | 'analytics' | 'tasks' | 'plugins' | 'logs' | 'settings'
 
 export interface AppearanceState {
   preference: ThemePreference
   resolved: ResolvedTheme
+  themeColor: string
 }
 
 export interface AppearanceApi {
   get(): Promise<AppearanceState>
   set(preference: ThemePreference): Promise<AppearanceState>
+  setThemeColor(themeColor: string): Promise<AppearanceState>
   onChanged(callback: (state: AppearanceState) => void): () => void
 }
 

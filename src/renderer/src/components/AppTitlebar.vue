@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ThemePreference, UpdateState } from '../../../shared/contracts'
 import { presentUpdate } from '../features/updater/update-presentation'
 import {
+  themeColorPresets,
   useTheme,
   type DensityPreference,
   type FontSizePreference
@@ -33,6 +34,9 @@ const sectionLabels: Record<AppSection, string> = {
 
 const sectionLabel = computed(() => sectionLabels[props.section])
 const themeLabel = computed(() => theme.resolved.value === 'dark' ? '深色外观' : '浅色外观')
+const customThemeColorActive = computed(() => !themeColorPresets.some((option) => (
+  option.value === theme.themeColor.value
+)))
 const updatePresentation = computed(() => presentUpdate(props.updateState))
 const updateTitlebarLabel = computed(() => props.updateReady
   ? updatePresentation.value.titlebarLabel
@@ -61,6 +65,15 @@ const densityOptions: Array<{ value: DensityPreference; label: string }> = [
 function chooseTheme(value: ThemePreference): void {
   menuOpen.value = false
   void theme.setTheme(value)
+}
+
+function chooseThemeColor(value: string): void {
+  void theme.setThemeColor(value)
+}
+
+function chooseCustomThemeColor(event: Event): void {
+  const input = event.target
+  if (input instanceof HTMLInputElement) chooseThemeColor(input.value)
 }
 
 function closeMenu(event: MouseEvent): void {
@@ -154,6 +167,34 @@ onBeforeUnmount(() => {
             {{ option.label }}
             <svg class="theme-check" viewBox="0 0 20 20"><path d="m5 10 3 3 7-7" /></svg>
           </button>
+          <div class="appearance-menu-group">
+            <span class="theme-menu-label">主题色</span>
+            <div class="theme-color-grid" role="group" aria-label="主题色">
+              <button
+                v-for="option in themeColorPresets"
+                :key="option.value"
+                class="theme-color-swatch"
+                type="button"
+                :aria-label="`${option.label}主题色`"
+                :aria-pressed="theme.themeColor.value === option.value"
+                :title="option.label"
+                :style="{ '--swatch-color': option.value }"
+                @click="chooseThemeColor(option.value)"
+              ><span aria-hidden="true" /></button>
+              <label
+                class="theme-color-custom"
+                :class="{ active: customThemeColorActive }"
+                title="自定义主题色"
+              >
+                <input
+                  type="color"
+                  :value="theme.themeColor.value"
+                  aria-label="自定义主题色"
+                  @input="chooseCustomThemeColor"
+                />
+              </label>
+            </div>
+          </div>
           <div class="appearance-menu-group">
             <span class="theme-menu-label">字号</span>
             <div class="appearance-segmented" role="group" aria-label="界面字号">
