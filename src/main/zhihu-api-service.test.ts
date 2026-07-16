@@ -248,13 +248,20 @@ describe('ZhihuApiService', () => {
           like: 31,
           follower_translate: -1
         }))],
-        article: [analysisRow('article', '7001', analyticsMetrics({
-          pv: 202,
-          show: 402,
-          upvote: 22,
-          like: 32,
-          follower_translate: 3
-        }))]
+        article: [{
+          ...analyticsMetrics({
+            pv: 202,
+            show: 402,
+            upvote: 22,
+            like: 32,
+            follower_translate: 3
+          }),
+          article: {
+            id: '',
+            url_token: '7001',
+            title: 'article-7001'
+          }
+        }]
       }
     })
 
@@ -429,6 +436,33 @@ describe('ZhihuApiService', () => {
     expect(database.listAccountSnapshots(account.id)).toEqual([])
     expect(database.listContents({ accountId: account.id })).toEqual([])
     expect(database.listJobs()[0]).toMatchObject({ status: 'failed', errorCode: 'IDENTITY_MISMATCH' })
+  })
+
+  it('uses the persisted plugin interval for manual collection', async () => {
+    enablePlugin()
+    plugins.configureManualCollectionInterval(12)
+    const account = createSyncableAccount('profile_only')
+    const service = createService(() => createTransport())
+
+    await expect(service.sync(account.id)).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    nowMs += 11 * 60_000
+    await expect(service.sync(account.id)).rejects.toThrow('60 秒后重试')
+    nowMs += 61_000
+    await expect(service.sync(account.id)).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    expect(database.listJobs()).toHaveLength(2)
+  })
+
+  it('keeps scheduled collection independent from the manual interval', async () => {
+    enablePlugin()
+    plugins.configureManualCollectionInterval(12)
+    const account = createSyncableAccount('profile_only')
+    const service = createService(() => createTransport())
+
+    await expect(service.sync(account.id, 'schedule')).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    await expect(service.sync(account.id, 'schedule')).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    await expect(service.sync(account.id, 'manual')).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    await expect(service.sync(account.id, 'manual')).rejects.toThrow('720 秒后重试')
+    expect(database.listJobs()).toHaveLength(3)
   })
 
   function enablePlugin(): void {
@@ -607,14 +641,8 @@ function analysisRow(
   id: string,
   metrics: Record<string, unknown>
 ): Record<string, unknown> {
-  const numericId = Number(id)
-  if (!Number.isSafeInteger(numericId) || numericId < 0) {
-    throw new Error(`analysis row id must be a safe non-negative integer: ${id}`)
-  }
   return {
-    type,
-    content_token: `${type}-token-${id}`,
-    data: { id: numericId, title: `${type}-${id}` },
+    [type]: { id, url_token: id, title: `${type}-${id}` },
     reaction: metrics
   }
 }

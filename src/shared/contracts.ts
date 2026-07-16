@@ -133,7 +133,7 @@ export interface BrowserState {
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
 export type RuntimePlatform = 'win32' | 'darwin' | 'linux'
-export type AppNavigationTarget = 'dashboard' | 'accounts' | 'content' | 'analytics' | 'tasks' | 'plugins' | 'settings'
+export type AppNavigationTarget = 'dashboard' | 'accounts' | 'content' | 'analytics' | 'tasks' | 'plugins' | 'logs' | 'settings'
 
 export interface AppearanceState {
   preference: ThemePreference
@@ -214,6 +214,13 @@ export interface SocialVaultApi {
     listBatches(): Promise<import('./job-contracts').TaskBatchView[]>
     onChanged(callback: () => void): () => void
   }
+  logs: {
+    list(query?: import('./log-contracts').AppLogQuery): Promise<import('./log-contracts').AppLogListResult>
+    export(query?: import('./log-contracts').AppLogQuery): Promise<import('./log-contracts').AppLogExportResult>
+    clear(): Promise<void>
+    recordRendererError(input: import('./log-contracts').RendererErrorLogInput): Promise<void>
+    onChanged(callback: () => void): () => void
+  }
   plugins: {
     listPackages(): Promise<import('./plugin-host-contracts').InstalledPluginPackage[]>
     listContributions(): Promise<import('./plugin-host-contracts').PluginContributionState[]>
@@ -269,3 +276,4 @@ export * from './session-api-contracts'
 export * from './xiaohongshu-api-contracts'
 export * from './update-contracts'
 export * from './ipc-bridge-contracts'
+export * from './log-contracts'

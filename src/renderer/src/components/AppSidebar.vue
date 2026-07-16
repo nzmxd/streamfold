@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
-export type AppSection = 'dashboard' | 'accounts' | 'content' | 'analytics' | 'tasks' | 'plugins' | 'settings'
+export type AppSection = 'dashboard' | 'accounts' | 'content' | 'analytics' | 'tasks' | 'plugins' | 'logs' | 'settings'
 
 const props = defineProps<{ modelValue: AppSection; collapsed: boolean }>()
 const emit = defineEmits<{ 'update:modelValue': [value: AppSection] }>()
@@ -13,6 +13,7 @@ const items: Array<{ id: AppSection; label: string; description: string }> = [
   { id: 'analytics', label: '数据', description: '趋势与表现' },
   { id: 'tasks', label: '任务', description: '进度与队列' },
   { id: 'plugins', label: '插件', description: '平台能力' },
+  { id: 'logs', label: '日志', description: '运行诊断' },
   { id: 'settings', label: '设置', description: '偏好与存储' }
 ]
 
@@ -84,6 +85,7 @@ onBeforeUnmount(() => {
           <svg v-else-if="item.id === 'analytics'" viewBox="0 0 24 24"><path d="M4 20V10m6 10V4m6 16v-7m4 7H2" /></svg>
           <svg v-else-if="item.id === 'tasks'" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="3" /><path d="m8 9 1.5 1.5L12 8M14 9h3m-9 6 1.5 1.5L12 14m2 1h3" /></svg>
           <svg v-else-if="item.id === 'plugins'" viewBox="0 0 24 24"><path d="M8 8V5a2 2 0 0 1 4 0v3h3a2 2 0 1 1 0 4h-3v3a2 2 0 1 1-4 0v-3H5a2 2 0 1 1 0-4Z" /></svg>
+          <svg v-else-if="item.id === 'logs'" viewBox="0 0 24 24"><path d="M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" /><path d="m7 9 2.5 2.5L7 14m5-1h5" /></svg>
           <svg v-else viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg>
         </span>
         <span class="nav-copy"><strong>{{ item.label }}</strong><small>{{ item.description }}</small></span>

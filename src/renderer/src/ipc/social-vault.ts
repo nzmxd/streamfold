@@ -100,6 +100,13 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
       listBatches: () => invoke('tasks:list-batches'),
       onChanged: (callback) => subscribe('tasks:changed', () => callback())
     },
+    logs: {
+      list: (query) => invoke('logs:list', query),
+      export: (query) => invoke('logs:export', query),
+      clear: () => invoke('logs:clear'),
+      recordRendererError: (input) => invoke('logs:record-renderer-error', input),
+      onChanged: (callback) => subscribe('logs:changed', () => callback())
+    },
     plugins: {
       listPackages: () => invoke('plugins:packages'),
       listContributions: () => invoke('plugins:contributions'),

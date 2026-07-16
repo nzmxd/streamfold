@@ -17,6 +17,7 @@ import {
 import electronUpdater from 'electron-updater'
 import type { UpdateUnsupportedReason } from '../shared/contracts'
 import { BrowserManager } from './browser-manager'
+import { AppLogService } from './app-log-service'
 import { BackupService } from './backup-service'
 import { SocialDatabase } from './database'
 import { ExportService } from './export-service'
@@ -64,6 +65,10 @@ if (smokeMode || reviewMode) {
   // Chromium partitions, backups metadata, or historical statistics.
   app.setPath('userData', join(app.getPath('appData'), 'social-vault'))
 }
+const appLogger = new AppLogService(join(app.getPath('userData'), 'logs'))
+appLogger.info('app', '应用进程启动', {
+  context: { version: app.getVersion(), platform: process.platform, pid: process.pid }
+})
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
 
 protocol.registerSchemesAsPrivileged([
@@ -117,6 +122,35 @@ app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (event) => event.preventDefault())
 })
 
+app.on('render-process-gone', (_event, contents, details) => {
+  appLogger.error('renderer', '渲染进程已停止', {
+    code: details.reason,
+    context: {
+      exitCode: details.exitCode,
+      webContentsId: contents.id,
+      origin: diagnosticOrigin(contents.getURL())
+    }
+  })
+})
+
+app.on('child-process-gone', (_event, details) => {
+  if (details.reason === 'killed') return
+  const metadata = {
+    code: details.reason,
+    context: { exitCode: details.exitCode, processType: details.type, serviceName: details.serviceName ?? null }
+  }
+  if (details.reason === 'clean-exit') appLogger.debug('process', 'Electron 子进程已结束', metadata)
+  else appLogger.error('process', 'Electron 子进程异常停止', metadata)
+})
+
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+  appLogger.captureError('process', error, { origin })
+})
+process.on('unhandledRejection', (reason) => {
+  appLogger.captureError('process', reason, { origin: 'unhandledRejection' })
+  setImmediate(() => process.exit(1))
+})
+
 void app.whenReady().then(async () => {
   applicationIcon = loadApplicationIcon()
   profileMediaStore = new ProfileMediaStore(join(app.getPath('userData'), 'profile-media'))
@@ -137,6 +171,7 @@ void app.whenReady().then(async () => {
     showMainWindow()
   })
 }).catch((error: unknown) => {
+  appLogger.captureError('bootstrap', error)
   console.error('STREAMFOLD_BOOTSTRAP_FAILED', error)
   if (!smokeMode) {
     dialog.showErrorBox('归页无法启动', '应用资源校验失败，请重新安装可信来源的最新版本。')
@@ -149,6 +184,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  appLogger.info('app', '应用进程退出')
   nativeTheme.off('updated', updateTrayIcon)
   tray?.destroy()
   tray = null
@@ -288,7 +324,7 @@ function createWindow(): void {
 
   database = new SocialDatabase(join(app.getPath('userData'), 'social-vault.sqlite'))
   updateService.setAutomaticChecks(readAutomaticUpdatePreference(database))
-  database.recoverInterruptedJobs()
+  const recoveredJobs = database.recoverInterruptedJobs()
   const smokeTheme = process.env.SOCIAL_VAULT_SMOKE_THEME
   const savedTheme = database.getSetting<string>('appearance.theme', 'system')
   const initialTheme = smokeMode && (smokeTheme === 'light' || smokeTheme === 'dark')
@@ -301,7 +337,7 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 820,
-    minWidth: 920,
+    minWidth: 760,
     minHeight: 640,
     title: '归页 · Streamfold',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d1016' : '#f6f7fb',
@@ -377,6 +413,35 @@ function createWindow(): void {
     riskNote: platform.riskNote
   })))
   const jobService = new JobService(database)
+  const recoveredJobIds = new Set(recoveredJobs.map((job) => job.id))
+  const terminalJobIds = new Set(database.listJobs()
+    .filter((job) => (
+      ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.status) &&
+      !recoveredJobIds.has(job.id)
+    ))
+    .map((job) => job.id))
+  const logTerminalJob = (job: ReturnType<SocialDatabase['listJobs']>[number]) => {
+    if (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.status) || terminalJobIds.has(job.id)) return
+    terminalJobIds.add(job.id)
+    const metadata = {
+      code: job.errorCode || null,
+      context: {
+        jobId: job.id,
+        accountId: job.accountId,
+        pluginId: job.pluginId,
+        contributionId: job.contributionId,
+        status: job.status,
+        attempt: job.attempt
+      }
+    }
+    if (job.status === 'failed' || job.status === 'interrupted') {
+      appLogger.error('sync', job.errorMessage || job.stage || '同步任务失败', metadata)
+    } else {
+      appLogger.info('sync', job.stage || `同步任务${job.status === 'succeeded' ? '完成' : '取消'}`, metadata)
+    }
+  }
+  const removeJobLogListener = jobService.onChanged(logTerminalJob)
+  for (const recovered of recoveredJobs) logTerminalJob(recovered)
   const accountCoordinator = new AccountExecutionCoordinator()
   const xiaohongshuApiService = new XiaohongshuApiService({
     repository: database,
@@ -410,7 +475,7 @@ function createWindow(): void {
         if (contribution.kind !== 'platform.adapter' || !request.accountId || !platformSyncRef) {
           throw new Error('内置贡献点没有可执行的手动动作')
         }
-        await platformSyncRef.sync(request.accountId)
+        await platformSyncRef.sync(request.accountId, request.trigger === 'schedule' ? 'schedule' : 'manual')
         return null
       }
     }
@@ -459,7 +524,36 @@ function createWindow(): void {
   pluginAutomationService = new PluginAutomationService(database, pluginHostService, runtimeExecutor)
   pluginAutomationService.setAccountCoordinator(accountCoordinator)
   pluginAutomationService.setPaused(database.getSetting<boolean>('automation.paused', false) === true)
+  const pluginTerminalStatuses = ['succeeded', 'failed', 'cancelled', 'interrupted']
+  const terminalPluginRunIds = new Set(database.listPluginRuns()
+    .filter((run) => pluginTerminalStatuses.includes(run.status))
+    .map((run) => run.id))
+  const logPluginRunChanges = () => {
+    for (const run of database!.listPluginRuns()) {
+      if (!pluginTerminalStatuses.includes(run.status) || terminalPluginRunIds.has(run.id)) continue
+      terminalPluginRunIds.add(run.id)
+      const metadata = {
+        code: run.errorCode || null,
+        context: {
+          runId: run.id,
+          pluginId: run.pluginId,
+          contributionId: run.contributionId,
+          accountId: run.accountId,
+          trigger: run.trigger,
+          status: run.status,
+          attempt: run.attempt
+        }
+      }
+      if (run.status === 'failed' || run.status === 'interrupted') {
+        appLogger.error('plugin', run.errorMessage || '插件运行失败', metadata)
+      } else {
+        appLogger.info('plugin', `插件运行${run.status === 'succeeded' ? '完成' : '取消'}`, metadata)
+      }
+    }
+  }
+  const removePluginLogListener = pluginAutomationService.onChanged(logPluginRunChanges)
   pluginAutomationService.start()
+  logPluginRunChanges()
   syncBatchService.start()
   removeTrayTaskListener?.()
   const removeTrayJobListener = jobService.onChanged(refreshTrayMenu)
@@ -467,6 +561,8 @@ function createWindow(): void {
   removeTrayTaskListener = () => {
     removeTrayJobListener()
     removeTrayPluginListener()
+    removePluginLogListener()
+    removeJobLogListener()
   }
   refreshTrayMenu()
   const settingsService = new SettingsService({
@@ -526,6 +622,7 @@ function createWindow(): void {
     }
   })
   registerIpc(mainWindow, database, browserManager, {
+    logs: appLogger,
     pluginHost: pluginHostService,
     pluginLifecycle,
     pluginAutomation: pluginAutomationService,
@@ -731,6 +828,13 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     browserManager?.destroy()
     browserManager = null
+    removeTrayTaskListener?.()
+    removeTrayTaskListener = null
+    pluginAutomationService?.stop()
+    pluginAutomationService = null
+    syncBatchService?.stop()
+    syncBatchService = null
+    taskQueryService = null
     unregisterIpc()
     database?.close()
     database = null
@@ -782,6 +886,15 @@ async function registerShellProtocol(profileMedia: ProfileMediaStore): Promise<v
 function isWithin(root: string, target: string): boolean {
   const value = relative(root, target)
   return value === '' || (!value.startsWith('..') && !isAbsolute(value))
+}
+
+function diagnosticOrigin(value: string): string {
+  try {
+    const url = new URL(value)
+    return `${url.protocol}//${url.host}`.slice(0, 300)
+  } catch {
+    return 'unknown'
+  }
 }
 
 async function verifyPartitionIsolation(firstPartition: string, secondPartition: string): Promise<boolean> {

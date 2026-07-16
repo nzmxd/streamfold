@@ -13,7 +13,7 @@ describe('content original-link workflow', () => {
   it('opens a selected content id through the trusted main-process workflow', () => {
     expect(rendererBridge).toContain("openOriginal: (id) => invoke('content:open-original', id)")
     expect(bridgeContracts).toContain("'content:open-original'")
-    expect(ipc).toContain("ipcMain.handle('content:open-original'")
+    expect(ipc).toContain("handleIpc('content:open-original'")
     expect(ipc).toContain('database.getContentDetail(parseId(value))')
     expect(ipc).toContain('isOfficialContentUrl(content.platformId, content.url, content.remoteId)')
     expect(ipc).toContain('browser.openAt(content.accountId, content.url)')

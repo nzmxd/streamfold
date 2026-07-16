@@ -1,9 +1,11 @@
-import { ipcMain, nativeTheme, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
+import { dialog, ipcMain, nativeTheme, type BrowserWindow, type IpcMainInvokeEvent } from 'electron'
 import type { AppearanceState, ThemePreference } from '../shared/contracts'
 import type { BrowserManager } from './browser-manager'
 import type { BackupService } from './backup-service'
+import type { AppLogService } from './app-log-service'
 import type { SocialDatabase } from './database'
 import type { ExportService } from './export-service'
+import { wasErrorReported } from './error-reporting'
 import type { PluginHostService } from './plugins/plugin-host-service'
 import type { PluginAutomationService } from './plugins/automation-service'
 import type { PluginLifecycleService } from './plugins/plugin-lifecycle-service'
@@ -18,6 +20,8 @@ import type { UpdateService } from './update-service'
 import { isTrustedShellUrl } from './shell-security'
 import {
   parseAccountMetricQuery,
+  parseAppLogQuery,
+  parseRendererErrorLog,
   parseAnalyticsComparisonQuery,
   parseAnalyticsQuery,
   parseAnalyticsSummaryQuery,
@@ -50,6 +54,7 @@ import {
 } from './validation'
 
 export interface IpcServices {
+  logs: AppLogService
   pluginHost: PluginHostService
   pluginLifecycle: PluginLifecycleService
   pluginAutomation: PluginAutomationService
@@ -67,6 +72,7 @@ export interface IpcServices {
 let removeNativeThemeListener: (() => void) | null = null
 let removeUpdateListener: (() => void) | null = null
 let removeTaskListener: (() => void) | null = null
+let removeLogListener: (() => void) | null = null
 
 export function registerIpc(
   window: BrowserWindow,
@@ -114,11 +120,32 @@ export function registerIpc(
     maintenance = false
     maintenanceMessage = '本地数据库正在恢复，请稍候'
   }
+  const registerIpcHandler = ipcMain.handle.bind(ipcMain)
   const trusted = <T>(handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => T | Promise<T>) => {
     return async (event: IpcMainInvokeEvent, ...args: unknown[]): Promise<T> => {
       assertTrustedSender(window, event)
-      return runTracked(() => handler(event, ...args))
+      return await runTracked(() => handler(event, ...args))
     }
+  }
+  const handleIpc = (
+    channel: string,
+    handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
+  ): void => {
+    registerIpcHandler(channel, async (event, ...args) => {
+      try {
+        return await handler(event, ...args)
+      } catch (error) {
+        if (!wasErrorReported(error)) {
+          try {
+            services.logs.captureError('ipc', error, {
+              channel,
+              senderUrl: (event.senderFrame?.url ?? 'unknown').split(/[?#]/, 1)[0]
+            })
+          } catch {}
+        }
+        throw error
+      }
+    })
   }
 
   const broadcastAppearance = (): AppearanceState => {
@@ -151,18 +178,24 @@ export function registerIpc(
     removeJobTaskListener()
     removePluginTaskListener()
   }
+  removeLogListener = services.logs.onChanged(() => {
+    if (window.isDestroyed() || window.webContents.isDestroyed() || window.webContents.mainFrame.detached) return
+    try {
+      window.webContents.send('logs:changed')
+    } catch {}
+  })
 
-  ipcMain.handle('appearance:get', trusted(() => currentAppearance()))
-  ipcMain.handle('appearance:set', trusted((_event, value) => {
+  handleIpc('appearance:get', trusted(() => currentAppearance()))
+  handleIpc('appearance:set', trusted((_event, value) => {
     const preference = parseThemePreference(value)
     database.setSetting('appearance.theme', preference)
     nativeTheme.themeSource = preference
     return broadcastAppearance()
   }))
 
-  ipcMain.handle('platforms:list', trusted(() => listPlatforms()))
-  ipcMain.handle('accounts:list', trusted(() => database.listAccounts()))
-  ipcMain.handle('accounts:create', trusted((_event, value) => {
+  handleIpc('platforms:list', trusted(() => listPlatforms()))
+  handleIpc('accounts:list', trusted(() => database.listAccounts()))
+  handleIpc('accounts:create', trusted((_event, value) => {
     const input = parseCreateAccount(value)
     if (!input.adapterContributionId) {
       const candidates = services.pluginHost.listContributions().filter((item) => (
@@ -173,11 +206,11 @@ export function registerIpc(
     }
     return database.createAccount(input)
   }))
-  ipcMain.handle('accounts:update', trusted((_event, value) => database.updateAccount(parseUpdateAccount(value))))
-  ipcMain.handle('accounts:bulk-update', trusted((_event, value) => (
+  handleIpc('accounts:update', trusted((_event, value) => database.updateAccount(parseUpdateAccount(value))))
+  handleIpc('accounts:bulk-update', trusted((_event, value) => (
     database.bulkUpdateAccounts(parseBulkUpdateAccounts(value))
   )))
-  ipcMain.handle('accounts:disconnect', trusted(async (_event, value) => {
+  handleIpc('accounts:disconnect', trusted(async (_event, value) => {
     const id = parseId(value)
     if (services.platformSync.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
     if (disconnectingAccounts.has(id)) throw new Error('账号正在断开')
@@ -189,7 +222,7 @@ export function registerIpc(
       disconnectingAccounts.delete(id)
     }
   }))
-  ipcMain.handle('accounts:purge', trusted(async (_event, value) => {
+  handleIpc('accounts:purge', trusted(async (_event, value) => {
     const id = parseId(value)
     if (services.platformSync.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理')
@@ -204,7 +237,7 @@ export function registerIpc(
       disconnectingAccounts.delete(id)
     }
   }))
-  ipcMain.handle('accounts:verify-identity', trusted(async (_event, value) => {
+  handleIpc('accounts:verify-identity', trusted(async (_event, value) => {
     const id = parseId(value)
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理，请稍候')
     try {
@@ -213,7 +246,7 @@ export function registerIpc(
       notifyAccountsChanged()
     }
   }))
-  ipcMain.handle('accounts:confirm-identity', trusted(async (_event, value) => {
+  handleIpc('accounts:confirm-identity', trusted(async (_event, value) => {
     const input = parseConfirmApiIdentity(value)
     if (disconnectingAccounts.has(input.accountId)) throw new Error('账号正在处理，请稍候')
     try {
@@ -222,7 +255,7 @@ export function registerIpc(
       notifyAccountsChanged()
     }
   }))
-  ipcMain.handle('accounts:sync', trusted(async (_event, value) => {
+  handleIpc('accounts:sync', trusted(async (_event, value) => {
     const id = parseId(value)
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理，请稍候')
     if (database.listJobs().some((job) => job.accountId === id &&
@@ -237,29 +270,29 @@ export function registerIpc(
       notifyAccountsChanged()
     }
   }))
-  ipcMain.handle('accounts:preview-sync-batch', trusted((_event, value) => (
+  handleIpc('accounts:preview-sync-batch', trusted((_event, value) => (
     services.syncBatches.preview(parseEnqueueSyncBatch(value))
   )))
-  ipcMain.handle('accounts:enqueue-sync-batch', trusted(async (_event, value) => {
+  handleIpc('accounts:enqueue-sync-batch', trusted(async (_event, value) => {
     const result = await services.syncBatches.enqueue(parseEnqueueSyncBatch(value))
     notifyTasksChanged()
     notifyAccountsChanged()
     return result
   }))
-  ipcMain.handle('accounts:list-adapters', trusted((_event, value) => (
+  handleIpc('accounts:list-adapters', trusted((_event, value) => (
     services.adapterRegistry.listForAccount(parseId(value))
   )))
-  ipcMain.handle('accounts:switch-adapter', trusted(async (_event, accountId, contributionId) => {
+  handleIpc('accounts:switch-adapter', trusted(async (_event, accountId, contributionId) => {
     const account = await services.adapterRegistry.switchAdapter(parseId(accountId), parseId(contributionId))
     notifyAccountsChanged()
     return account
   }))
-  ipcMain.handle('groups:list', trusted(() => database.listGroups()))
-  ipcMain.handle('groups:create', trusted((_event, value) => database.createGroup(parseCreateGroup(value))))
-  ipcMain.handle('groups:update', trusted((_event, value) => database.updateGroup(parseUpdateGroup(value))))
-  ipcMain.handle('groups:move', trusted((_event, value) => database.moveGroup(parseMoveGroup(value))))
-  ipcMain.handle('groups:remove', trusted((_event, value) => database.removeGroup(parseId(value))))
-  ipcMain.handle('browser:open', trusted(async (_event, accountId) => {
+  handleIpc('groups:list', trusted(() => database.listGroups()))
+  handleIpc('groups:create', trusted((_event, value) => database.createGroup(parseCreateGroup(value))))
+  handleIpc('groups:update', trusted((_event, value) => database.updateGroup(parseUpdateGroup(value))))
+  handleIpc('groups:move', trusted((_event, value) => database.moveGroup(parseMoveGroup(value))))
+  handleIpc('groups:remove', trusted((_event, value) => database.removeGroup(parseId(value))))
+  handleIpc('browser:open', trusted(async (_event, accountId) => {
     const id = parseId(accountId)
     if (disconnectingAccounts.has(id)) throw new Error('账号正在断开，请稍候')
     const state = await browser.open(id)
@@ -267,65 +300,65 @@ export function registerIpc(
     return state
   }))
 
-  ipcMain.handle('content:list', trusted((_event, value) => database.listContents(parseContentQuery(value))))
-  ipcMain.handle('content:search', trusted((_event, value) => (
+  handleIpc('content:list', trusted((_event, value) => database.listContents(parseContentQuery(value))))
+  handleIpc('content:search', trusted((_event, value) => (
     database.searchContents(parseContentSearchQuery(value))
   )))
-  ipcMain.handle('content:bulk-update', trusted((_event, value) => {
+  handleIpc('content:bulk-update', trusted((_event, value) => {
     const result = database.bulkUpdateContents(parseBulkUpdateContents(value))
     notifyContentChanged()
     return result
   }))
-  ipcMain.handle('content:list-tags', trusted((_event, value) => (
+  handleIpc('content:list-tags', trusted((_event, value) => (
     database.listContentTags(parseContentTagFacetQuery(value))
   )))
-  ipcMain.handle('content:export-filtered', trusted(async (_event, value) => {
+  handleIpc('content:export-filtered', trusted(async (_event, value) => {
     const result = await services.exporter.exportFiltered(parseExportFilteredContents(value))
     if (!result.cancelled) services.settings.markExportCompleted()
     return result
   }))
-  ipcMain.handle('content:detail', trusted((_event, value) => database.getContentDetail(parseId(value))))
-  ipcMain.handle('content:open-original', trusted(async (_event, value) => {
+  handleIpc('content:detail', trusted((_event, value) => database.getContentDetail(parseId(value))))
+  handleIpc('content:open-original', trusted(async (_event, value) => {
     const content = database.getContentDetail(parseId(value))
     if (!content.url || !isOfficialContentUrl(content.platformId, content.url, content.remoteId)) {
       throw new Error('该内容没有可用的官方原帖链接')
     }
     return browser.openAt(content.accountId, content.url)
   }))
-  ipcMain.handle('content:update', trusted((_event, value) => {
+  handleIpc('content:update', trusted((_event, value) => {
     const result = database.updateContent(parseUpdateContent(value))
     notifyContentChanged()
     return result
   }))
-  ipcMain.handle('content:clear-account', trusted((_event, value) => {
+  handleIpc('content:clear-account', trusted((_event, value) => {
     const result = database.clearAccountData(parseId(value))
     notifyContentChanged()
     return result
   }))
-  ipcMain.handle('analytics:overview', trusted((_event, value) => database.getAnalytics(parseAnalyticsQuery(value))))
-  ipcMain.handle('analytics:summary', trusted((_event, value) => (
+  handleIpc('analytics:overview', trusted((_event, value) => database.getAnalytics(parseAnalyticsQuery(value))))
+  handleIpc('analytics:summary', trusted((_event, value) => (
     database.getAnalyticsSummary(parseAnalyticsSummaryQuery(value))
   )))
-  ipcMain.handle('analytics:compare', trusted((_event, value) => (
+  handleIpc('analytics:compare', trusted((_event, value) => (
     database.getAnalyticsComparison(parseAnalyticsComparisonQuery(value))
   )))
-  ipcMain.handle('analytics:content-lifecycle', trusted((_event, value) => (
+  handleIpc('analytics:content-lifecycle', trusted((_event, value) => (
     database.getContentLifecycle(parseContentLifecycleQuery(value))
   )))
-  ipcMain.handle('analytics:account-metrics', trusted((_event, value) => (
+  handleIpc('analytics:account-metrics', trusted((_event, value) => (
     database.getAccountMetricHistory(parseAccountMetricQuery(value))
   )))
-  ipcMain.handle('analytics:dashboard', trusted(() => database.getDashboard()))
-  ipcMain.handle('tasks:summary', trusted((_event, value) => (
+  handleIpc('analytics:dashboard', trusted(() => database.getDashboard()))
+  handleIpc('tasks:summary', trusted((_event, value) => (
     services.tasks.summary(parseTaskQuery(value))
   )))
-  ipcMain.handle('tasks:list', trusted((_event, value) => (
+  handleIpc('tasks:list', trusted((_event, value) => (
     services.tasks.list(parseTaskQuery(value))
   )))
-  ipcMain.handle('tasks:get', trusted((_event, value) => services.tasks.get(parseId(value))))
-  ipcMain.handle('tasks:list-batch', trusted((_event, value) => services.tasks.getBatch(parseId(value))))
-  ipcMain.handle('tasks:list-batches', trusted(() => services.tasks.listBatches()))
-  ipcMain.handle('tasks:cancel', trusted(async (_event, value) => {
+  handleIpc('tasks:get', trusted((_event, value) => services.tasks.get(parseId(value))))
+  handleIpc('tasks:list-batch', trusted((_event, value) => services.tasks.getBatch(parseId(value))))
+  handleIpc('tasks:list-batches', trusted(() => services.tasks.listBatches()))
+  handleIpc('tasks:cancel', trusted(async (_event, value) => {
     const id = parseId(value)
     const source = await services.tasks.getSource(id)
     if (!source) throw new Error('任务不存在')
@@ -337,7 +370,7 @@ export function registerIpc(
     if (!task) throw new Error('任务不存在')
     return task
   }))
-  ipcMain.handle('tasks:retry', trusted(async (_event, value) => {
+  handleIpc('tasks:retry', trusted(async (_event, value) => {
     const id = parseId(value)
     const source = await services.tasks.getSource(id)
     if (!source) throw new Error('任务不存在')
@@ -363,20 +396,50 @@ export function registerIpc(
     if (!task) throw new Error('重试任务未创建')
     return task
   }))
-  ipcMain.handle('tasks:mark-handled', trusted(async (_event, value) => {
+  handleIpc('tasks:mark-handled', trusted(async (_event, value) => {
     const task = await services.tasks.markHandled(parseMarkTaskHandled(value))
     notifyTasksChanged()
     return task
   }))
-  ipcMain.handle('plugins:packages', trusted(() => services.pluginHost.listPackages()))
-  ipcMain.handle('plugins:contributions', trusted(() => services.pluginHost.listContributions()))
-  ipcMain.handle('plugins:set-package-enabled', trusted((_event, id, enabled) => {
+  handleIpc('logs:list', trusted((_event, value) => (
+    services.logs.list(parseAppLogQuery(value))
+  )))
+  handleIpc('logs:export', trusted(async (_event, value) => {
+    const query = parseAppLogQuery(value)
+    const result = await dialog.showSaveDialog(window, {
+      title: '导出诊断日志',
+      defaultPath: `streamfold-diagnostics-${new Date().toISOString().slice(0, 10)}.jsonl`,
+      filters: [{ name: 'JSON Lines', extensions: ['jsonl'] }]
+    })
+    if (result.canceled || !result.filePath) {
+      return { cancelled: true, fileName: null, exportedCount: 0 }
+    }
+    return services.logs.exportTo(result.filePath, query)
+  }))
+  handleIpc('logs:clear', trusted(() => services.logs.clear()))
+  handleIpc('logs:record-renderer-error', trusted((_event, value) => {
+    const input = parseRendererErrorLog(value)
+    services.logs.error('renderer', input.message, {
+      code: input.code ?? (input.source === 'vue' ? 'VUE_RENDER_ERROR' : 'RENDERER_ERROR'),
+      details: [input.stack, input.details].filter(Boolean).join('\n') || null,
+      context: {
+        source: input.source,
+        file: input.file ?? null,
+        line: input.line ?? null,
+        column: input.column ?? null,
+        componentInfo: input.componentInfo ?? null
+      }
+    })
+  }))
+  handleIpc('plugins:packages', trusted(() => services.pluginHost.listPackages()))
+  handleIpc('plugins:contributions', trusted(() => services.pluginHost.listContributions()))
+  handleIpc('plugins:set-package-enabled', trusted((_event, id, enabled) => {
     const pluginId = parseId(id)
     const next = parseBoolean(enabled, '插件包开关')
     if (!next) services.pluginLifecycle.stop(pluginId)
     return services.pluginHost.setPackageEnabled(pluginId, next)
   }))
-  ipcMain.handle('plugins:set-contribution-enabled', trusted((_event, pluginId, contributionId, enabled) => {
+  handleIpc('plugins:set-contribution-enabled', trusted((_event, pluginId, contributionId, enabled) => {
     const parsedPluginId = parseId(pluginId)
     const next = parseBoolean(enabled, '贡献点开关')
     if (!next) services.pluginLifecycle.stop(parsedPluginId)
@@ -386,42 +449,42 @@ export function registerIpc(
       next
     )
   }))
-  ipcMain.handle('plugins:grant', trusted((_event, value) => (
+  handleIpc('plugins:grant', trusted((_event, value) => (
     services.pluginHost.grant(parsePluginGrant(value))
   )))
-  ipcMain.handle('plugins:get-config', trusted((_event, pluginId, contributionId) => (
+  handleIpc('plugins:get-config', trusted((_event, pluginId, contributionId) => (
     services.pluginHost.getConfig(parseId(pluginId), parseId(contributionId))
   )))
-  ipcMain.handle('plugins:save-config', trusted((_event, value) => (
+  handleIpc('plugins:save-config', trusted((_event, value) => (
     services.pluginHost.saveConfig(parsePluginConfig(value))
   )))
-  ipcMain.handle('plugins:schedules', trusted(() => services.pluginHost.listSchedules()))
-  ipcMain.handle('plugins:create-schedule', trusted((_event, value) => (
+  handleIpc('plugins:schedules', trusted(() => services.pluginHost.listSchedules()))
+  handleIpc('plugins:create-schedule', trusted((_event, value) => (
     services.pluginHost.createSchedule(parseCreatePluginSchedule(value))
   )))
-  ipcMain.handle('plugins:set-schedule-enabled', trusted((_event, id, enabled) => (
+  handleIpc('plugins:set-schedule-enabled', trusted((_event, id, enabled) => (
     services.pluginHost.updateSchedule(parseId(id), parseBoolean(enabled, '计划开关'))
   )))
-  ipcMain.handle('plugins:remove-schedule', trusted((_event, id) => (
+  handleIpc('plugins:remove-schedule', trusted((_event, id) => (
     services.pluginHost.removeSchedule(parseId(id))
   )))
-  ipcMain.handle('plugins:runs', trusted(() => database.listPluginRuns()))
-  ipcMain.handle('plugins:get-grant', trusted((_event, pluginId, contributionId) => (
+  handleIpc('plugins:runs', trusted(() => database.listPluginRuns()))
+  handleIpc('plugins:get-grant', trusted((_event, pluginId, contributionId) => (
     services.pluginHost.getGrant(parseId(pluginId), parseId(contributionId))
   )))
-  ipcMain.handle('plugins:catalog', trusted(() => services.pluginLifecycle.getCatalog()))
-  ipcMain.handle('plugins:refresh-catalog', trusted(async () => {
+  handleIpc('plugins:catalog', trusted(() => services.pluginLifecycle.getCatalog()))
+  handleIpc('plugins:refresh-catalog', trusted(async () => {
     const state = await services.pluginLifecycle.refreshCatalog()
     services.adapterRegistry.reconcile()
     return state
   }))
-  ipcMain.handle('plugins:install-catalog', trusted(async (_event, pluginId) => {
+  handleIpc('plugins:install-catalog', trusted(async (_event, pluginId) => {
     const installed = await services.pluginLifecycle.installFromCatalog(parseId(pluginId))
     registerNewManifestPlatforms(services.pluginHost)
     services.adapterRegistry.reconcile()
     return installed
   }))
-  ipcMain.handle('plugins:install-development', trusted(async () => {
+  handleIpc('plugins:install-development', trusted(async () => {
     const installed = await services.pluginLifecycle.installDevelopment()
     if (installed) {
       registerNewManifestPlatforms(services.pluginHost)
@@ -429,7 +492,7 @@ export function registerIpc(
     }
     return installed
   }))
-  ipcMain.handle('plugins:update', trusted(async (_event, pluginId, confirmPermissionExpansion) => {
+  handleIpc('plugins:update', trusted(async (_event, pluginId, confirmPermissionExpansion) => {
     const installed = await services.pluginLifecycle.update(
       parseId(pluginId),
       confirmPermissionExpansion === undefined
@@ -440,31 +503,31 @@ export function registerIpc(
     services.adapterRegistry.reconcile()
     return installed
   }))
-  ipcMain.handle('plugins:uninstall', trusted(async (_event, pluginId) => {
+  handleIpc('plugins:uninstall', trusted(async (_event, pluginId) => {
     await services.pluginLifecycle.uninstall(parseId(pluginId))
     registerNewManifestPlatforms(services.pluginHost)
     services.adapterRegistry.reconcile()
   }))
-  ipcMain.handle('plugins:get-developer-mode', trusted(() => services.pluginLifecycle.getDeveloperMode()))
-  ipcMain.handle('plugins:set-developer-mode', trusted((_event, enabled) => (
+  handleIpc('plugins:get-developer-mode', trusted(() => services.pluginLifecycle.getDeveloperMode()))
+  handleIpc('plugins:set-developer-mode', trusted((_event, enabled) => (
     services.pluginLifecycle.setDeveloperMode(parseBoolean(enabled, '开发者模式'))
   )))
-  ipcMain.handle('plugins:run', trusted((_event, pluginId, contributionId, accountId) => (
+  handleIpc('plugins:run', trusted((_event, pluginId, contributionId, accountId) => (
     services.pluginAutomation.runManual(
       parseId(pluginId),
       parseId(contributionId),
       accountId === undefined || accountId === null || accountId === '' ? null : parseId(accountId)
     )
   )))
-  ipcMain.handle('plugins:retry-run', trusted((_event, value) => {
+  handleIpc('plugins:retry-run', trusted((_event, value) => {
     const run = database.getPluginRun(parseId(value))
     if (!run || (run.status !== 'failed' && run.status !== 'interrupted')) throw new Error('该运行记录不能重试')
     return services.pluginAutomation.runManual(run.pluginId, run.contributionId, run.accountId, run.attempt + 1)
   }))
-  ipcMain.handle('updates:get-state', trusted(() => services.updates.getState()))
-  ipcMain.handle('updates:check', trusted(() => services.updates.check()))
-  ipcMain.handle('updates:download', trusted(() => services.updates.download()))
-  ipcMain.handle('updates:restart-and-install', async (event) => {
+  handleIpc('updates:get-state', trusted(() => services.updates.getState()))
+  handleIpc('updates:check', trusted(() => services.updates.check()))
+  handleIpc('updates:download', trusted(() => services.updates.download()))
+  handleIpc('updates:restart-and-install', async (event) => {
     assertTrustedSender(window, event)
     if (services.updates.getState().phase !== 'downloaded') throw new Error('更新尚未下载完成')
     const idle = beginMaintenance('应用正在准备安装更新，请稍候')
@@ -484,8 +547,8 @@ export function registerIpc(
       throw error
     }
   })
-  ipcMain.handle('settings:overview', trusted(() => services.settings.overview()))
-  ipcMain.handle('settings:update', trusted(async (_event, value) => {
+  handleIpc('settings:overview', trusted(() => services.settings.overview()))
+  handleIpc('settings:update', trusted(async (_event, value) => {
     const input = parseUpdateSettings(value)
     const result = await services.settings.update(input)
     if (input.autoCheckUpdates !== undefined) {
@@ -493,19 +556,19 @@ export function registerIpc(
     }
     return result
   }))
-  ipcMain.handle('settings:export', trusted(async (_event, value) => {
+  handleIpc('settings:export', trusted(async (_event, value) => {
     const input = parseExportData(value)
     const result = await services.exporter.exportData(input)
     if (!result.cancelled) services.settings.markExportCompleted()
     return result
   }))
-  ipcMain.handle('settings:backup-create', trusted((_event, value) => {
+  handleIpc('settings:backup-create', trusted((_event, value) => {
     if (services.syncBatches.hasRunningTasks() || services.pluginAutomation.hasRunningTasks()) {
       throw new Error('后台任务正在运行，请完成后再创建备份')
     }
     return services.backup.create(parseCreateEncryptedBackup(value))
   }))
-  ipcMain.handle('settings:backup-restore', async (event, value) => {
+  handleIpc('settings:backup-restore', async (event, value) => {
     assertTrustedSender(window, event)
     const input = parseRestoreEncryptedBackup(value)
     if (maintenance) throw new Error(maintenanceMessage)
@@ -529,12 +592,12 @@ export function registerIpc(
     }
   })
 
-  ipcMain.handle('browser-workspace:get-state', (event) => browser.getStateForSender(event))
-  ipcMain.handle('browser-workspace:get-appearance', (event) => {
+  handleIpc('browser-workspace:get-state', (event) => browser.getStateForSender(event))
+  handleIpc('browser-workspace:get-appearance', (event) => {
     browser.assertTrustedSender(event)
     return currentAppearance()
   })
-  ipcMain.handle('browser-workspace:set-appearance', (event, value) => {
+  handleIpc('browser-workspace:set-appearance', (event, value) => {
     browser.assertTrustedSender(event)
     if (maintenance) throw new Error(maintenanceMessage)
     const preference = parseThemePreference(value)
@@ -542,11 +605,11 @@ export function registerIpc(
     nativeTheme.themeSource = preference
     return broadcastAppearance()
   })
-  ipcMain.handle('browser-workspace:back', (event) => browser.backForSender(event))
-  ipcMain.handle('browser-workspace:forward', (event) => browser.forwardForSender(event))
-  ipcMain.handle('browser-workspace:reload', (event) => browser.reloadForSender(event))
-  ipcMain.handle('browser-workspace:home', (event) => browser.homeForSender(event))
-  ipcMain.handle('browser-workspace:close', (event) => browser.closeForSender(event))
+  handleIpc('browser-workspace:back', (event) => browser.backForSender(event))
+  handleIpc('browser-workspace:forward', (event) => browser.forwardForSender(event))
+  handleIpc('browser-workspace:reload', (event) => browser.reloadForSender(event))
+  handleIpc('browser-workspace:home', (event) => browser.homeForSender(event))
+  handleIpc('browser-workspace:close', (event) => browser.closeForSender(event))
 }
 
 export function unregisterIpc(): void {
@@ -556,6 +619,8 @@ export function unregisterIpc(): void {
   removeUpdateListener = null
   removeTaskListener?.()
   removeTaskListener = null
+  removeLogListener?.()
+  removeLogListener = null
   for (const channel of [
     'appearance:get',
     'appearance:set',
@@ -602,6 +667,10 @@ export function unregisterIpc(): void {
     'tasks:list-batch',
     'tasks:list-batches',
     'tasks:mark-handled',
+    'logs:list',
+    'logs:export',
+    'logs:clear',
+    'logs:record-renderer-error',
     'plugins:packages',
     'plugins:contributions',
     'plugins:set-package-enabled',

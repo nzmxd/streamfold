@@ -438,6 +438,72 @@ describe('Zhihu JSON API adapter', () => {
     ])
   })
 
+  it('parses flattened analysis metrics with type-named content objects', () => {
+    const answerEndpoint = ZHIHU_API_ENDPOINTS.contentAnalysisList('answer')
+    const answer = parseZhihuContentAnalysisList(response(answerEndpoint, {
+      data: [{
+        pv: 120,
+        upvote: 12,
+        answer: {
+          id: '2059735192793772255',
+          url_token: '2059735192793772255',
+          title: '真实结构中的回答'
+        }
+      }],
+      paging: { is_end: true, totals: 1, totals_real: 1, next: null }
+    }), 'answer', answerEndpoint)
+
+    const articleEndpoint = ZHIHU_API_ENDPOINTS.contentAnalysisList('article')
+    const article = parseZhihuContentAnalysisList(response(articleEndpoint, {
+      data: [{
+        pv: 80,
+        like: 6,
+        article: {
+          id: '',
+          url_token: '2057178836450666129',
+          title: '真实结构中的文章'
+        }
+      }],
+      paging: { is_end: true, totals: 1, totals_real: 1, next: null }
+    }), 'article', articleEndpoint)
+
+    const videoEndpoint = ZHIHU_API_ENDPOINTS.contentAnalysisList('zvideo')
+    const video = parseZhihuContentAnalysisList(response(videoEndpoint, {
+      data: [{
+        type: 'video',
+        play: 42,
+        video: {
+          id: '2057178836450666130',
+          url_token: '2057178836450666130',
+          title: '视频别名结构'
+        }
+      }],
+      paging: { is_end: true, totals: 1, totals_real: 1, next: null }
+    }), 'zvideo', videoEndpoint)
+
+    expect(answer.items[0]).toMatchObject({
+      contentType: 'answer',
+      contentToken: '2059735192793772255',
+      contentId: '2059735192793772255',
+      title: '真实结构中的回答',
+      metrics: { views: 120, upvotes: 12 }
+    })
+    expect(article.items[0]).toMatchObject({
+      contentType: 'article',
+      contentToken: '2057178836450666129',
+      contentId: null,
+      title: '真实结构中的文章',
+      metrics: { views: 80, likes: 6 }
+    })
+    expect(video.items[0]).toMatchObject({
+      contentType: 'zvideo',
+      contentToken: '2057178836450666130',
+      contentId: '2057178836450666130',
+      title: '视频别名结构',
+      metrics: { plays: 42 }
+    })
+  })
+
   it('rejects unsafe or malformed numeric analysis tokens', () => {
     const endpoint = ZHIHU_API_ENDPOINTS.contentAnalysisList('article')
     for (const contentToken of [Number.MAX_SAFE_INTEGER + 1, -1, 1.5, {}, 'bad token!']) {

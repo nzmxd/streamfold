@@ -432,6 +432,33 @@ describe('XiaohongshuApiService', () => {
     expect(transport.directJson).toHaveBeenCalledTimes(2)
   })
 
+  it('uses the persisted plugin interval for manual collection', async () => {
+    enablePlugin()
+    plugins.configureManualCollectionInterval(10)
+    const account = createSyncableAccount('profile_only')
+    const service = createService(() => createTransport())
+
+    await expect(service.sync(account.id)).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    nowMs += 9 * 60_000
+    await expect(service.sync(account.id)).rejects.toThrow('60 秒后重试')
+    nowMs += 61_000
+    await expect(service.sync(account.id)).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    expect(database.listJobs()).toHaveLength(2)
+  })
+
+  it('keeps scheduled collection independent from the manual interval', async () => {
+    enablePlugin()
+    plugins.configureManualCollectionInterval(10)
+    const account = createSyncableAccount('profile_only')
+    const service = createService(() => createTransport())
+
+    await expect(service.sync(account.id, 'schedule')).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    await expect(service.sync(account.id, 'schedule')).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    await expect(service.sync(account.id, 'manual')).resolves.toMatchObject({ job: { status: 'succeeded' } })
+    await expect(service.sync(account.id, 'manual')).rejects.toThrow('600 秒后重试')
+    expect(database.listJobs()).toHaveLength(3)
+  })
+
   it('serializes platform syncs and rejects concurrent work on another account', async () => {
     enablePlugin()
     const first = createSyncableAccount('profile_only', '账号一')

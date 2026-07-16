@@ -2,7 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ThemePreference, UpdateState } from '../../../shared/contracts'
 import { presentUpdate } from '../features/updater/update-presentation'
-import { useTheme } from '../ui/theme'
+import {
+  useTheme,
+  type DensityPreference,
+  type FontSizePreference
+} from '../ui/theme'
 import type { AppSection } from './AppSidebar.vue'
 import BrandGlyph from './BrandGlyph.vue'
 
@@ -23,6 +27,7 @@ const sectionLabels: Record<AppSection, string> = {
   analytics: '数据分析',
   tasks: '任务中心',
   plugins: '插件',
+  logs: '日志中心',
   settings: '设置'
 }
 
@@ -42,6 +47,15 @@ const options: Array<{ value: ThemePreference; label: string; icon: string }> = 
   { value: 'light', label: '浅色', icon: 'sun' },
   { value: 'dark', label: '深色', icon: 'moon' },
   { value: 'system', label: '跟随系统', icon: 'system' }
+]
+const fontSizeOptions: Array<{ value: FontSizePreference; label: string }> = [
+  { value: 'small', label: '小' },
+  { value: 'standard', label: '标准' },
+  { value: 'large', label: '大' }
+]
+const densityOptions: Array<{ value: DensityPreference; label: string }> = [
+  { value: 'compact', label: '紧凑' },
+  { value: 'comfortable', label: '舒适' }
 ]
 
 function chooseTheme(value: ThemePreference): void {
@@ -140,6 +154,32 @@ onBeforeUnmount(() => {
             {{ option.label }}
             <svg class="theme-check" viewBox="0 0 20 20"><path d="m5 10 3 3 7-7" /></svg>
           </button>
+          <div class="appearance-menu-group">
+            <span class="theme-menu-label">字号</span>
+            <div class="appearance-segmented" role="group" aria-label="界面字号">
+              <button
+                v-for="option in fontSizeOptions"
+                :key="option.value"
+                type="button"
+                :aria-pressed="theme.fontSize.value === option.value"
+                :class="{ active: theme.fontSize.value === option.value }"
+                @click="theme.setFontSize(option.value)"
+              >{{ option.label }}</button>
+            </div>
+          </div>
+          <div class="appearance-menu-group">
+            <span class="theme-menu-label">布局密度</span>
+            <div class="appearance-segmented" role="group" aria-label="界面密度">
+              <button
+                v-for="option in densityOptions"
+                :key="option.value"
+                type="button"
+                :aria-pressed="theme.density.value === option.value"
+                :class="{ active: theme.density.value === option.value }"
+                @click="theme.setDensity(option.value)"
+              >{{ option.label }}</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

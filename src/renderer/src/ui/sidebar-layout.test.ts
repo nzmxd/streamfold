@@ -27,9 +27,9 @@ describe('sidebar collapse layout', () => {
   })
 
   it('keeps the rail aligned and renders unclipped focus tooltips', () => {
-    expect(theme).toContain('--app-sidebar-width: 72px')
+    expect(theme).toContain('--app-sidebar-width: 64px')
     expect(theme).toContain('grid-template-columns: var(--app-sidebar-width) minmax(0, 1fr)')
-    expect(theme).toContain('.app-frame:not(.sidebar-collapsed) { --app-sidebar-width: 190px; }')
+    expect(theme).toContain('.app-frame:not(.sidebar-collapsed) { --app-sidebar-width: 168px; }')
     expect(theme).toMatch(/\.sidebar-nav-tooltip\s*\{[\s\S]*?position:\s*fixed/)
     expect(theme).toContain('.sidebar-collapse-toggle:hover::after, .sidebar-collapse-toggle:focus-visible::after')
   })

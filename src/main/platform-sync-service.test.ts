@@ -3,7 +3,8 @@ import type { Account, PlatformId } from '../shared/contracts'
 import type {
   ConfirmSessionApiIdentityInput,
   SessionApiIdentityCheckResult,
-  SessionApiSyncResult
+  SessionApiSyncResult,
+  SessionApiSyncTrigger
 } from '../shared/session-api-contracts'
 import {
   PlatformSyncService,
@@ -41,10 +42,14 @@ describe('PlatformSyncService', () => {
       accountId: 'zhihu-account',
       profile: { remoteName: '知乎' }
     })
+    await expect(service.sync('zhihu-account', 'schedule')).resolves.toMatchObject({
+      accountId: 'zhihu-account'
+    })
 
     expect(zhihu.verifyIdentity).toHaveBeenCalledWith('zhihu-account')
     expect(xiaohongshu.confirmIdentity).toHaveBeenCalledWith(confirmation)
-    expect(zhihu.sync).toHaveBeenCalledWith('zhihu-account')
+    expect(zhihu.sync).toHaveBeenNthCalledWith(1, 'zhihu-account', 'manual')
+    expect(zhihu.sync).toHaveBeenNthCalledWith(2, 'zhihu-account', 'schedule')
     expect(xiaohongshu.verifyIdentity).not.toHaveBeenCalled()
     expect(xiaohongshu.sync).not.toHaveBeenCalled()
   })
@@ -112,7 +117,10 @@ function createRepository(
 function createAdapter(name: string, active = false): SessionApiPlatformService & {
   verifyIdentity: ReturnType<typeof vi.fn<(accountId: string) => Promise<SessionApiIdentityCheckResult>>>
   confirmIdentity: ReturnType<typeof vi.fn<(input: ConfirmSessionApiIdentityInput) => Promise<SessionApiIdentityCheckResult>>>
-  sync: ReturnType<typeof vi.fn<(accountId: string) => Promise<SessionApiSyncResult>>>
+  sync: ReturnType<typeof vi.fn<(
+    accountId: string,
+    trigger?: SessionApiSyncTrigger
+  ) => Promise<SessionApiSyncResult>>>
   isAccountActive: ReturnType<typeof vi.fn<(accountId: string) => boolean>>
   invalidatePreviews: ReturnType<typeof vi.fn<() => void>>
 } {

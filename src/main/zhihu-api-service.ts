@@ -9,9 +9,11 @@ import type { JobRecord } from '../shared/job-contracts'
 import type {
   ConfirmSessionApiIdentityInput,
   SessionApiIdentityCheckResult,
-  SessionApiSyncResult
+  SessionApiSyncResult,
+  SessionApiSyncTrigger
 } from '../shared/session-api-contracts'
 import type { ManagedSyncCommitMetadata, ManagedSyncCommitResult } from './database'
+import { markErrorReported } from './error-reporting'
 import type { SessionApiPlatformService } from './platform-sync-service'
 import type { CachedProfileAvatar } from './profile-media'
 import type { StandardDataset } from './plugins/types'
@@ -231,7 +233,10 @@ export class ZhihuApiService implements SessionApiPlatformService {
     })
   }
 
-  async sync(accountId: string): Promise<SessionApiSyncResult> {
+  async sync(
+    accountId: string,
+    trigger: SessionApiSyncTrigger = 'manual'
+  ): Promise<SessionApiSyncResult> {
     return await this.withAccountLock(accountId, '数据同步', async () => {
       if (this.platformSyncActive) throw new Error('知乎已有一个同步任务正在运行')
       this.platformSyncActive = true
@@ -244,7 +249,9 @@ export class ZhihuApiService implements SessionApiPlatformService {
           account.syncMode as Exclude<SyncMode, 'disabled'>
         )
         const installation = this.options.plugins.requireEnabledSessionApi(ZHIHU_API_PLUGIN_ID, account.id)
-        this.enforceInterval(account.id, 'sync', installation.manifest.minimumIntervalSeconds)
+        if (trigger === 'manual') {
+          this.enforceInterval(account.id, 'sync', installation.manualCollectionIntervalSeconds)
+        }
         const startedAt = this.now()
         job = await this.options.jobs.createManagedSync(
           account.id,
@@ -306,6 +313,7 @@ export class ZhihuApiService implements SessionApiPlatformService {
                 errorMessage: messageOf(error),
                 finishedAt: failedAt
               })
+              markErrorReported(error)
             } catch {}
           }
           try {

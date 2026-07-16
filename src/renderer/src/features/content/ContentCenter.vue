@@ -168,6 +168,7 @@ async function loadDetail(id: string | null): Promise<void> {
 async function applyFilters(): Promise<void> {
   filters.tags = tagsFromInput(filterTagsInput.value)
   filterTagsInput.value = tagsToInput(filters.tags)
+  advancedFiltersOpen.value = false
   pageOffset.value = 0
   selectedContentIds.value = []
   notice.value = ''
@@ -177,6 +178,7 @@ async function applyFilters(): Promise<void> {
 async function resetFilters(): Promise<void> {
   Object.assign(filters, createDefaultContentSearchFilters())
   filterTagsInput.value = ''
+  advancedFiltersOpen.value = false
   pageOffset.value = 0
   selectedContentIds.value = []
   notice.value = ''
@@ -404,14 +406,20 @@ onBeforeUnmount(() => {
     <div v-if="error" class="alert error"><span>{{ error }}</span><button type="button" @click="error = ''">关闭</button></div>
     <div v-if="notice" class="alert success"><span>{{ notice }}</span><button type="button" @click="notice = ''">关闭</button></div>
 
-    <form class="filter-bar content-filter-bar" role="search" @submit.prevent="applyFilters">
+    <form class="filter-bar content-filter-bar" role="search" @submit.prevent="applyFilters" @keydown.esc="advancedFiltersOpen = false">
       <div class="content-filter-primary">
-        <label class="filter-search"><span>⌕</span><input v-model="filters.keyword" type="search" placeholder="搜索标题、摘要、标签或备注" /></label>
+        <label class="filter-search">
+          <span>搜索</span>
+          <span class="filter-search-control">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="10.5" cy="10.5" r="5.5" />
+              <path d="m15 15 4 4" />
+            </svg>
+            <input v-model="filters.keyword" type="search" aria-label="搜索内容" placeholder="搜索标题、摘要、标签或备注" />
+          </span>
+        </label>
         <label><span>账号</span><select v-model="filters.accountId"><option value="">全部账号</option><option v-for="account in accounts" :key="account.id" :value="account.id">{{ accountDisplayName(account, platformName(account.platformId)) }}</option></select></label>
         <label><span>平台</span><select v-model="filters.platformId"><option value="">全部平台</option><option v-for="platform in platforms" :key="platform.id" :value="platform.id">{{ platform.name }}</option></select></label>
-        <label><span>分组</span><select v-model="filters.groupId"><option value="">全部分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
-        <label><span>类型</span><select v-model="filters.type"><option value="">全部类型</option><option v-for="option in contentTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-        <label><span>本地收藏</span><select v-model="filters.bookmark"><option value="all">全部内容</option><option value="bookmarked">仅收藏</option><option value="unbookmarked">未收藏</option></select></label>
       </div>
 
       <div class="content-filter-actions">
@@ -422,7 +430,10 @@ onBeforeUnmount(() => {
         <button class="button primary" type="submit">应用筛选</button>
       </div>
 
-      <div v-if="advancedFiltersOpen" class="content-filter-advanced">
+      <div v-if="advancedFiltersOpen" class="content-filter-advanced" aria-label="高级筛选">
+        <label><span>分组</span><select v-model="filters.groupId"><option value="">全部分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
+        <label><span>类型</span><select v-model="filters.type"><option value="">全部类型</option><option v-for="option in contentTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+        <label><span>本地收藏</span><select v-model="filters.bookmark"><option value="all">全部内容</option><option value="bookmarked">仅收藏</option><option value="unbookmarked">未收藏</option></select></label>
         <label class="filter-tags-input"><span>标签</span><input v-model="filterTagsInput" placeholder="使用逗号分隔多个标签" /></label>
         <label><span>标签匹配</span><select v-model="filters.tagMatch"><option value="all">同时包含全部</option><option value="any">包含任一标签</option></select></label>
         <label><span>发布开始</span><input v-model="filters.publishedFrom" type="date" :max="filters.publishedTo || undefined" /></label>
@@ -530,9 +541,10 @@ onBeforeUnmount(() => {
               <div><h3>快照历史</h3><p>保留每次采集到的可靠指标记录</p></div>
               <div class="snapshot-controls">
                 <label v-if="historyMetricDefinitions.length > 0">查看指标<select v-model="selectedHistoryMetricId"><option v-for="definition in historyMetricDefinitions" :key="definition.id" :value="definition.id">{{ definition.label }}</option></select></label>
-                <span>{{ detail.snapshots.length }} 次</span>
+                <span>{{ detail.snapshotCount }} 次</span>
               </div>
             </div>
+            <p v-if="detail.snapshotsTruncated" class="snapshot-limit-note">当前显示最近 {{ detail.snapshots.length }} 次变化，完整历史可通过数据导出获取。</p>
             <div v-if="detail.snapshots.length === 0" class="compact-empty"><span>暂无指标快照</span></div>
             <div v-for="snapshot in detail.snapshots.slice().reverse()" :key="snapshot.capturedAt" class="snapshot-row">
               <span>{{ formatDate(snapshot.capturedAt, true) }}</span>

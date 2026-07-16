@@ -44,9 +44,12 @@ import type {
   BulkUpdateContentsInput,
   BulkUpdateContentsResult,
   ContentDetail,
+  ContentDetailOptions,
+  ContentHistorySnapshot,
   ContentLifecycleQuery,
   ContentLifecycleResult,
   ContentMetricDefinition,
+  ContentMetricSemanticsRevision,
   ContentObservation,
   ContentQuery,
   ContentSearchPage,
@@ -114,6 +117,8 @@ import {
   normalizePluginScheduleCadence
 } from './plugins/schedule-recurrence'
 import { CURRENT_SCHEMA_VERSION, migrateDatabase, readUserVersion } from './storage/migrations'
+
+export const CONTENT_DETAIL_HISTORY_LIMIT = 240
 
 export interface CreateJobInput {
   id?: string
@@ -272,6 +277,11 @@ interface SnapshotRow extends MetricSnapshotRow {
   id: string
 }
 
+interface ContentHistorySnapshotRow extends SnapshotRow {
+  contribution_id: string | null
+  semantics_revision: string | null
+}
+
 interface RankedContentSnapshotRow extends SnapshotRow {
   content_id: string
   snapshot_rank: number
@@ -287,6 +297,11 @@ interface ContentMetricDefinitionRow {
   sort_order: number
   measurement_kind: NonNullable<ContentMetricDefinition['measurementKind']>
   standard_metric_id: ContentMetricDefinition['standardMetricId'] | null
+}
+
+interface ContentMetricSemanticsRow extends ContentMetricDefinitionRow {
+  contribution_id: string
+  semantics_revision: string
 }
 
 interface ContentSnapshotMetricRow {
@@ -1377,13 +1392,25 @@ export class SocialDatabase {
     })
   }
 
-  getContentDetail(id: string): ContentDetail {
+  getContentDetail(id: string, options: ContentDetailOptions = {}): ContentDetail {
     const row = this.getContentRow(id)
     if (!row) throw new Error('内容不存在')
-    const snapshots = this.listContentSnapshots(id, 'ASC')
+    const historyLimit = normalizeContentDetailHistoryLimit(options.historyLimit)
+    const snapshotCount = Number((this.db.prepare(`
+      SELECT COUNT(*) AS count FROM content_snapshots WHERE content_id = ?
+    `).get(id) as unknown as { count: number }).count)
+    const snapshots = this.listContentHistorySnapshots(id, historyLimit)
     const summary = this.mapContent(row, snapshots.slice(-2).reverse())
     const metricDefinitions = this.listContentMetricDefinitions(row.platform_id)
-    return { ...summary, snapshots, metricDefinitions }
+    const metricSemantics = this.listContentMetricSemantics(row.platform_id, snapshots)
+    return {
+      ...summary,
+      snapshots,
+      snapshotCount,
+      snapshotsTruncated: snapshots.length < snapshotCount,
+      metricDefinitions,
+      metricSemantics
+    }
   }
 
   listContentObservations(contentId: string): ContentObservation[] {
@@ -1422,6 +1449,36 @@ export class SocialDatabase {
       ORDER BY sort_order ASC, metric_id ASC
     `).all(platformId) as unknown as ContentMetricDefinitionRow[]
     return rows.map(mapContentMetricDefinition)
+  }
+
+  private listContentMetricSemantics(
+    platformId: PlatformId,
+    snapshots: readonly ContentHistorySnapshot[]
+  ): ContentMetricSemanticsRevision[] {
+    const revisionKeys = new Set(snapshots
+      .filter((snapshot) => snapshot.contributionId)
+      .map((snapshot) => metricSemanticsKey(snapshot.contributionId, snapshot.semanticsRevision)))
+    if (revisionKeys.size === 0) return []
+    const rows = this.db.prepare(`
+      SELECT contribution_id, semantics_revision, platform_id, metric_id, label, value_kind, unit,
+        metric_group, sort_order, measurement_kind, standard_metric_id
+      FROM content_metric_semantics
+      WHERE platform_id = ?
+      ORDER BY contribution_id ASC, semantics_revision ASC, sort_order ASC, metric_id ASC
+    `).all(platformId) as unknown as ContentMetricSemanticsRow[]
+    const revisions = new Map<string, ContentMetricSemanticsRevision>()
+    for (const row of rows) {
+      const key = metricSemanticsKey(row.contribution_id, row.semantics_revision)
+      if (!revisionKeys.has(key)) continue
+      const revision = revisions.get(key) ?? {
+        contributionId: row.contribution_id,
+        semanticsRevision: row.semantics_revision,
+        metricDefinitions: []
+      }
+      revision.metricDefinitions.push(mapContentMetricDefinition(row))
+      revisions.set(key, revision)
+    }
+    return [...revisions.values()]
   }
 
   private upsertContentMetricDefinitions(
@@ -2913,12 +2970,23 @@ export class SocialDatabase {
 
   getAnalyticsComparison(query: AnalyticsComparisonQuery): AnalyticsComparison {
     const scope = normalizeAnalyticsScope(query)
-    if (query.dimension !== 'account' && query.dimension !== 'platform' && query.dimension !== 'group') {
+    if (query.dimension !== 'account' && query.dimension !== 'platform' &&
+      query.dimension !== 'group' && query.dimension !== 'week') {
       throw new Error('分析对比维度无效')
     }
     const metricIds = normalizeAnalyticsMetricIds(query.standardMetricIds)
     const accounts = this.loadAnalyticsAccounts(scope)
     const contentSeries = this.loadAnalyticsContentSeries(scope, accounts)
+    if (query.dimension === 'week') {
+      if (metricIds.some((metricId) => metricId === 'followers' || metricId === 'content_count')) {
+        throw new Error('按发布周仅支持内容指标')
+      }
+      return {
+        dimension: query.dimension,
+        rows: buildWeeklyAnalyticsComparisonRows(metricIds, contentSeries),
+        generatedAt: new Date().toISOString()
+      }
+    }
     const accountSeries = this.loadAnalyticsAccountSnapshotSeries(scope, accounts)
     const accountSeriesById = new Map(accountSeries.map((series) => [series.accountId, series]))
     const contentByAccount = new Map<string, AnalyticsContentSeries[]>()
@@ -3675,6 +3743,45 @@ export class SocialDatabase {
     return rows.map((row) => mapSnapshot(row, metricsBySnapshot.get(row.id) ?? {}))
   }
 
+  private listContentHistorySnapshots(
+    contentId: string,
+    limit: number | null
+  ): ContentHistorySnapshot[] {
+    const rows = this.db.prepare(`
+      WITH limited_snapshots AS (
+        SELECT id, views, likes, comments, shares, favorites, captured_at
+        FROM content_snapshots
+        WHERE content_id = ?
+        ORDER BY captured_at DESC, id DESC
+        ${limit === null ? '' : 'LIMIT ?'}
+      ), ranked_semantics AS (
+        SELECT observations.snapshot_id, observations.contribution_id,
+          observations.semantics_revision,
+          ROW_NUMBER() OVER (
+            PARTITION BY observations.snapshot_id
+            ORDER BY observations.observed_at ASC, observations.id ASC
+          ) AS semantics_rank
+        FROM content_observations observations
+        JOIN limited_snapshots snapshots ON snapshots.id = observations.snapshot_id
+      )
+      SELECT snapshots.id, snapshots.views, snapshots.likes, snapshots.comments,
+        snapshots.shares, snapshots.favorites, snapshots.captured_at,
+        semantics.contribution_id, semantics.semantics_revision
+      FROM limited_snapshots snapshots
+      LEFT JOIN ranked_semantics semantics
+        ON semantics.snapshot_id = snapshots.id AND semantics.semantics_rank = 1
+      ORDER BY snapshots.captured_at ASC, snapshots.id ASC
+    `).all(...(limit === null ? [contentId] : [contentId, limit])) as unknown as ContentHistorySnapshotRow[]
+    if (rows.length === 0) return []
+    const metricsBySnapshot = this.contentMetricsBySnapshotIds(rows.map((row) => row.id))
+    return rows.map((row) => ({
+      ...mapSnapshot(row, metricsBySnapshot.get(row.id) ?? {}),
+      snapshotId: row.id,
+      contributionId: row.contribution_id ?? '',
+      semanticsRevision: row.semantics_revision ?? 'legacy'
+    }))
+  }
+
   private contentMetricsBySnapshotIds(snapshotIds: string[]): Map<string, Record<string, number | null>> {
     const metricsBySnapshot = new Map<string, Record<string, number | null>>()
     for (let offset = 0; offset < snapshotIds.length; offset += 500) {
@@ -3912,6 +4019,68 @@ function mapAnalyticsObservation(row: AnalyticsObservationRow): AnalyticsObserve
 
 function preferFixedMetric(fixed: number | null, mapped: number | null): number | null {
   return nullableNumber(fixed) ?? nullableNumber(mapped)
+}
+
+function buildWeeklyAnalyticsComparisonRows(
+  metricIds: readonly StandardAnalyticsMetricId[],
+  contentSeries: readonly AnalyticsContentSeries[]
+): AnalyticsComparison['rows'] {
+  const buckets = new Map<string, {
+    start: Date
+    end: Date
+    contents: AnalyticsContentSeries[]
+  }>()
+  for (const series of contentSeries) {
+    if (!series.publishedAt) continue
+    const publishedAt = new Date(series.publishedAt)
+    if (!Number.isFinite(publishedAt.getTime())) continue
+    const start = new Date(publishedAt)
+    start.setHours(0, 0, 0, 0)
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7))
+    const id = localDateKey(start)
+    const bucket = buckets.get(id)
+    if (bucket) {
+      bucket.contents.push(series)
+      continue
+    }
+    const end = new Date(start)
+    end.setDate(end.getDate() + 6)
+    buckets.set(id, { start, end, contents: [series] })
+  }
+
+  return [...buckets.entries()]
+    .sort(([, left], [, right]) => right.start.getTime() - left.start.getTime())
+    .map(([id, bucket]) => ({
+      id,
+      label: localWeekLabel(bucket.start, bucket.end),
+      platformId: null,
+      contentCount: bucket.contents.length,
+      metrics: buildAnalyticsMetricSummaries(metricIds, bucket.contents, [])
+    }))
+}
+
+function localWeekLabel(start: Date, end: Date): string {
+  const calendarDay = new Date(Date.UTC(start.getFullYear(), start.getMonth(), start.getDate()))
+  const weekday = calendarDay.getUTCDay() || 7
+  calendarDay.setUTCDate(calendarDay.getUTCDate() + 4 - weekday)
+  const weekYear = calendarDay.getUTCFullYear()
+  const yearStart = new Date(Date.UTC(weekYear, 0, 1))
+  const weekNumber = Math.ceil(
+    ((calendarDay.getTime() - yearStart.getTime()) / (24 * 60 * 60 * 1_000) + 1) / 7
+  )
+  const startLabel = `${start.getFullYear()}/${padDatePart(start.getMonth() + 1)}/${padDatePart(start.getDate())}`
+  const endLabel = start.getFullYear() === end.getFullYear()
+    ? `${padDatePart(end.getMonth() + 1)}/${padDatePart(end.getDate())}`
+    : `${end.getFullYear()}/${padDatePart(end.getMonth() + 1)}/${padDatePart(end.getDate())}`
+  return `${weekYear}年第${weekNumber}周 · ${startLabel} - ${endLabel}`
+}
+
+function localDateKey(value: Date): string {
+  return `${value.getFullYear()}-${padDatePart(value.getMonth() + 1)}-${padDatePart(value.getDate())}`
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0')
 }
 
 function buildAnalyticsMetricSummaries(
@@ -4196,6 +4365,19 @@ function mapContentMetricDefinition(row: ContentMetricDefinitionRow): ContentMet
     measurementKind: row.measurement_kind,
     standardMetricId: row.standard_metric_id
   }
+}
+
+function metricSemanticsKey(contributionId: string, semanticsRevision: string): string {
+  return `${contributionId}\u0000${semanticsRevision}`
+}
+
+function normalizeContentDetailHistoryLimit(value: number | null | undefined): number | null {
+  if (value === null) return null
+  const limit = value ?? CONTENT_DETAIL_HISTORY_LIMIT
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 5_000) {
+    throw new Error('内容历史数量无效')
+  }
+  return limit
 }
 
 function mapAccountMetricDefinition(row: AccountMetricDefinitionRow): AccountMetricDefinition {

@@ -5,6 +5,7 @@ import {
   type AccountExecutionCoordinator
 } from '../services/account-execution-coordinator'
 import { PlatformSyncBusyError } from '../platform-sync-service'
+import { markErrorReported } from '../error-reporting'
 import type {
   PluginContributionState,
   PluginEventDelivery,
@@ -321,6 +322,7 @@ export class PluginAutomationService {
     })
     this.emitChanged()
     if (request.accountId && this.activeAccounts.has(request.accountId)) {
+      const failure = new RetryablePluginError('ACCOUNT_BUSY', '该账号已有插件任务正在运行')
       this.repository.updateExtensionRun(run.id, {
         status: 'failed',
         finishedAt: this.now(),
@@ -328,7 +330,8 @@ export class PluginAutomationService {
         errorMessage: '该账号已有插件任务正在运行'
       })
       this.emitChanged()
-      throw new RetryablePluginError('ACCOUNT_BUSY', '该账号已有插件任务正在运行')
+      markErrorReported(failure)
+      throw failure
     }
     if (request.accountId) this.activeAccounts.add(request.accountId)
     try {
@@ -360,6 +363,7 @@ export class PluginAutomationService {
         errorMessage: safeErrorMessage(failure)
       })
       this.emitChanged()
+      markErrorReported(failure)
       throw failure
     } finally {
       if (request.accountId) this.activeAccounts.delete(request.accountId)

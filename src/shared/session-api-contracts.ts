@@ -8,6 +8,8 @@ export type SessionApiIdentityStatus =
   | 'identity_mismatch'
   | 'login_required'
 
+export type SessionApiSyncTrigger = 'manual' | 'schedule'
+
 export interface SessionApiIdentityCheckResult {
   accountId: string
   status: SessionApiIdentityStatus

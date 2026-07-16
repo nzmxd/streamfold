@@ -50,6 +50,10 @@ export const socialVaultInvokeChannels = [
   'tasks:list-batch',
   'tasks:list-batches',
   'tasks:mark-handled',
+  'logs:list',
+  'logs:export',
+  'logs:clear',
+  'logs:record-renderer-error',
   'plugins:packages',
   'plugins:contributions',
   'plugins:set-package-enabled',
@@ -89,6 +93,7 @@ export const socialVaultEventChannels = [
   'browser:state',
   'content:changed',
   'tasks:changed',
+  'logs:changed',
   'navigation:requested'
 ] as const
 

@@ -75,10 +75,14 @@ function countFor(value: string): number {
     </div>
 
     <label class="search-box">
-      <span>⌕</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <circle cx="10.5" cy="10.5" r="5.5" />
+        <path d="m15 15 4 4" />
+      </svg>
       <input
         :value="search"
         type="search"
+        aria-label="搜索账号"
         placeholder="搜索名称、账号 ID、备注或标签"
         @input="emit('update:search', ($event.target as HTMLInputElement).value)"
       />

@@ -7,6 +7,7 @@ import AccountCenter from './features/accounts/AccountCenter.vue'
 import AnalyticsCenter from './features/analytics/AnalyticsCenter.vue'
 import ContentCenter from './features/content/ContentCenter.vue'
 import DashboardCenter from './features/dashboard/DashboardCenter.vue'
+import LogCenter from './features/logs/LogCenter.vue'
 import PluginCenter from './features/plugins/PluginCenter.vue'
 import SettingsCenter from './features/settings/SettingsCenter.vue'
 import TaskCenter from './features/tasks/TaskCenter.vue'
@@ -96,6 +97,7 @@ onBeforeUnmount(() => {
         <AnalyticsCenter v-else-if="section === 'analytics'" />
         <TaskCenter v-else-if="section === 'tasks'" @navigate="section = $event" />
         <PluginCenter v-else-if="section === 'plugins'" />
+        <LogCenter v-else-if="section === 'logs'" />
         <SettingsCenter v-else />
       </main>
     </div>

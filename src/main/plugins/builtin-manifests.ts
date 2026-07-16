@@ -2,12 +2,13 @@ import type { PlatformAdapterContribution, PluginManifestV2 } from '../../shared
 
 export const XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID = 'xiaohongshu-session-api.platform'
 export const ZHIHU_PLATFORM_CONTRIBUTION_ID = 'zhihu-session-api.platform'
+export const MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY = 'manualCollectionIntervalMinutes'
 
 export const xiaohongshuPluginManifestV2: PluginManifestV2 = Object.freeze({
   schemaVersion: 2,
   id: 'xiaohongshu-session-api',
   name: '小红书数据同步',
-  version: '0.4.0',
+  version: '0.5.0',
   description: '使用当前账号的登录会话，同步本人资料、作品摘要和统计指标。',
   license: 'builtin',
   publisher: { id: 'streamfold', name: '归页', keyId: 'streamfold-builtin' },
@@ -21,6 +22,7 @@ export const xiaohongshuPluginManifestV2: PluginManifestV2 = Object.freeze({
     entry: 'entries/xiaohongshu.js',
     runtime: 'builtin',
     permissions: ['platform.session-json', 'scheduler.run'],
+    configSchema: manualCollectionConfig(1),
     platform: {
       id: 'xiaohongshu',
       name: '小红书',
@@ -56,7 +58,7 @@ export const zhihuPluginManifestV2: PluginManifestV2 = Object.freeze({
   schemaVersion: 2,
   id: 'zhihu-session-api',
   name: '知乎数据同步',
-  version: '0.5.0',
+  version: '0.6.0',
   description: '使用当前账号的登录会话，同步本人资料及创作中心中的回答、文章和统计指标。',
   license: 'builtin',
   publisher: { id: 'streamfold', name: '归页', keyId: 'streamfold-builtin' },
@@ -70,6 +72,7 @@ export const zhihuPluginManifestV2: PluginManifestV2 = Object.freeze({
     entry: 'entries/zhihu.js',
     runtime: 'builtin',
     permissions: ['platform.session-json', 'scheduler.run'],
+    configSchema: manualCollectionConfig(5),
     platform: {
       id: 'zhihu',
       name: '知乎',
@@ -106,6 +109,24 @@ export const builtinPluginManifestsV2 = Object.freeze([
   xiaohongshuPluginManifestV2,
   zhihuPluginManifestV2
 ])
+
+function manualCollectionConfig(minimumMinutes: number) {
+  return {
+    type: 'object' as const,
+    additionalProperties: false as const,
+    required: [MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY],
+    properties: {
+      [MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY]: {
+        type: 'integer' as const,
+        title: '手动采集间隔（分钟）',
+        description: '连续两次手动采集的最短等待时间。自动采集周期请在“运行计划”中单独设置。',
+        default: minimumMinutes,
+        minimum: minimumMinutes,
+        maximum: 24 * 60
+      }
+    }
+  }
+}
 
 function endpoint(
   id: string,

@@ -11,7 +11,9 @@ import type {
   XiaohongshuSyncResult
 } from '../shared/xiaohongshu-api-contracts'
 import type { JobRecord } from '../shared/job-contracts'
+import type { SessionApiSyncTrigger } from '../shared/session-api-contracts'
 import type { ManagedSyncCommitMetadata, ManagedSyncCommitResult } from './database'
+import { markErrorReported } from './error-reporting'
 import type { XiaohongshuApiTransportLease } from './browser-manager'
 import type { CachedProfileAvatar } from './profile-media'
 import type { StandardDataset } from './plugins/types'
@@ -196,7 +198,10 @@ export class XiaohongshuApiService {
     })
   }
 
-  async sync(accountId: string): Promise<XiaohongshuSyncResult> {
+  async sync(
+    accountId: string,
+    trigger: SessionApiSyncTrigger = 'manual'
+  ): Promise<XiaohongshuSyncResult> {
     return this.withAccountLock(accountId, '数据同步', async () => {
       if (this.platformSyncActive) throw new Error('小红书已有一个同步任务正在运行')
       this.platformSyncActive = true
@@ -209,7 +214,9 @@ export class XiaohongshuApiService {
           account.syncMode as Exclude<SyncMode, 'disabled'>
         )
         const installation = this.options.plugins.requireEnabledSessionApi(XIAOHONGSHU_API_PLUGIN_ID, account.id)
-        this.enforceInterval(account.id, 'sync', installation.manifest.minimumIntervalSeconds)
+        if (trigger === 'manual') {
+          this.enforceInterval(account.id, 'sync', installation.manualCollectionIntervalSeconds)
+        }
         const startedAt = this.now()
         job = await this.options.jobs.createManagedSync(
           account.id,
@@ -274,6 +281,7 @@ export class XiaohongshuApiService {
                 errorMessage: messageOf(error),
                 finishedAt: failedAt
               })
+              markErrorReported(error)
             } catch {}
           }
           try {

@@ -105,6 +105,8 @@ describe('IPC validation', () => {
     })
     expect(parseAnalyticsComparisonQuery({ dimension: 'platform', groupId: 'g' }))
       .toEqual({ dimension: 'platform', groupId: 'g' })
+    expect(parseAnalyticsComparisonQuery({ dimension: 'week', publishedFrom: '2026-07-01' }))
+      .toEqual({ dimension: 'week', publishedFrom: '2026-07-01T00:00:00.000Z' })
     expect(parseContentLifecycleQuery({ standardMetricId: 'comments', limit: 25, offset: 50 }))
       .toEqual({ standardMetricId: 'comments', limit: 25, offset: 50 })
     expect(() => parseAnalyticsComparisonQuery({ dimension: 'content' })).toThrow('对比维度无效')

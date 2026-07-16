@@ -16,8 +16,10 @@ describe('renderer typography', () => {
 
     expect(theme).toContain('--font-caption: 12px')
     expect(theme).toContain('--font-body: 14px')
-    expect(theme).toContain('--font-ui: 15px')
-    expect(theme).toContain('--font-page: 28px')
+    expect(theme).toContain('--font-ui: 14px')
+    expect(theme).toContain('--font-page: 26px')
+    expect(theme).toContain('html[data-font-size="small"]')
+    expect(theme).toContain('html[data-font-size="large"]')
   })
 
   it.each(rendererStyleSheets)('keeps functional text at least 12px in %s', (fileName) => {

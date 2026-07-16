@@ -4,9 +4,15 @@ import type {
   Account,
   EncryptedBackupResult,
   ExportDataResult,
-  StorageOverview
+  StorageOverview,
+  ThemePreference
 } from '../../../../shared/contracts'
 import { confirmDialog } from '../../ui/dialog'
+import {
+  useTheme,
+  type DensityPreference,
+  type FontSizePreference
+} from '../../ui/theme'
 import { accountDisplayName } from '../accounts/presentation'
 import { formatBytes, formatDate, formatNumber, messageOf, platformLabel } from '../shared/format'
 import UpdateCard from './UpdateCard.vue'
@@ -29,6 +35,21 @@ const restorePassword = ref('')
 const backupBusy = ref(false)
 const restoreBusy = ref(false)
 const backupResult = ref<EncryptedBackupResult | null>(null)
+const appearance = useTheme()
+const appearanceThemes: Array<{ value: ThemePreference; label: string }> = [
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' },
+  { value: 'system', label: '跟随系统' }
+]
+const appearanceFontSizes: Array<{ value: FontSizePreference; label: string; detail: string }> = [
+  { value: 'small', label: '小', detail: '适合高信息密度' },
+  { value: 'standard', label: '标准', detail: '平衡阅读与空间' },
+  { value: 'large', label: '大', detail: '更易于阅读' }
+]
+const appearanceDensities: Array<{ value: DensityPreference; label: string; detail: string }> = [
+  { value: 'compact', label: '紧凑', detail: '展示更多内容' },
+  { value: 'comfortable', label: '舒适', detail: '增加控件留白' }
+]
 
 function displayName(account: Account): string {
   return accountDisplayName(account, platformLabel(account.platformId))
@@ -186,6 +207,53 @@ onMounted(() => void load())
     <div v-if="loading && !overview" class="feature-loading">正在加载设置…</div>
 
     <template v-else-if="overview">
+      <section class="feature-card appearance-card">
+        <div class="feature-card-head"><div><h2>外观</h2><p>调整主题、字号和界面密度，设置会保存在本机</p></div></div>
+        <div class="appearance-settings-grid">
+          <fieldset class="appearance-setting">
+            <legend>主题</legend>
+            <div class="settings-segmented" role="group" aria-label="应用主题">
+              <button
+                v-for="option in appearanceThemes"
+                :key="option.value"
+                type="button"
+                :aria-pressed="appearance.preference.value === option.value"
+                :class="{ active: appearance.preference.value === option.value }"
+                @click="appearance.setTheme(option.value)"
+              >{{ option.label }}</button>
+            </div>
+          </fieldset>
+          <fieldset class="appearance-setting">
+            <legend>字号</legend>
+            <div class="settings-segmented" role="group" aria-label="应用字号">
+              <button
+                v-for="option in appearanceFontSizes"
+                :key="option.value"
+                type="button"
+                :title="option.detail"
+                :aria-pressed="appearance.fontSize.value === option.value"
+                :class="{ active: appearance.fontSize.value === option.value }"
+                @click="appearance.setFontSize(option.value)"
+              >{{ option.label }}</button>
+            </div>
+          </fieldset>
+          <fieldset class="appearance-setting">
+            <legend>界面密度</legend>
+            <div class="settings-segmented" role="group" aria-label="应用界面密度">
+              <button
+                v-for="option in appearanceDensities"
+                :key="option.value"
+                type="button"
+                :title="option.detail"
+                :aria-pressed="appearance.density.value === option.value"
+                :class="{ active: appearance.density.value === option.value }"
+                @click="appearance.setDensity(option.value)"
+              >{{ option.label }}</button>
+            </div>
+          </fieldset>
+        </div>
+      </section>
+
       <section class="settings-overview">
         <article><span>应用版本</span><strong>v{{ overview.appVersion }}</strong><small>Electron {{ overview.electronVersion }} · Chromium {{ overview.chromiumVersion }}</small></article>
         <article><span>数据占用</span><strong>{{ formatBytes(overview.databaseBytes) }}</strong><small>账号、内容和指标数据</small></article>

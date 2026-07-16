@@ -926,12 +926,17 @@ function parseZhihuContentAnalysisItem(
 ): ZhihuContentAnalysisItem {
   const path = `content.list.data[${index}]`
   const item = objectValue(value, path)
-  const data = item.data === undefined || item.data === null
-    ? item
-    : objectValue(item.data, `${path}.data`)
   const rawType = firstPresent(item, ['type', 'content_type']) ?? expectedType
   const actualType = rawType === 'video' ? 'zvideo' : cleanAnalysisContentType(rawType)
   if (actualType !== expectedType) malformed('知乎内容分析列表返回了其他内容类型')
+  const typedContentKey = actualType === 'zvideo' && (item.zvideo === undefined || item.zvideo === null)
+    ? 'video'
+    : actualType
+  const nestedContentKey = item.data === undefined || item.data === null ? typedContentKey : 'data'
+  const nestedContent = item[nestedContentKey]
+  const data = nestedContent === undefined || nestedContent === null
+    ? item
+    : objectValue(nestedContent, `${path}.${nestedContentKey}`)
   const contentToken = cleanResponseContentToken(
     firstPresent(item, ['content_token', 'token', 'url_token']) ??
       firstPresent(data, ['content_token', 'token', 'url_token']) ??

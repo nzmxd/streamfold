@@ -78,7 +78,13 @@ async function load(showRefreshing = false): Promise<void> {
       window.socialVault.plugins.getCatalog(),
       window.socialVault.plugins.getDeveloperMode()
     ])
-    packages.value = nextPackages
+    packages.value = [...nextPackages].sort((left, right) => {
+      const enabledOrder = Number(right.enabled) - Number(left.enabled)
+      if (enabledOrder !== 0) return enabledOrder
+      const adapterOrder = Number(right.manifest.contributions.some((item) => item.kind === 'platform.adapter')) -
+        Number(left.manifest.contributions.some((item) => item.kind === 'platform.adapter'))
+      return adapterOrder || left.manifest.name.localeCompare(right.manifest.name, 'zh-CN')
+    })
     contributions.value = nextContributions
     schedules.value = nextSchedules
     runs.value = nextRuns

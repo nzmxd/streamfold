@@ -16,11 +16,13 @@ const electronMock = vi.hoisted(() => {
       shouldUseDarkColors: false,
       on: vi.fn(),
       removeListener: vi.fn()
-    }
+    },
+    dialog: { showSaveDialog: vi.fn(async () => ({ canceled: true })) }
   }
 })
 
 vi.mock('electron', () => ({
+  dialog: electronMock.dialog,
   ipcMain: electronMock.ipcMain,
   nativeTheme: electronMock.nativeTheme
 }))
@@ -89,6 +91,20 @@ describe('IPC trust and maintenance boundary', () => {
       accountId: 'account-1',
       period: 'daily'
     })).rejects.toThrow('远程页面')
+  })
+
+  it('records the failing IPC channel with its trusted sender origin', async () => {
+    const fixture = ipcFixture()
+    fixture.pluginHost.listPackages.mockImplementationOnce(() => { throw new Error('catalog failed') })
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+
+    await expect(requiredHandler('plugins:packages')(eventFixture(fixture)))
+      .rejects.toThrow('catalog failed')
+    expect(fixture.services.logs.captureError).toHaveBeenCalledWith(
+      'ipc',
+      expect.any(Error),
+      { channel: 'plugins:packages', senderUrl: 'app://shell/index.html' }
+    )
   })
 
   it('keeps update maintenance active after schedulers stop and installation starts', async () => {
@@ -181,6 +197,13 @@ function ipcFixture() {
     restartAndInstall: vi.fn()
   }
   const services = {
+    logs: {
+      onChanged: vi.fn(() => vi.fn()),
+      captureError: vi.fn(),
+      list: vi.fn(() => ({ items: [], total: 0, fileBytes: 0, scopes: [] })),
+      exportTo: vi.fn(),
+      clear: vi.fn()
+    },
     pluginHost,
     pluginLifecycle,
     pluginAutomation,

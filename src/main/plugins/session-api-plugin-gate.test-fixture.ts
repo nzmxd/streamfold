@@ -1,4 +1,5 @@
 import type { SocialDatabase } from '../database'
+import { MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY } from './builtin-manifests'
 import { PluginHostService } from './plugin-host-service'
 import type { PluginSecretStore } from './plugin-secret-store'
 import type { SessionApiPluginGate } from './session-api-plugin-gate'
@@ -26,8 +27,19 @@ export class TestSessionApiPluginGate implements SessionApiPluginGate {
     this.enabled = true
   }
 
+  configureManualCollectionInterval(minutes: number): void {
+    const installed = this.database.getInstalledPluginPackage(this.pluginId)
+    const contribution = installed?.manifest.contributions.find((item) => item.kind === 'platform.adapter')
+    if (!contribution) throw new Error('测试平台适配器不存在')
+    this.host.saveConfig({
+      pluginId: this.pluginId,
+      contributionId: contribution.id,
+      values: { [MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY]: minutes }
+    })
+  }
+
   requireEnabledSessionApi(id: string, accountId?: string): {
-    manifest: { minimumIntervalSeconds: number }
+    manualCollectionIntervalSeconds: number
   } {
     if (id !== this.pluginId || !this.enabled) {
       throw new Error('请先在插件中心启用该平台的数据同步')

@@ -7,8 +7,16 @@ import type {
 } from '../../../shared/contracts'
 
 const STORAGE_KEY = 'streamfold:appearance'
+export const FONT_SIZE_STORAGE_KEY = 'streamfold:font-size'
+export const DENSITY_STORAGE_KEY = 'streamfold:density'
+
+export type FontSizePreference = 'small' | 'standard' | 'large'
+export type DensityPreference = 'compact' | 'comfortable'
+
 const preference = ref<ThemePreference>('system')
 const resolved = ref<ResolvedTheme>('light')
+const fontSize = ref<FontSizePreference>('standard')
+const density = ref<DensityPreference>('compact')
 let initialized = false
 let removeAppearanceListener: (() => void) | null = null
 
@@ -17,16 +25,58 @@ function systemTheme(): ResolvedTheme {
 }
 
 function storedPreference(): ThemePreference {
-  const value = window.localStorage.getItem(STORAGE_KEY)
+  const value = readStorage(STORAGE_KEY)
   return value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+}
+
+function storedFontSize(): FontSizePreference {
+  return parseFontSizePreference(readStorage(FONT_SIZE_STORAGE_KEY))
+}
+
+function storedDensity(): DensityPreference {
+  return parseDensityPreference(readStorage(DENSITY_STORAGE_KEY))
+}
+
+export function parseFontSizePreference(value: string | null): FontSizePreference {
+  return value === 'small' || value === 'standard' || value === 'large' ? value : 'standard'
+}
+
+export function parseDensityPreference(value: string | null): DensityPreference {
+  return value === 'compact' || value === 'comfortable' ? value : 'compact'
+}
+
+function readStorage(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeStorage(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    // Renderer preferences still apply for the current window.
+  }
 }
 
 function apply(state: AppearanceState): void {
   preference.value = state.preference
   resolved.value = state.resolved
-  window.localStorage.setItem(STORAGE_KEY, state.preference)
+  writeStorage(STORAGE_KEY, state.preference)
   document.documentElement.dataset.theme = state.resolved
   document.documentElement.style.colorScheme = state.resolved
+}
+
+function applyRendererPreferences(
+  nextFontSize: FontSizePreference,
+  nextDensity: DensityPreference
+): void {
+  fontSize.value = nextFontSize
+  density.value = nextDensity
+  document.documentElement.dataset.fontSize = nextFontSize
+  document.documentElement.dataset.density = nextDensity
 }
 
 function api(): AppearanceApi {
@@ -42,6 +92,7 @@ export function initializeTheme(): void {
   document.documentElement.dataset.platform = bridge.runtime.platform
 
   const saved = storedPreference()
+  applyRendererPreferences(storedFontSize(), storedDensity())
   apply({ preference: saved, resolved: saved === 'system' ? systemTheme() : saved })
 
   removeAppearanceListener = api().onChanged(apply)
@@ -52,13 +103,23 @@ export function initializeTheme(): void {
 }
 
 export async function setTheme(value: ThemePreference): Promise<void> {
-  window.localStorage.setItem(STORAGE_KEY, value)
+  writeStorage(STORAGE_KEY, value)
   apply({ preference: value, resolved: value === 'system' ? systemTheme() : value })
   try {
     apply(await api().set(value))
   } catch {
     // Keep the renderer preference; the next launch retries native synchronization.
   }
+}
+
+export function setFontSize(value: FontSizePreference): void {
+  writeStorage(FONT_SIZE_STORAGE_KEY, value)
+  applyRendererPreferences(value, density.value)
+}
+
+export function setDensity(value: DensityPreference): void {
+  writeStorage(DENSITY_STORAGE_KEY, value)
+  applyRendererPreferences(fontSize.value, value)
 }
 
 export function disposeTheme(): void {
@@ -71,6 +132,10 @@ export function useTheme() {
   return {
     preference: readonly(preference),
     resolved: readonly(resolved),
-    setTheme
+    fontSize: readonly(fontSize),
+    density: readonly(density),
+    setTheme,
+    setFontSize,
+    setDensity
   }
 }

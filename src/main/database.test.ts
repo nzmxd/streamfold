@@ -371,6 +371,15 @@ describe('SocialDatabase', () => {
     const content = database.listContents({ accountId: account.id })[0]!
     expect(database.getContentDetail(content.id).snapshots.map((snapshot) => snapshot.metrics.impressions))
       .toEqual([100, 101])
+    expect(database.getContentDetail(content.id, { historyLimit: 1 })).toMatchObject({
+      snapshotCount: 2,
+      snapshotsTruncated: true,
+      snapshots: [{ metrics: { impressions: 101 } }]
+    })
+    expect(database.getContentDetail(content.id, { historyLimit: null })).toMatchObject({
+      snapshotCount: 2,
+      snapshotsTruncated: false
+    })
   })
 
   it('persists account period metrics with null availability and negative conversion values', () => {

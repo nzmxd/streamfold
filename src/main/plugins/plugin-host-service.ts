@@ -16,7 +16,10 @@ import type {
   PluginContributionRecord,
   UpsertPluginPackageOptions
 } from '../database'
-import { builtinPluginManifestsV2 } from './builtin-manifests'
+import {
+  builtinPluginManifestsV2,
+  MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY
+} from './builtin-manifests'
 import { ExtensionRegistry } from './extension-registry'
 import type { PluginSecretStore } from './plugin-secret-store'
 import {
@@ -45,6 +48,8 @@ interface PluginHostRepository {
   getPluginGrant(pluginId: string, contributionId: string): PluginGrant | null
   savePluginConfig(record: Omit<PluginConfigRecord, 'updatedAt'>): PluginConfigRecord
   getPluginConfig(pluginId: string, contributionId: string): PluginConfigRecord | null
+  getSetting?<T>(key: string, fallback: T): T
+  setSetting?<T>(key: string, value: T): T
   createPluginSchedule(input: Omit<PluginSchedule, 'id' | 'createdAt' | 'updatedAt'>): PluginSchedule
   listPluginSchedules(): PluginSchedule[]
   updatePluginSchedule(id: string, patch: Partial<Pick<PluginSchedule,
@@ -68,15 +73,16 @@ export class PluginHostService {
     for (const manifest of builtinPluginManifestsV2) {
       const existingPackage = this.repository.getInstalledPluginPackage(manifest.id)
       const legacyState = existingPackage ? null : this.repository.getPluginState?.(manifest.id) ?? null
-      const legacyEnabled = existingPackage?.enabled ?? legacyState?.enabled ?? false
+      const enabled = existingPackage?.enabled ?? legacyState?.enabled ?? true
       this.repository.upsertPluginPackage(manifest, {
         source: 'builtin',
         status: 'active',
         packageHash: `builtin:${manifest.id}@${manifest.version}`,
         publisherKeyId: manifest.publisher.keyId,
-        enabled: legacyEnabled
+        enabled
       })
-      if (!existingPackage && legacyState?.enabled) this.migrateBuiltinGrant(manifest)
+      if (!existingPackage && !legacyState) this.initializeBuiltinDefaults(manifest)
+      else if (!existingPackage && legacyState?.enabled) this.migrateBuiltinGrant(manifest)
     }
     for (const installed of this.repository.listInstalledPluginPackages()) {
       if (!this.registry.getManifest(installed.manifest.id)) this.registry.register(installed.manifest)
@@ -84,7 +90,7 @@ export class PluginHostService {
   }
 
   requireEnabledSessionApi(pluginId: string, accountId?: string): {
-    manifest: { minimumIntervalSeconds: number }
+    manualCollectionIntervalSeconds: number
   } {
     const installed = this.requirePackage(pluginId)
     if (installed.status !== 'active' || !installed.enabled) throw new Error('请先在插件中心启用该平台的数据同步')
@@ -96,18 +102,24 @@ export class PluginHostService {
       const accounts = this.repository.listAccounts?.() ?? []
       const account = accounts.find((item) => item.id === accountId)
       if (!account) throw new Error('账号不存在')
-      const grant = this.repository.getPluginGrant(pluginId, contribution.id)
+      if (account.platformId && account.platformId !== contribution.platform.id) throw new Error('账号平台与适配器不匹配')
+      if (account.adapterContributionId && account.adapterContributionId !== contribution.id) {
+        throw new Error('账号未绑定此平台适配器')
+      }
+      const grant = this.reconcileDefaultBuiltinGrant(
+        pluginId,
+        contribution,
+        this.repository.getPluginGrant(pluginId, contribution.id)
+      )
       const allowed = Boolean(grant?.permissions.includes('platform.session-json') && (
         grant.accountIds.includes(accountId) ||
         (account.groupIds ?? []).some((groupId) => grant.groupIds.includes(groupId))
       ))
       if (!allowed) throw new Error('请先授权该适配器访问此账号的登录会话')
-      if (account.platformId && account.platformId !== contribution.platform.id) throw new Error('账号平台与适配器不匹配')
-      if (account.adapterContributionId && account.adapterContributionId !== contribution.id) {
-        throw new Error('账号未绑定此平台适配器')
-      }
     }
-    return { manifest: { minimumIntervalSeconds: contribution.minimumIntervalSeconds } }
+    return {
+      manualCollectionIntervalSeconds: this.manualCollectionIntervalSeconds(pluginId, contribution)
+    }
   }
 
   recordSessionApiRun(_pluginId: string, _succeeded: boolean, _error = ''): void {
@@ -183,7 +195,7 @@ export class PluginHostService {
     if (knownGroups && groupIds.some((id) => !knownGroups.some((item) => item.id === id))) throw new Error('分组授权范围包含未知分组')
     const origins = [...new Set(input.networkOrigins.map(normalizePublicHttpsOrigin))]
     if (origins.length > 32) throw new Error('网络授权目标过多')
-    return this.repository.upsertPluginGrant({
+    const saved = this.repository.upsertPluginGrant({
       ...input,
       accountIds,
       groupIds,
@@ -191,11 +203,17 @@ export class PluginHostService {
       grantedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     })
+    this.repository.setSetting?.(builtinDefaultGrantKey(input.pluginId, input.contributionId), false)
+    return saved
   }
 
   getGrant(pluginId: string, contributionId: string): PluginGrant | null {
-    this.requireContribution(pluginId, contributionId)
-    const grant = this.repository.getPluginGrant(pluginId, contributionId)
+    const contribution = this.requireContribution(pluginId, contributionId)
+    const grant = this.reconcileDefaultBuiltinGrant(
+      pluginId,
+      contribution,
+      this.repository.getPluginGrant(pluginId, contributionId)
+    )
     return grant ? structuredClone(grant) : null
   }
 
@@ -309,7 +327,11 @@ export class PluginHostService {
     if (contribution.kind === 'platform.adapter' && input.accountIds.length === 0 && input.groupIds.length === 0) {
       throw new Error('平台自动同步计划必须选择账号或分组')
     }
-    const grant = this.repository.getPluginGrant(input.pluginId, input.contributionId)
+    const grant = this.reconcileDefaultBuiltinGrant(
+      input.pluginId,
+      contribution,
+      this.repository.getPluginGrant(input.pluginId, input.contributionId)
+    )
     if (!grant?.permissions.includes('scheduler.run')) throw new Error('尚未授权定时执行')
     if (input.accountIds.some((id) => !grant.accountIds.includes(id)) || input.groupIds.some((id) => !grant.groupIds.includes(id))) {
       throw new Error('计划范围超过贡献点授权范围')
@@ -357,6 +379,73 @@ export class PluginHostService {
 
   extensionRegistry(): ExtensionRegistry {
     return this.registry
+  }
+
+  private initializeBuiltinDefaults(manifest: PluginManifestV2): void {
+    const accounts = this.repository.listAccounts?.() ?? []
+    for (const contribution of manifest.contributions) {
+      if (this.repository.getPluginGrant(manifest.id, contribution.id)) continue
+      const accountIds = contribution.kind === 'platform.adapter'
+        ? accounts.filter((account) => (
+            account.platformId === contribution.platform.id &&
+            (!account.adapterContributionId || account.adapterContributionId === contribution.id)
+          )).map((account) => account.id)
+        : []
+      const now = new Date().toISOString()
+      this.repository.upsertPluginGrant({
+        pluginId: manifest.id,
+        contributionId: contribution.id,
+        permissions: [...contribution.permissions],
+        accountIds,
+        groupIds: [],
+        dataScopes: defaultDataScopes(contribution.permissions),
+        networkOrigins: [],
+        grantedAt: now,
+        updatedAt: now
+      })
+      this.repository.setSetting?.(builtinDefaultGrantKey(manifest.id, contribution.id), true)
+    }
+  }
+
+  private reconcileDefaultBuiltinGrant(
+    pluginId: string,
+    contribution: PluginContribution,
+    grant: PluginGrant | null
+  ): PluginGrant | null {
+    if (!grant || contribution.kind !== 'platform.adapter') return grant
+    if (!builtinPluginManifestsV2.some((item) => item.id === pluginId)) return grant
+    if (this.repository.getSetting?.<boolean>(builtinDefaultGrantKey(pluginId, contribution.id), false) !== true) return grant
+    const missingAccountIds = (this.repository.listAccounts?.() ?? []).filter((account) => (
+      account.platformId === contribution.platform.id &&
+      (!account.adapterContributionId || account.adapterContributionId === contribution.id) &&
+      !grant.accountIds.includes(account.id)
+    )).map((account) => account.id)
+    if (missingAccountIds.length === 0) return grant
+    const updatedAt = new Date().toISOString()
+    return this.repository.upsertPluginGrant({
+      ...grant,
+      accountIds: [...grant.accountIds, ...missingAccountIds],
+      updatedAt
+    })
+  }
+
+  private manualCollectionIntervalSeconds(
+    pluginId: string,
+    contribution: Extract<PluginContribution, { kind: 'platform.adapter' }>
+  ): number {
+    const property = contribution.configSchema?.properties[MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY]
+    const saved = this.repository.getPluginConfig(pluginId, contribution.id)
+      ?.publicConfig[MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY]
+    const configured = saved ?? (property && 'default' in property ? property.default : undefined)
+    if (typeof configured !== 'number' || !Number.isSafeInteger(configured)) {
+      return contribution.minimumIntervalSeconds
+    }
+    const minimum = property && 'minimum' in property ? property.minimum : undefined
+    const maximum = property && 'maximum' in property ? property.maximum : undefined
+    if ((minimum !== undefined && configured < minimum) || (maximum !== undefined && configured > maximum)) {
+      return contribution.minimumIntervalSeconds
+    }
+    return Math.max(contribution.minimumIntervalSeconds, configured * 60)
   }
 
   private migrateBuiltinGrant(manifest: PluginManifestV2): void {
@@ -431,6 +520,19 @@ function uniqueIds(values: string[], label: string): string[] {
     typeof value !== 'string' || !/^[a-zA-Z0-9._:-]{1,160}$/.test(value)
   ))) throw new Error(`${label}授权范围无效`)
   return [...new Set(values)]
+}
+
+function builtinDefaultGrantKey(pluginId: string, contributionId: string): string {
+  return `plugins.builtin-default-grant:${pluginId}:${contributionId}`
+}
+
+function defaultDataScopes(permissions: readonly PluginGrant['permissions'][number][]): PluginGrant['dataScopes'] {
+  return [
+    ...(permissions.includes('accounts.read') ? ['account' as const] : []),
+    ...(permissions.includes('profiles.read') ? ['profile' as const] : []),
+    ...(permissions.includes('contents.read') ? ['content' as const] : []),
+    ...(permissions.includes('metrics.read') ? ['metrics' as const] : [])
+  ]
 }
 
 function validateConfigValue(property: PluginConfigProperty, value: unknown, key: string): void {

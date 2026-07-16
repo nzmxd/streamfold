@@ -6,6 +6,7 @@ import type {
   AccountMetricHistory,
   AccountSnapshot,
   ContentDetail,
+  ContentDetailOptions,
   ContentQuery,
   ContentSearchPage,
   ContentSearchQuery,
@@ -28,7 +29,7 @@ interface ExportDatabase {
   }): AccountMetricHistory
   listContents(query?: ContentQuery): ContentSummary[]
   searchContents(query?: ContentSearchQuery, internalMaximumLimit?: number): ContentSearchPage
-  getContentDetail(id: string): ContentDetail
+  getContentDetail(id: string, options?: ContentDetailOptions): ContentDetail
 }
 
 export class ExportService {
@@ -87,7 +88,7 @@ export class ExportService {
     }
 
     const exportedContents = input.format === 'json' && input.includeSnapshots
-      ? contents.map((content) => this.database.getContentDetail(content.id))
+      ? contents.map((content) => this.database.getContentDetail(content.id, { historyLimit: null }))
       : contents
     const output = input.format === 'json'
       ? `${JSON.stringify({
@@ -118,7 +119,7 @@ export class ExportService {
     const accountIds = new Set(accounts.map((account) => account.id))
     const groups = this.database.listGroups()
       .filter((group) => accounts.some((account) => account.groupIds.includes(group.id)))
-    const details = contents.map((content) => this.database.getContentDetail(content.id))
+    const details = contents.map((content) => this.database.getContentDetail(content.id, { historyLimit: null }))
     return `${JSON.stringify({
       schemaVersion: 3,
       exportedAt: new Date().toISOString(),

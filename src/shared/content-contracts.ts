@@ -95,6 +95,18 @@ export interface ContentSnapshot extends MetricValues {
   capturedAt: string
 }
 
+export interface ContentHistorySnapshot extends ContentSnapshot {
+  snapshotId: string
+  contributionId: string
+  semanticsRevision: string
+}
+
+export interface ContentMetricSemanticsRevision {
+  contributionId: string
+  semanticsRevision: string
+  metricDefinitions: ContentMetricDefinition[]
+}
+
 export interface ContentSummary {
   id: string
   accountId: string
@@ -117,8 +129,16 @@ export interface ContentSummary {
 }
 
 export interface ContentDetail extends ContentSummary {
-  snapshots: ContentSnapshot[]
+  snapshots: ContentHistorySnapshot[]
+  snapshotCount: number
+  snapshotsTruncated: boolean
   metricDefinitions: ContentMetricDefinition[]
+  metricSemantics: ContentMetricSemanticsRevision[]
+}
+
+export interface ContentDetailOptions {
+  /** Null is reserved for explicit full-history exports. */
+  historyLimit?: number | null
 }
 
 export interface ContentQuery {
@@ -330,7 +350,7 @@ export interface AnalyticsSummary {
   generatedAt: string
 }
 
-export type AnalyticsComparisonDimension = 'account' | 'platform' | 'group'
+export type AnalyticsComparisonDimension = 'account' | 'platform' | 'group' | 'week'
 
 export interface AnalyticsComparisonQuery extends AnalyticsScope {
   dimension: AnalyticsComparisonDimension

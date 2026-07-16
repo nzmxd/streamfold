@@ -2,7 +2,8 @@ import type { Account, PlatformId } from '../shared/contracts'
 import type {
   ConfirmSessionApiIdentityInput,
   SessionApiIdentityCheckResult,
-  SessionApiSyncResult
+  SessionApiSyncResult,
+  SessionApiSyncTrigger
 } from '../shared/session-api-contracts'
 import type { AccountExecutionCoordinator } from './services/account-execution-coordinator'
 
@@ -12,7 +13,7 @@ export interface SessionApiPlatformService {
   readonly contributionId: string
   verifyIdentity(accountId: string): Promise<SessionApiIdentityCheckResult>
   confirmIdentity(input: ConfirmSessionApiIdentityInput): Promise<SessionApiIdentityCheckResult>
-  sync(accountId: string): Promise<SessionApiSyncResult>
+  sync(accountId: string, trigger?: SessionApiSyncTrigger): Promise<SessionApiSyncResult>
   isAccountActive(accountId: string): boolean
   invalidatePreviews(): void
 }
@@ -82,14 +83,17 @@ export class PlatformSyncService {
       : await action()
   }
 
-  async sync(accountId: string): Promise<SessionApiSyncResult> {
-    const action = () => this.syncWithAdapterLock(accountId)
+  async sync(accountId: string, trigger: SessionApiSyncTrigger = 'manual'): Promise<SessionApiSyncResult> {
+    const action = () => this.syncWithAdapterLock(accountId, trigger)
     return this.options.coordinator
       ? await this.options.coordinator.run(accountId, action)
       : await action()
   }
 
-  private async syncWithAdapterLock(accountId: string): Promise<SessionApiSyncResult> {
+  private async syncWithAdapterLock(
+    accountId: string,
+    trigger: SessionApiSyncTrigger
+  ): Promise<SessionApiSyncResult> {
     const descriptor = this.descriptorForAccount(accountId)
     if (this.activeAccounts.has(accountId)) {
       throw new PlatformSyncBusyError('ACCOUNT_BUSY', '该账号已有同步任务正在运行')
@@ -100,7 +104,7 @@ export class PlatformSyncService {
     this.activeAccounts.add(accountId)
     this.activeAdapters.add(descriptor.contributionId)
     try {
-      return await this.adapterForAccount(accountId).sync(accountId)
+      return await this.adapterForAccount(accountId).sync(accountId, trigger)
     } finally {
       this.activeAccounts.delete(accountId)
       this.activeAdapters.delete(descriptor.contributionId)

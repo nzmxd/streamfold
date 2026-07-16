@@ -21,6 +21,9 @@ import {
   type ExportDataInput,
   type ExportFilteredContentsInput,
   type MoveGroupInput,
+  appLogLevels,
+  type AppLogQuery,
+  type RendererErrorLogInput,
   pluginPermissions,
   type CreatePluginScheduleInput,
   type SavePluginConfigInput,
@@ -312,7 +315,7 @@ export function parseAnalyticsComparisonQuery(value: unknown): AnalyticsComparis
   const record = asRecord(value)
   return {
     ...parseAnalyticsScope(record),
-    dimension: asEnum(record.dimension, ['account', 'platform', 'group'] as const, '对比维度')
+    dimension: asEnum(record.dimension, ['account', 'platform', 'group', 'week'] as const, '对比维度')
   }
 }
 
@@ -369,6 +372,44 @@ export function parseUpdateSettings(value: unknown): UpdateSettingsInput {
   }
   if (record.autoCheckUpdates !== undefined) {
     result.autoCheckUpdates = asBoolean(record.autoCheckUpdates, '自动检查更新')
+  }
+  return result
+}
+
+export function parseAppLogQuery(value: unknown): AppLogQuery {
+  const record = value === undefined || value === null ? {} : asRecord(value)
+  const result: AppLogQuery = {}
+  if (record.level !== undefined && record.level !== '') {
+    result.level = asEnum(record.level, appLogLevels, '日志级别')
+  }
+  if (record.scope !== undefined && record.scope !== '') {
+    result.scope = asText(record.scope, '日志模块', 1, 80)
+  }
+  if (record.search !== undefined && record.search !== '') {
+    result.search = asText(record.search, '日志搜索词', 1, 200)
+  }
+  if (record.limit !== undefined) result.limit = asInteger(record.limit, '日志数量', 1, 2_000)
+  return result
+}
+
+export function parseRendererErrorLog(value: unknown): RendererErrorLogInput {
+  const record = asRecord(value)
+  const result: RendererErrorLogInput = {
+    message: asText(record.message, '渲染错误消息', 1, 1_000),
+    source: asEnum(
+      record.source,
+      ['vue', 'window', 'unhandled-rejection'] as const,
+      '渲染错误来源'
+    )
+  }
+  if (record.code !== undefined) result.code = asText(record.code, '渲染错误代码', 1, 160)
+  if (record.stack !== undefined) result.stack = asText(record.stack, '渲染错误调用栈', 0, 12_000)
+  if (record.details !== undefined) result.details = asText(record.details, '渲染错误详情', 0, 4_000)
+  if (record.file !== undefined) result.file = asText(record.file, '渲染错误文件', 0, 2_048)
+  if (record.line !== undefined) result.line = asInteger(record.line, '渲染错误行号', 0, 10_000_000)
+  if (record.column !== undefined) result.column = asInteger(record.column, '渲染错误列号', 0, 10_000_000)
+  if (record.componentInfo !== undefined) {
+    result.componentInfo = asText(record.componentInfo, '渲染组件信息', 0, 500)
   }
   return result
 }

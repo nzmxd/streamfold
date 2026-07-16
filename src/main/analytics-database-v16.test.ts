@@ -254,6 +254,82 @@ describe('SocialDatabase v16 reliable analytics', () => {
     ])
   })
 
+  it('groups content by its local publication week and keeps publication filters applied', () => {
+    const account = createManagedAccount(database, 'xiaohongshu', 'weekly-owner', '周统计账号')
+    const firstWeek = content('week-one', '2026-07-08T12:00:00.000Z', 100)
+    const secondWeek = content('week-two', '2026-07-15T12:00:00.000Z', 200)
+    commitDataset(database, account.id, dataset({
+      remoteAccountId: 'weekly-owner',
+      capturedAt: '2026-07-20T12:00:00.000Z',
+      contents: [firstWeek, secondWeek]
+    }))
+    commitDataset(database, account.id, dataset({
+      remoteAccountId: 'weekly-owner',
+      capturedAt: '2026-07-21T12:00:00.000Z',
+      contents: [
+        { ...firstWeek, snapshots: [{ ...firstWeek.snapshots[0]!, views: 130 }] },
+        { ...secondWeek, snapshots: [{ ...secondWeek.snapshots[0]!, views: 260 }] }
+      ]
+    }))
+
+    const comparison = database.getAnalyticsComparison({
+      dimension: 'week',
+      standardMetricIds: ['views']
+    })
+    expect(comparison.rows).toEqual([
+      expect.objectContaining({
+        id: '2026-07-13',
+        label: expect.stringContaining('07/13 - 07/19'),
+        platformId: null,
+        contentCount: 1,
+        metrics: [expect.objectContaining({ current: 260, delta: 60, sampleCount: 1 })]
+      }),
+      expect.objectContaining({
+        id: '2026-07-06',
+        label: expect.stringContaining('07/06 - 07/12'),
+        platformId: null,
+        contentCount: 1,
+        metrics: [expect.objectContaining({ current: 130, delta: 30, sampleCount: 1 })]
+      })
+    ])
+
+    const filtered = database.getAnalyticsComparison({
+      dimension: 'week',
+      publishedFrom: '2026-07-13T00:00:00.000Z',
+      publishedTo: '2026-07-20T00:00:00.000Z',
+      standardMetricIds: ['views']
+    })
+    expect(filtered.rows.map((row) => row.id)).toEqual(['2026-07-13'])
+    expect(() => database.getAnalyticsComparison({
+      dimension: 'week', standardMetricIds: ['followers']
+    })).toThrow('按发布周仅支持内容指标')
+  })
+
+  it('uses the local Monday boundary when publication weeks cross a year', () => {
+    const account = createManagedAccount(database, 'xiaohongshu', 'boundary-owner', '跨年周账号')
+    const sunday = new Date(2026, 0, 4, 23, 30).toISOString()
+    const monday = new Date(2026, 0, 5, 0, 30).toISOString()
+    const firstCapture = new Date(2026, 0, 6, 12).toISOString()
+    const secondCapture = new Date(2026, 0, 7, 12).toISOString()
+    commitDataset(database, account.id, dataset({
+      remoteAccountId: 'boundary-owner',
+      capturedAt: firstCapture,
+      contents: [content('sunday-post', sunday, 10), content('monday-post', monday, 20)]
+    }))
+    commitDataset(database, account.id, dataset({
+      remoteAccountId: 'boundary-owner',
+      capturedAt: secondCapture,
+      contents: [content('sunday-post', sunday, 15), content('monday-post', monday, 30)]
+    }))
+
+    expect(database.getAnalyticsComparison({
+      dimension: 'week', standardMetricIds: ['views']
+    }).rows).toEqual([
+      expect.objectContaining({ id: '2026-01-05', contentCount: 1 }),
+      expect.objectContaining({ id: '2025-12-29', contentCount: 1 })
+    ])
+  })
+
   it('keeps historical metric semantics pinned to the package revision that observed them', () => {
     const account = createManagedAccount(database, 'xiaohongshu', 'revision-mapping-owner', '版本语义账号')
     const baseDefinition = {
@@ -285,6 +361,16 @@ describe('SocialDatabase v16 reliable analytics', () => {
     const stored = database.listContents({ accountId: account.id })[0]!
     expect(database.listContentObservations(stored.id).map(({ semanticsRevision }) => semanticsRevision))
       .toEqual(['revision-a', 'revision-b'])
+    const detail = database.getContentDetail(stored.id)
+    expect(detail.snapshots.map(({ semanticsRevision }) => semanticsRevision))
+      .toEqual(['revision-a', 'revision-b'])
+    expect(detail.metricSemantics.map(({ semanticsRevision, metricDefinitions }) => ({
+      semanticsRevision,
+      standardMetricId: metricDefinitions[0]?.standardMetricId
+    }))).toEqual([
+      { semanticsRevision: 'revision-a', standardMetricId: null },
+      { semanticsRevision: 'revision-b', standardMetricId: 'views' }
+    ])
   })
 
   it('selects only reliable lifecycle milestones, including the tolerance boundary', () => {

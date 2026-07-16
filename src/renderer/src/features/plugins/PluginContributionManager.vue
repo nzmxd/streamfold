@@ -11,7 +11,7 @@ import type {
 } from '../../../../shared/contracts'
 import { confirmDialog } from '../../ui/dialog'
 import { formatDate, messageOf } from '../shared/format'
-import { cloneConfigValue, cloneConfigValues } from './plugin-config'
+import { cloneConfigValues, initialConfigValue } from './plugin-config'
 import {
   accountsForContribution,
   availableDataScopes,
@@ -135,9 +135,7 @@ async function loadConfig(): Promise<void> {
   for (const [key, property] of Object.entries(schema.properties)) {
     if (property.type === 'string' && property.format === 'secret') continue
     const saved = config.values[key]
-    values[key] = cloneConfigValue(
-      saved === undefined && 'default' in property ? property.default : saved
-    )
+    values[key] = initialConfigValue(property, saved)
   }
   configValues.value = values
   configuredSecrets.value = config.configuredSecrets
