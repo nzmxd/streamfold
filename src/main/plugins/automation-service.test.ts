@@ -119,6 +119,27 @@ describe('PluginAutomationService', () => {
     })
   })
 
+  it('suspends an existing schedule when scheduler permission is revoked', async () => {
+    const account = createAccount('account-revoked')
+    const grant = createGrant({
+      contributionId: 'example.schedule',
+      accountIds: [account.id],
+      permissions: []
+    })
+    const repository = new FakeAutomationRepository([account], grant)
+    repository.schedules.push(createSchedule(account.id))
+    const executor = { execute: vi.fn(async () => null) }
+
+    await createService(repository, scheduledContribution(), executor).tick()
+
+    expect(executor.execute).not.toHaveBeenCalled()
+    expect(repository.schedules[0]).toMatchObject({
+      enabled: false,
+      nextRunAt: null,
+      suspendedReason: '插件定时执行授权已撤销'
+    })
+  })
+
   it('coalesces missed calendar occurrences into one run and advances from the current local day', async () => {
     const account = createAccount('account-calendar')
     const grant = createGrant({ accountIds: [account.id], permissions: ['scheduler.run'] })

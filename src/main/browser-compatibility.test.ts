@@ -22,6 +22,10 @@ describe('normalizePlatformUserAgent', () => {
     expect(normalizePlatformUserAgent('zhihu', electronUserAgent, 'Streamfold')).toBe(chromiumUserAgent)
   })
 
+  it('uses the same wrapper-free Chromium identity for X login', () => {
+    expect(normalizePlatformUserAgent('x', electronUserAgent, 'Streamfold')).toBe(chromiumUserAgent)
+  })
+
   it('preserves the actual OS, Chrome and Safari tokens', () => {
     const normalized = normalizePlatformUserAgent('zhihu', electronUserAgent, 'Streamfold')
 

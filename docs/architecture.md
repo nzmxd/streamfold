@@ -84,7 +84,7 @@ persist:social:<account_uuid>
 | API 与解析 | 固定端点、分页、字段校验、标准化和身份前后复验 | 内置平台模块、签名 QuickJS 适配器 |
 | 浏览器传输 | 同源固定 GET 或精确 XHR/Fetch JSON 响应捕获 | `browser-manager.ts` |
 
-小红书和知乎继续使用可信内置 TypeScript 实现；随应用签名分发的 X 适配器与第三方适配器使用相同 Manifest v2 合同，在独立 Utility Process 的 QuickJS 上下文运行。所有适配器都由动态扩展注册中心发现，账号绑定具体贡献点。QuickJS 入口只能调用声明并获授权的 `platform.getJson` / `platform.captureJson`，不能取得页面或 Session 对象。完整合同与供应链见[开放插件系统](plugin-system.md)。
+小红书和知乎继续使用可信内置 TypeScript 实现；随应用签名分发的 X 适配器与第三方适配器使用相同 Manifest v2 合同，在独立 Utility Process 的 QuickJS 上下文运行。固定信任清单只将 X 标记为默认平台能力：首次初始化会启用包与贡献点并建立可由用户撤销的受托授权，Webhook 等带外发副作用的官方插件不继承该策略。所有适配器都由动态扩展注册中心发现，账号绑定具体贡献点。QuickJS 入口只能调用声明并获授权的 `platform.getJson` / `platform.captureJson`，不能取得页面或 Session 对象。完整合同与供应链见[开放插件系统](plugin-system.md)。
 
 ### JSON 数据传输
 

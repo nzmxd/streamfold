@@ -289,13 +289,8 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
 
   private enforceMinimumInterval(account: Account): void {
     if (!account.lastSyncedAt) return
-    const state = this.host.listContributions().find((item) => (
-      item.pluginId === this.pluginId && item.contribution.id === this.contributionId &&
-      item.contribution.kind === 'platform.adapter'
-    ))
-    if (!state || state.contribution.kind !== 'platform.adapter') throw new Error('平台适配器不可用')
     const elapsed = this.clock().getTime() - Date.parse(account.lastSyncedAt)
-    const minimum = state.contribution.minimumIntervalSeconds * 1_000
+    const minimum = this.host.platformCollectionIntervalSeconds(this.pluginId, this.contributionId) * 1_000
     if (Number.isFinite(elapsed) && elapsed >= 0 && elapsed < minimum) {
       const seconds = Math.ceil((minimum - elapsed) / 1_000)
       throw new Error(`同步过于频繁，请在 ${seconds} 秒后重试`)

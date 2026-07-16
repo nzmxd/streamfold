@@ -5,6 +5,12 @@ import {
   XIAOHONGSHU_PLATFORM_CONTRIBUTION_ID,
   xiaohongshuPluginManifestV2
 } from './builtin-manifests'
+import {
+  X_PLATFORM_CONTRIBUTION_ID,
+  X_PLUGIN_ID,
+  xPluginManifest
+} from './builtin-x.test-fixture'
+import { WEBHOOK_PLUGIN_ID, webhookPluginManifest } from './builtin-webhook.test-fixture'
 import { PluginHostService } from './plugin-host-service'
 
 describe('PluginHostService schedules', () => {
@@ -114,6 +120,102 @@ describe('PluginHostService schedules', () => {
     )?.accountIds).toEqual([accountId])
   })
 
+  it('enables and fully grants a fresh trusted X adapter exactly once', () => {
+    const xAccount = database.createAccount({
+      platformId: 'x',
+      adapterContributionId: X_PLATFORM_CONTRIBUTION_ID,
+      alias: 'X 默认授权账号',
+      syncMode: 'profile_only'
+    })
+    installOfficialX(database)
+    installOfficialWebhook(database)
+
+    host.initialize([X_PLUGIN_ID])
+
+    expect(host.listPackages().find((item) => item.manifest.id === X_PLUGIN_ID)?.enabled).toBe(true)
+    expect(host.listPackages().find((item) => item.manifest.id === WEBHOOK_PLUGIN_ID)?.enabled).toBe(false)
+    expect(host.listContributions().filter((item) => item.pluginId === WEBHOOK_PLUGIN_ID)
+      .every((item) => !item.enabled && !item.granted)).toBe(true)
+    expect(host.listContributions().find((item) => (
+      item.pluginId === X_PLUGIN_ID && item.contribution.id === X_PLATFORM_CONTRIBUTION_ID
+    ))).toMatchObject({ enabled: true, granted: true })
+    expect(host.getGrant(X_PLUGIN_ID, X_PLATFORM_CONTRIBUTION_ID)).toMatchObject({
+      permissions: ['platform.session-json', 'scheduler.run'],
+      accountIds: [xAccount.id]
+    })
+    expect(host.requireEnabledSessionApi(X_PLUGIN_ID, xAccount.id))
+      .toEqual({ manualCollectionIntervalSeconds: 5 * 60 })
+
+    host.saveConfig({
+      pluginId: X_PLUGIN_ID,
+      contributionId: X_PLATFORM_CONTRIBUTION_ID,
+      values: { [MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY]: 15 }
+    })
+    expect(host.platformCollectionIntervalSeconds(X_PLUGIN_ID, X_PLATFORM_CONTRIBUTION_ID))
+      .toBe(15 * 60)
+    expect(() => host.saveConfig({
+      pluginId: X_PLUGIN_ID,
+      contributionId: X_PLATFORM_CONTRIBUTION_ID,
+      values: { [MANUAL_COLLECTION_INTERVAL_MINUTES_CONFIG_KEY]: 4 }
+    })).toThrow('插件配置 manualCollectionIntervalMinutes')
+
+    expect(host.createSchedule({
+      pluginId: X_PLUGIN_ID,
+      contributionId: X_PLATFORM_CONTRIBUTION_ID,
+      accountIds: [xAccount.id],
+      groupIds: [],
+      cadence: { type: 'interval', intervalMinutes: 60 },
+      enabled: false
+    })).toMatchObject({
+      pluginId: X_PLUGIN_ID,
+      contributionId: X_PLATFORM_CONTRIBUTION_ID,
+      intervalMinutes: 60,
+      enabled: false
+    })
+
+    const laterAccount = database.createAccount({
+      platformId: 'x',
+      adapterContributionId: X_PLATFORM_CONTRIBUTION_ID,
+      alias: 'X 后续账号',
+      syncMode: 'profile_only'
+    })
+    host.listContributions()
+    expect(database.getPluginGrant(X_PLUGIN_ID, X_PLATFORM_CONTRIBUTION_ID)?.accountIds)
+      .toEqual([xAccount.id, laterAccount.id])
+
+    host.setPackageEnabled(X_PLUGIN_ID, false)
+    host.initialize([X_PLUGIN_ID])
+    expect(host.listPackages().find((item) => item.manifest.id === X_PLUGIN_ID)?.enabled).toBe(false)
+  })
+
+  it('preserves an existing X grant and disabled state instead of widening permissions', () => {
+    const xAccount = database.createAccount({
+      platformId: 'x',
+      adapterContributionId: X_PLATFORM_CONTRIBUTION_ID,
+      alias: 'X 手动授权账号',
+      syncMode: 'profile_only'
+    })
+    installOfficialX(database)
+    host.initialize()
+    host.grant({
+      pluginId: X_PLUGIN_ID,
+      contributionId: X_PLATFORM_CONTRIBUTION_ID,
+      permissions: ['platform.session-json'],
+      accountIds: [xAccount.id],
+      groupIds: [],
+      dataScopes: [],
+      networkOrigins: []
+    })
+
+    host.initialize([X_PLUGIN_ID])
+
+    expect(host.listPackages().find((item) => item.manifest.id === X_PLUGIN_ID)?.enabled).toBe(false)
+    expect(host.getGrant(X_PLUGIN_ID, X_PLATFORM_CONTRIBUTION_ID)).toMatchObject({
+      permissions: ['platform.session-json'],
+      accountIds: [xAccount.id]
+    })
+  })
+
   it('creates and re-enables a local-time daily schedule', () => {
     const schedule = host.createSchedule({
       pluginId: xiaohongshuPluginManifestV2.id,
@@ -163,3 +265,23 @@ describe('PluginHostService schedules', () => {
     })).toThrow('最短间隔不能少于 60 分钟')
   })
 })
+
+function installOfficialX(database: SocialDatabase): void {
+  database.upsertPluginPackage(xPluginManifest, {
+    source: 'builtin',
+    status: 'active',
+    packageHash: 'sha256:test-x-package',
+    publisherKeyId: xPluginManifest.publisher.keyId,
+    development: false
+  })
+}
+
+function installOfficialWebhook(database: SocialDatabase): void {
+  database.upsertPluginPackage(webhookPluginManifest, {
+    source: 'builtin',
+    status: 'active',
+    packageHash: 'sha256:test-webhook-package',
+    publisherKeyId: webhookPluginManifest.publisher.keyId,
+    development: false
+  })
+}

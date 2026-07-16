@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  OFFICIAL_DEFAULT_PLATFORM_PLUGIN_IDS,
   OFFICIAL_PLUGIN_RESOURCE_DESCRIPTORS,
   officialPluginPackageById,
   verifyAndStageOfficialPluginResources,
@@ -17,6 +18,7 @@ describe('official plugin package resources', () => {
       'streamfold.webhook',
       'streamfold.x'
     ])
+    expect(OFFICIAL_DEFAULT_PLATFORM_PLUGIN_IDS).toEqual(['streamfold.x'])
     expect(verified.map((item) => item.manifest.id)).toEqual(
       OFFICIAL_PLUGIN_RESOURCE_DESCRIPTORS.map((item) => item.trust.pluginId)
     )

@@ -583,12 +583,21 @@ test('自动计划支持间隔、每天、每周和每月并保持控件对齐',
 
 test('可信内置平台插件首次启动即启用授权且采集间隔可持久化', async () => {
   await waitForPluginCenter()
-  for (const name of ['小红书账号适配器', '知乎账号适配器']) {
+  for (const name of ['小红书账号适配器', '知乎账号适配器', 'X']) {
     const card = contributionCard(name)
     await expect(card).toBeVisible()
     await expect(card.locator('.contribution-switch')).toHaveAttribute('aria-checked', 'true')
     await expect(card.getByText('权限已确认')).toBeVisible()
   }
+
+  const xPackage = page.locator('.plugin-package-card').filter({
+    has: page.getByRole('heading', { name: 'X', exact: true })
+  }).first()
+  await expect(xPackage.locator('.package-controls .update-switch')).toHaveAttribute('aria-checked', 'true')
+  const xCard = contributionCard('X')
+  await expect(xCard.getByRole('button', { name: '配置', exact: true })).toBeVisible()
+  await expect(xCard.getByRole('button', { name: '运行计划', exact: true })).toBeVisible()
+  await expect(xCard.getByRole('button', { name: '试运行', exact: true })).toBeVisible()
 
   const card = contributionCard('知乎账号适配器')
   await card.getByRole('button', { name: '配置', exact: true }).click()

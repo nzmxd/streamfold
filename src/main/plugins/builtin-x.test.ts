@@ -16,11 +16,18 @@ const OTHER_ID = '900719925474099312345678902'
 describe('built-in X platform adapter', () => {
   it('declares only the bounded signed-in web-session surface', () => {
     expect(xPluginManifest.id).toBe(X_PLUGIN_ID)
+    expect(xPluginManifest).toMatchObject({ version: '1.1.0', minimumAppVersion: '0.7.5' })
     const contribution = xPluginManifest.contributions[0]
     expect(contribution).toMatchObject({
       id: X_PLATFORM_CONTRIBUTION_ID,
       kind: 'platform.adapter',
-      permissions: ['platform.session-json'],
+      permissions: ['platform.session-json', 'scheduler.run'],
+      configSchema: {
+        required: ['manualCollectionIntervalMinutes'],
+        properties: {
+          manualCollectionIntervalMinutes: { default: 5, minimum: 5, maximum: 1440 }
+        }
+      },
       minimumIntervalSeconds: 300,
       recommendedSyncIntervalHours: 24,
       platform: {

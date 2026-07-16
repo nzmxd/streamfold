@@ -29,7 +29,10 @@ import { PluginAutomationService } from './plugins/automation-service'
 import { BrowserPlatformJsonProxy } from './plugins/browser-platform-json-proxy'
 import { PluginEntryResolver, PluginEntryStore } from './plugins/plugin-entry-store'
 import { PluginLifecycleService } from './plugins/plugin-lifecycle-service'
-import { verifyAndStageOfficialPluginResources } from './plugins/official-plugin-resources'
+import {
+  OFFICIAL_DEFAULT_PLATFORM_PLUGIN_IDS,
+  verifyAndStageOfficialPluginResources
+} from './plugins/official-plugin-resources'
 import { PlatformAdapterRegistryService } from './plugins/platform-adapter-registry'
 import type { VerifiedPluginPackage } from './plugins/plugin-package'
 import { PluginRuntimeExecutor } from './plugins/plugin-runtime-executor'
@@ -401,7 +404,7 @@ function createWindow(): void {
   const pluginSecretStore = new ElectronPluginSecretStore()
   installOfficialPluginPackages(database, officialPluginPackages)
   const pluginHostService = new PluginHostService(database, pluginSecretStore)
-  pluginHostService.initialize()
+  pluginHostService.initialize(OFFICIAL_DEFAULT_PLATFORM_PLUGIN_IDS)
   registerManifestPlatforms(pluginHostService.extensionRegistry().platformDefinitions().map((platform) => ({
     id: platform.id,
     name: platform.name,
@@ -592,7 +595,7 @@ function createWindow(): void {
     },
     afterRestore: () => {
       installOfficialPluginPackages(database!, officialPluginPackages!)
-      pluginHostService.initialize()
+      pluginHostService.initialize(OFFICIAL_DEFAULT_PLATFORM_PLUGIN_IDS)
       registerManifestPlatforms(pluginHostService.extensionRegistry().platformDefinitions().map((platform) => ({
         id: platform.id,
         name: platform.name,

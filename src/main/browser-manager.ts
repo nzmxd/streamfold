@@ -682,8 +682,8 @@ export class BrowserManager {
       }
     })
 
-    // Keep the actual OS and bundled Chromium version. Zhihu currently rejects
-    // Electron wrapper product tokens as an obsolete client during login.
+    // Keep the actual OS and bundled Chromium version. Some official login pages reject
+    // Electron wrapper product tokens as an obsolete embedded client.
     view.webContents.setUserAgent(normalizePlatformUserAgent(
       account.platformId,
       view.webContents.getUserAgent(),

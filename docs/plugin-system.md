@@ -17,7 +17,7 @@
 | `event.handler` | `handle` | 处理事务提交后的业务事件 |
 | `scheduled.task` | `run` | 按用户启用的计划执行任务 |
 
-签名 QuickJS 入口在独立 Electron Utility Process 中运行。主进程只通过经过 Schema 校验的 RPC 提供受限代理；Renderer 不会获得插件目录、Bundle、Secret、平台 Session 或数据库对象。小红书、知乎保留可信内置实现，但已经注册为相同的 `platform.adapter` 合同；随应用分发的 X 与官方 Webhook 使用和第三方插件一致的 QuickJS 调用路径。
+签名 QuickJS 入口在独立 Electron Utility Process 中运行。主进程只通过经过 Schema 校验的 RPC 提供受限代理；Renderer 不会获得插件目录、Bundle、Secret、平台 Session 或数据库对象。小红书、知乎保留可信内置实现，但已经注册为相同的 `platform.adapter` 合同；随应用分发的 X 与官方 Webhook 使用和第三方插件一致的 QuickJS 调用路径。X 由固定资源描述符单独标记为默认平台能力，首次启用与受托授权不会泛化到 Webhook 或目录插件，用户后续关闭或修改授权也不会被启动流程反转。
 
 ```mermaid
 flowchart LR

@@ -243,10 +243,10 @@ export class PluginAutomationService {
         continue
       }
       const grant = this.repository.getPluginGrant(schedule.pluginId, schedule.contributionId)
-      if (!grant) {
+      if (!grant || !grant.permissions.includes('scheduler.run')) {
         this.repository.updatePluginSchedule(schedule.id, {
           enabled: false,
-          suspendedReason: '插件授权已撤销',
+          suspendedReason: '插件定时执行授权已撤销',
           nextRunAt: null
         })
         continue

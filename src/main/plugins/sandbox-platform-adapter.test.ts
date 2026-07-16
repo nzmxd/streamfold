@@ -69,6 +69,18 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
     )
   })
 
+  it('enforces the configured platform collection interval before invoking the plugin', async () => {
+    const repository = repositoryFixture()
+    const account = createAccount()
+    account.lastSyncedAt = new Date(Date.parse(now) - 5 * 60_000).toISOString()
+    repository.getAccount.mockImplementation((id: string) => id === account.id ? structuredClone(account) : null)
+    const runtime = runtimeSequence([])
+    const adapter = createAdapter(repository, runtime, jobsFixture(), undefined, 10 * 60)
+
+    await expect(adapter.sync(account.id)).rejects.toThrow('请在 300 秒后重试')
+    expect(runtime.invoke).not.toHaveBeenCalled()
+  })
+
   it('rechecks identity after collection and refuses to commit a changed login', async () => {
     const repository = repositoryFixture()
     const runtime = runtimeSequence([
@@ -287,14 +299,18 @@ function createAdapter(
   repository: ReturnType<typeof repositoryFixture>,
   runtime: ReturnType<typeof runtimeSequence>,
   jobs: ReturnType<typeof jobsFixture>,
-  avatars?: { cacheAvatar(accountId: string, sourceUrl: string): Promise<{ cacheKey: string; mime: string } | null> }
+  avatars?: { cacheAvatar(accountId: string, sourceUrl: string): Promise<{ cacheKey: string; mime: string } | null> },
+  collectionIntervalSeconds = 60
 ): SandboxPlatformAdapter {
   return new SandboxPlatformAdapter(
     'example.plugin',
     'example.adapter',
     'example-platform',
     repository,
-    { listContributions: () => [adapterState()] } as unknown as PluginHostService,
+    {
+      listContributions: () => [adapterState()],
+      platformCollectionIntervalSeconds: () => collectionIntervalSeconds
+    } as unknown as PluginHostService,
     { invoke: runtime.invoke } as unknown as PluginRuntimeExecutor,
     jobs as unknown as JobService,
     () => new Date(now),

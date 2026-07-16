@@ -59,14 +59,17 @@ interface PluginHostRepository {
 }
 
 export class PluginHostService {
+  private defaultPlatformPluginIds = new Set<string>()
+
   constructor(
     private readonly repository: PluginHostRepository,
     private readonly secrets: PluginSecretStore,
     private readonly registry = new ExtensionRegistry()
   ) {}
 
-  initialize(): void {
+  initialize(defaultPlatformPluginIds: readonly string[] = []): void {
     const builtinIds = new Set(builtinPluginManifestsV2.map((manifest) => manifest.id))
+    this.defaultPlatformPluginIds = new Set([...builtinIds, ...defaultPlatformPluginIds])
     for (const registered of this.registry.listManifests()) {
       if (!builtinIds.has(registered.id)) this.registry.unregister(registered.id)
     }
@@ -83,6 +86,11 @@ export class PluginHostService {
       })
       if (!existingPackage && !legacyState) this.initializeBuiltinDefaults(manifest)
       else if (!existingPackage && legacyState?.enabled) this.migrateBuiltinGrant(manifest)
+    }
+    for (const installed of this.repository.listInstalledPluginPackages()) {
+      if (!builtinIds.has(installed.manifest.id) && this.defaultPlatformPluginIds.has(installed.manifest.id)) {
+        this.initializeTrustedPlatformDefaults(installed)
+      }
     }
     for (const installed of this.repository.listInstalledPluginPackages()) {
       if (!this.registry.getManifest(installed.manifest.id)) this.registry.register(installed.manifest)
@@ -126,6 +134,12 @@ export class PluginHostService {
     // Built-in adapters already persist their managed sync job and safe error state.
   }
 
+  platformCollectionIntervalSeconds(pluginId: string, contributionId: string): number {
+    const contribution = this.requireContribution(pluginId, contributionId)
+    if (contribution.kind !== 'platform.adapter') throw new Error('贡献点不是平台适配器')
+    return this.manualCollectionIntervalSeconds(pluginId, contribution)
+  }
+
   listPackages(): InstalledPluginPackage[] {
     return this.repository.listInstalledPluginPackages()
   }
@@ -137,6 +151,11 @@ export class PluginHostService {
     ]))
     return this.repository.listInstalledPluginPackages().flatMap((installed) => installed.manifest.contributions.map((contribution) => {
       const record = runtime.get(`${installed.manifest.id}:${contribution.id}`)
+      const grant = this.reconcileDefaultBuiltinGrant(
+        installed.manifest.id,
+        contribution,
+        this.repository.getPluginGrant(installed.manifest.id, contribution.id)
+      )
       const packageSuspension = installed.status !== 'active'
         ? packageStatusMessage(installed.status)
         : installed.enabled
@@ -148,7 +167,7 @@ export class PluginHostService {
         pluginVersion: installed.manifest.version,
         contribution: structuredClone(contribution),
         enabled: installed.status === 'active' && installed.enabled && (record?.enabled ?? false),
-        granted: grantValid(this.repository.getPluginGrant(installed.manifest.id, contribution.id), contribution),
+        granted: grantValid(grant, contribution),
         suspendedReason: packageSuspension || record?.suspendedReason || ''
       }
     }))
@@ -407,13 +426,50 @@ export class PluginHostService {
     }
   }
 
+  private initializeTrustedPlatformDefaults(installed: InstalledPluginPackage): void {
+    if (installed.source !== 'builtin' || installed.status !== 'active') return
+    const contributions = installed.manifest.contributions.filter((item) => item.kind === 'platform.adapter')
+    if (contributions.length === 0) return
+    const initializedKey = trustedPlatformDefaultsKey(installed.manifest.id)
+    if (this.repository.getSetting?.<boolean>(initializedKey, false) === true) return
+
+    const pending = contributions.filter((contribution) => (
+      !this.repository.getPluginGrant(installed.manifest.id, contribution.id)
+    ))
+    if (pending.length > 0) {
+      this.repository.setPluginPackageEnabled(installed.manifest.id, true)
+      const accounts = this.repository.listAccounts?.() ?? []
+      for (const contribution of pending) {
+        const now = new Date().toISOString()
+        const accountIds = accounts.filter((account) => (
+          account.platformId === contribution.platform.id &&
+          (!account.adapterContributionId || account.adapterContributionId === contribution.id)
+        )).map((account) => account.id)
+        this.repository.upsertPluginGrant({
+          pluginId: installed.manifest.id,
+          contributionId: contribution.id,
+          permissions: [...contribution.permissions],
+          accountIds,
+          groupIds: [],
+          dataScopes: defaultDataScopes(contribution.permissions),
+          networkOrigins: [],
+          grantedAt: now,
+          updatedAt: now
+        })
+        this.repository.setPluginContributionEnabled(installed.manifest.id, contribution.id, true)
+        this.repository.setSetting?.(builtinDefaultGrantKey(installed.manifest.id, contribution.id), true)
+      }
+    }
+    this.repository.setSetting?.(initializedKey, true)
+  }
+
   private reconcileDefaultBuiltinGrant(
     pluginId: string,
     contribution: PluginContribution,
     grant: PluginGrant | null
   ): PluginGrant | null {
     if (!grant || contribution.kind !== 'platform.adapter') return grant
-    if (!builtinPluginManifestsV2.some((item) => item.id === pluginId)) return grant
+    if (!this.defaultPlatformPluginIds.has(pluginId)) return grant
     if (this.repository.getSetting?.<boolean>(builtinDefaultGrantKey(pluginId, contribution.id), false) !== true) return grant
     const missingAccountIds = (this.repository.listAccounts?.() ?? []).filter((account) => (
       account.platformId === contribution.platform.id &&
@@ -524,6 +580,10 @@ function uniqueIds(values: string[], label: string): string[] {
 
 function builtinDefaultGrantKey(pluginId: string, contributionId: string): string {
   return `plugins.builtin-default-grant:${pluginId}:${contributionId}`
+}
+
+function trustedPlatformDefaultsKey(pluginId: string): string {
+  return `plugins.trusted-platform-defaults:${pluginId}`
 }
 
 function defaultDataScopes(permissions: readonly PluginGrant['permissions'][number][]): PluginGrant['dataScopes'] {

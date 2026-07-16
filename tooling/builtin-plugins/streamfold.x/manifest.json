@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "streamfold.x",
   "name": "X",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "从已登录的 X 网页会话中读取本人公开资料和帖子数据。",
   "license": "Apache-2.0",
   "publisher": {
@@ -10,7 +10,7 @@
     "name": "归页",
     "keyId": "streamfold-official"
   },
-  "minimumAppVersion": "0.7.3",
+  "minimumAppVersion": "0.7.5",
   "sdkVersion": "1.0.0",
   "contributions": [
     {
@@ -21,8 +21,26 @@
       "entry": "entries/x.js",
       "runtime": "quickjs",
       "permissions": [
-        "platform.session-json"
+        "platform.session-json",
+        "scheduler.run"
       ],
+      "configSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "manualCollectionIntervalMinutes"
+        ],
+        "properties": {
+          "manualCollectionIntervalMinutes": {
+            "type": "integer",
+            "title": "手动采集间隔（分钟）",
+            "description": "连续两次手动采集的最短等待时间。自动采集周期请在“运行计划”中单独设置。",
+            "default": 5,
+            "minimum": 5,
+            "maximum": 1440
+          }
+        }
+      },
       "platform": {
         "id": "x",
         "name": "X",

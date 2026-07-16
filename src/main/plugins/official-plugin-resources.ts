@@ -20,6 +20,7 @@ export interface OfficialPluginResourceDescriptor {
   readonly publisherId: string
   readonly trust: OfficialPluginPackageTrust
   readonly contributionIds: readonly string[]
+  readonly defaultPlatformAccess: boolean
 }
 
 export interface OfficialPluginEntryStager {
@@ -34,14 +35,16 @@ export const OFFICIAL_WEBHOOK_RESOURCE_DESCRIPTOR: OfficialPluginResourceDescrip
     'streamfold.webhook.test',
     'streamfold.webhook.events',
     'streamfold.webhook.schedule'
-  ])
+  ]),
+  defaultPlatformAccess: false
 })
 
 export const OFFICIAL_X_RESOURCE_DESCRIPTOR: OfficialPluginResourceDescriptor = Object.freeze({
   label: 'X',
   publisherId: 'streamfold',
   trust: OFFICIAL_X_PACKAGE_TRUST,
-  contributionIds: Object.freeze(['streamfold.x.platform'])
+  contributionIds: Object.freeze(['streamfold.x.platform']),
+  defaultPlatformAccess: true
 })
 
 /** The fixed, main-process trust list for separately packaged builtin plugins. */
@@ -49,6 +52,12 @@ export const OFFICIAL_PLUGIN_RESOURCE_DESCRIPTORS: readonly OfficialPluginResour
   OFFICIAL_WEBHOOK_RESOURCE_DESCRIPTOR,
   OFFICIAL_X_RESOURCE_DESCRIPTOR
 ])
+
+export const OFFICIAL_DEFAULT_PLATFORM_PLUGIN_IDS: readonly string[] = Object.freeze(
+  OFFICIAL_PLUGIN_RESOURCE_DESCRIPTORS
+    .filter((descriptor) => descriptor.defaultPlatformAccess)
+    .map((descriptor) => descriptor.trust.pluginId)
+)
 
 export async function verifyOfficialPluginResource(
   resourcesRoot: string,

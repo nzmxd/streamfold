@@ -1,13 +1,14 @@
 import type { PlatformId } from '../shared/contracts'
 
 const CHROME_PRODUCT = /^Chrome\/\S+$/
+const WRAPPER_RESTRICTED_PLATFORMS = new Set<PlatformId>(['zhihu', 'x'])
 
 export function normalizePlatformUserAgent(
   platformId: PlatformId,
   userAgent: string,
   applicationProduct = ''
 ): string {
-  if (platformId !== 'zhihu' || !userAgent) return userAgent
+  if (!WRAPPER_RESTRICTED_PLATFORMS.has(platformId) || !userAgent) return userAgent
 
   const wrapperProducts = new Set(['electron', applicationProduct.trim().toLowerCase()].filter(Boolean))
   const products = userAgent.trim().split(/\s+/)
