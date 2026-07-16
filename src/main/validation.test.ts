@@ -48,6 +48,18 @@ describe('IPC validation', () => {
   })
 
   it('accepts dynamic platform IDs and rejects malformed values', () => {
+    expect(parseCreateAccount({
+      platformId: 'x',
+      adapterContributionId: 'streamfold.x.platform',
+      alias: 'X 账号',
+      syncMode: 'profile_only'
+    })).toEqual({
+      platformId: 'x',
+      adapterContributionId: 'streamfold.x.platform',
+      alias: 'X 账号',
+      syncMode: 'profile_only'
+    })
+    expect(parseContentSearchQuery({ platformId: 'x' })).toEqual({ platformId: 'x' })
     expect(parseCreateAccount({ platformId: 'publisher.custom-platform', alias: '账号', syncMode: 'profile_only' }))
       .toEqual({ platformId: 'publisher.custom-platform', alias: '账号', syncMode: 'profile_only' })
     expect(() => parseCreateAccount({ platformId: 'Invalid Platform', alias: '账号', syncMode: 'profile_only' })).toThrow('平台无效')

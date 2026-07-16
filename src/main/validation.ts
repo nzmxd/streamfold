@@ -515,7 +515,7 @@ function asId(value: unknown): string {
 }
 
 function asPlatformId(value: unknown): string {
-  const id = asText(value, '平台', 2, 128)
+  const id = asText(value, '平台', 1, 128)
   if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(id)) throw new Error('平台无效')
   return id
 }
