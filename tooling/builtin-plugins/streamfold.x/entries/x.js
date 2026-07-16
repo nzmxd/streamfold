@@ -119,11 +119,15 @@ function unwrapUserResult(value, label) {
   return result;
 }
 
-function parseProfileResponse(value) {
-  assertNoApiErrors(value, 'UserByScreenName');
-  const data = object(value.data, 'UserByScreenName.data');
-  const user = object(data.user, 'UserByScreenName.data.user');
-  const result = unwrapUserResult(user.result, 'UserByScreenName.data.user.result');
+function parseProfileResponse(value, operationName) {
+  assertNoApiErrors(value, operationName);
+  const data = object(value.data, operationName + '.data');
+  const alternateKey = operationName === 'UserByScreenName'
+    ? 'user_result_by_screen_name'
+    : 'user_result_by_rest_id';
+  const userKey = isObject(data.user) ? 'user' : alternateKey;
+  const user = object(data[userKey], operationName + '.data.' + userKey);
+  const result = unwrapUserResult(user.result, operationName + '.data.' + userKey + '.result');
   const legacy = object(result.legacy, '用户 legacy');
   const core = isObject(result.core) ? result.core : {};
   const avatar = isObject(result.avatar) ? result.avatar : {};
@@ -366,13 +370,15 @@ async function readIdentity(_context, rawInput) {
   const expectedRemoteId = readIdentityInput(rawInput);
   const settings = await captureOne('x.identity.settings', {});
   const authenticatedHandle = settingsHandle(settings);
-  const profileCaptureId = expectedRemoteId === null ? 'x.identity.profile.initial' : 'x.identity.profile.bound';
-  const params = expectedRemoteId === null ? { handle: authenticatedHandle } : { remoteId: expectedRemoteId };
-  const profileResponse = await captureOne(profileCaptureId, params);
-  const identity = parseProfileResponse(profileResponse);
-  if (identity.screenName.toLowerCase() !== authenticatedHandle.toLowerCase()) fail('settings 与资料账号不一致');
-  if (expectedRemoteId !== null && identity.remoteId !== expectedRemoteId) fail('当前登录身份与已绑定账号不一致');
-  return { remoteId: identity.remoteId, remoteName: identity.remoteName, profile: identity.profile };
+  const currentResponse = await captureOne('x.identity.profile.initial', { handle: authenticatedHandle });
+  const current = parseProfileResponse(currentResponse, 'UserByScreenName');
+  if (current.screenName.toLowerCase() !== authenticatedHandle.toLowerCase()) fail('settings 与资料账号不一致');
+  if (expectedRemoteId !== null && current.remoteId === expectedRemoteId) {
+    const boundResponse = await captureOne('x.identity.profile.bound', { remoteId: expectedRemoteId });
+    const bound = parseProfileResponse(boundResponse, 'UserByRestId');
+    if (bound.remoteId !== expectedRemoteId) fail('稳定账号资料与已绑定账号不一致');
+  }
+  return { remoteId: current.remoteId, remoteName: current.remoteName, profile: current.profile };
 }
 
 async function collect(_context, rawInput) {

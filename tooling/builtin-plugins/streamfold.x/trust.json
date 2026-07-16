@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "pluginId": "streamfold.x",
-  "version": "1.1.0",
-  "packageFile": "streamfold.x-1.1.0.streamfold-plugin",
-  "packageHash": "sha256:9d031dcac30036c4c3ca6f2e78c9ef38de9f0686fb572d4edfac834f5cc68772",
-  "contentHash": "sha256:5728462c3023bfbe976839198c3d0072e05e97750366f1f945ad3ae0644c0169",
+  "version": "1.1.1",
+  "packageFile": "streamfold.x-1.1.1.streamfold-plugin",
+  "packageHash": "sha256:992e9cda1986d220ced83a66abdeaeabdc753d6d9284388bff42a97b2b13326f",
+  "contentHash": "sha256:b1ee493219dd72d0e494d92fb770d0a4c2ce51e2e5b488d043d7143af8680394",
   "publisherKeyId": "streamfold-official",
   "publisherPublicKey": "MCowBQYDK2VwAyEAkzMRMukUCfnt9MHqTNEEr8bU7gzEc2UFofHNk4aSX4Y="
 }

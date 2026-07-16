@@ -16,7 +16,7 @@ const OTHER_ID = '900719925474099312345678902'
 describe('built-in X platform adapter', () => {
   it('declares only the bounded signed-in web-session surface', () => {
     expect(xPluginManifest.id).toBe(X_PLUGIN_ID)
-    expect(xPluginManifest).toMatchObject({ version: '1.1.0', minimumAppVersion: '0.7.5' })
+    expect(xPluginManifest).toMatchObject({ version: '1.1.1', minimumAppVersion: '0.7.6' })
     const contribution = xPluginManifest.contributions[0]
     expect(contribution).toMatchObject({
       id: X_PLATFORM_CONTRIBUTION_ID,
@@ -48,7 +48,7 @@ describe('built-in X platform adapter', () => {
     expect(contribution.captures.map(({ id, graphqlOperationName }) => ({ id, graphqlOperationName }))).toEqual([
       { id: 'x.identity.settings', graphqlOperationName: undefined },
       { id: 'x.identity.profile.initial', graphqlOperationName: 'UserByScreenName' },
-      { id: 'x.identity.profile.bound', graphqlOperationName: 'UserByScreenName' },
+      { id: 'x.identity.profile.bound', graphqlOperationName: 'UserByRestId' },
       { id: 'x.contents.tweets.bound', graphqlOperationName: 'UserTweets' }
     ])
   })
@@ -99,24 +99,63 @@ describe('built-in X platform adapter', () => {
   it('keeps a large stable ID across handle changes and supports the legacy profile fallback', async () => {
     const host = hostWith({
       'x.identity.settings': [{ screen_name: 'renamed_owner' }],
+      'x.identity.profile.initial': [profileResponse({
+        remoteId: OWNER_ID,
+        handle: 'renamed_owner',
+        name: 'Renamed owner',
+        currentShape: true,
+        root: 'screen-name'
+      })],
       'x.identity.profile.bound': [profileResponse({
         remoteId: OWNER_ID,
         handle: 'renamed_owner',
         name: 'Renamed owner',
-        currentShape: false
+        currentShape: false,
+        root: 'rest-id'
       })]
     })
 
     const result = await invoke(host, 'readIdentity', { expectedRemoteId: OWNER_ID })
     expect(result).toMatchObject({ remoteId: OWNER_ID, remoteName: 'Renamed owner' })
-    expect(host.calls[1]).toEqual({
-      operation: 'platform.captureJson',
-      payload: {
-        captureId: 'x.identity.profile.bound',
-        params: { remoteId: OWNER_ID },
-        limit: 1
+    expect(host.calls.slice(1)).toEqual([
+      {
+        operation: 'platform.captureJson',
+        payload: {
+          captureId: 'x.identity.profile.initial',
+          params: { handle: 'renamed_owner' },
+          limit: 1
+        }
+      },
+      {
+        operation: 'platform.captureJson',
+        payload: {
+          captureId: 'x.identity.profile.bound',
+          params: { remoteId: OWNER_ID },
+          limit: 1
+        }
       }
+    ])
+  })
+
+  it('returns the observed login identity so the host can mark a bound account mismatch', async () => {
+    const host = hostWith({
+      'x.identity.settings': [{ screen_name: 'other_owner' }],
+      'x.identity.profile.initial': [profileResponse({
+        remoteId: OTHER_ID,
+        handle: 'other_owner',
+        name: 'Other owner',
+        currentShape: true
+      })]
     })
+
+    await expect(invoke(host, 'readIdentity', { expectedRemoteId: OWNER_ID })).resolves.toMatchObject({
+      remoteId: OTHER_ID,
+      remoteName: 'Other owner'
+    })
+    expect(host.calls.map((call) => call.payload.captureId)).toEqual([
+      'x.identity.settings',
+      'x.identity.profile.initial'
+    ])
   })
 
   it('rejects identity disagreement and uses a fixed GraphQL error message', async () => {
@@ -386,6 +425,7 @@ interface ProfileFixtureOptions {
   handle: string
   name: string
   currentShape: boolean
+  root?: 'user' | 'screen-name' | 'rest-id'
 }
 
 function profileResponse(options: ProfileFixtureOptions): JsonValue {
@@ -409,7 +449,10 @@ function profileResponse(options: ProfileFixtureOptions): JsonValue {
     legacy.profile_image_url_https = 'https://pbs.twimg.com/profile_images/legacy.jpg'
     legacy.description = 'Legacy profile bio'
   }
-  return { data: { user: { result: { result } } } }
+  const user = { result: { result } }
+  if (options.root === 'screen-name') return { data: { user_result_by_screen_name: user } }
+  if (options.root === 'rest-id') return { data: { user_result_by_rest_id: user } }
+  return { data: { user } }
 }
 
 interface TweetOptions {

@@ -22,6 +22,7 @@ import type {
 } from './types'
 import type { PluginHostService } from './plugin-host-service'
 import { PluginPlatformSessionError, type PluginRuntimeExecutor } from './plugin-runtime-executor'
+import { PluginSupplyChainError, isPluginSupplyChainError } from './supply-chain-errors'
 
 interface SandboxAdapterRepository {
   getAccount(id: string): Account | null
@@ -239,14 +240,25 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
   }
 
   private async readIdentity(accountId: string, expectedRemoteId: string | null): Promise<Identity> {
-    const value = await this.runtime.invoke(
-      this.pluginId,
-      this.contributionId,
-      'readIdentity',
-      accountId,
-      { expectedRemoteId }
-    )
-    return parseIdentity(value)
+    try {
+      const value = await this.runtime.invoke(
+        this.pluginId,
+        this.contributionId,
+        'readIdentity',
+        accountId,
+        { expectedRemoteId }
+      )
+      return parseIdentity(value)
+    } catch (error) {
+      if (isPluginSupplyChainError(error) && error.code === 'PLUGIN_SANDBOX_FAILED') {
+        throw new PluginSupplyChainError(
+          'PLUGIN_ADAPTER_IDENTITY_FAILED',
+          '平台身份核验未完成，请确认已经登录并等待页面加载完成；若持续失败，请停止重试并更新归页。',
+          { cause: error }
+        )
+      }
+      throw error
+    }
   }
 
   private commitIdentity(account: Account, identity: Identity): SessionApiIdentityCheckResult {

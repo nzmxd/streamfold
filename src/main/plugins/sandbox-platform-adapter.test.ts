@@ -7,6 +7,7 @@ import type { JobService } from '../services/job-service'
 import type { PluginHostService } from './plugin-host-service'
 import type { PluginRuntimeExecutor } from './plugin-runtime-executor'
 import { SandboxPlatformAdapter } from './sandbox-platform-adapter'
+import { PluginSupplyChainError } from './supply-chain-errors'
 
 const now = '2026-07-14T08:00:00.000Z'
 
@@ -28,6 +29,43 @@ beforeEach(() => {
 })
 
 describe('SandboxPlatformAdapter synchronization orchestration', () => {
+  it('maps opaque sandbox identity failures to a fixed actionable message', async () => {
+    const repository = repositoryFixture()
+    const runtime = {
+      invoke: vi.fn(async () => {
+        throw new PluginSupplyChainError('PLUGIN_SANDBOX_FAILED', '插件执行失败')
+      })
+    }
+    const adapter = createAdapter(repository, runtime, jobsFixture())
+
+    await expect(adapter.verifyIdentity('account-1')).rejects.toMatchObject({
+      code: 'PLUGIN_ADAPTER_IDENTITY_FAILED',
+      message: '平台身份核验未完成，请确认已经登录并等待页面加载完成；若持续失败，请停止重试并更新归页。'
+    })
+  })
+
+  it('marks a bound account mismatch from the adapter observed login identity', async () => {
+    const repository = repositoryFixture()
+    repository.applyManagedIdentity.mockReturnValue({
+      ...createAccount(),
+      status: 'paused',
+      connectionStatus: 'mismatch',
+      syncEnabled: false
+    })
+    const adapter = createAdapter(repository, runtimeSequence([identity('other-owner')]), jobsFixture())
+
+    await expect(adapter.verifyIdentity('account-1')).resolves.toMatchObject({
+      status: 'identity_mismatch',
+      remoteId: 'other-owner',
+      message: '当前账号与已绑定账号不一致，已停止同步。'
+    })
+    expect(repository.applyManagedIdentity).toHaveBeenCalledWith(
+      'account-1',
+      expect.objectContaining({ remoteId: 'other-owner' }),
+      now
+    )
+  })
+
   it('passes the expected stable identity into probes and collection', async () => {
     const repository = repositoryFixture()
     repository.commitManagedSync.mockReturnValue({
@@ -297,7 +335,7 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
 
 function createAdapter(
   repository: ReturnType<typeof repositoryFixture>,
-  runtime: ReturnType<typeof runtimeSequence>,
+  runtime: { invoke: ReturnType<typeof vi.fn> },
   jobs: ReturnType<typeof jobsFixture>,
   avatars?: { cacheAvatar(accountId: string, sourceUrl: string): Promise<{ cacheKey: string; mime: string } | null> },
   collectionIntervalSeconds = 60

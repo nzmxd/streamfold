@@ -2044,22 +2044,44 @@ async function captureDeclaredPlatformJson(
   const expected = new URL(expectedUrl)
   const values: unknown[] = []
   const pending = new Map<string, { status: number; contentType: string }>()
+  const harvestTasks = new Set<Promise<void>>()
+  const candidateLimit = Math.min(20, Math.max(limit, limit * 2))
+  const requestTrackingLimit = Math.min(100, Math.max(20, candidateLimit * 4))
+  const captureDeadline = Date.now() + 35_000
+  let harvestTail = Promise.resolve()
   const requestMethods = new Map<string, string>()
   const maximumResponseBytes = declaration.maximumResponseBytes ?? 512 * 1024
   const maximumTotalBytes = declaration.maximumTotalBytes ?? 2 * 1024 * 1024
   let totalBytes = 0
   let lastActivity = Date.now()
   let failure: Error | null = null
+  let accepting = true
+
+  const runBeforeDeadline = async <T>(
+    operation: () => Promise<T>,
+    maximumMilliseconds: number,
+    message: string
+  ): Promise<T> => {
+    const remaining = captureDeadline - Date.now()
+    if (remaining <= 0) throw new Error('平台响应捕获超时，请稍后重试')
+    return await withPlatformCaptureTimeout(operation(), Math.min(maximumMilliseconds, remaining), message)
+  }
 
   const matches = (value: string): boolean => {
     return matchesDeclaredCaptureUrl(value, declaration, expected)
   }
-  const harvest = async (requestId: string): Promise<void> => {
-    const metadata = pending.get(requestId)
-    if (!metadata || failure || values.length >= limit) return
-    pending.delete(requestId)
+  const harvest = async (
+    requestId: string,
+    metadata: { status: number; contentType: string }
+  ): Promise<void> => {
+    if (failure || values.length >= limit) return
     try {
-      const body = objectRecord(await browserDebugger.sendCommand('Network.getResponseBody', { requestId }))
+      const body = objectRecord(await runBeforeDeadline(
+        async () => await browserDebugger.sendCommand('Network.getResponseBody', { requestId }),
+        5_000,
+        '平台响应正文读取超时，请稍后重试'
+      ))
+      if (failure || values.length >= limit) return
       const raw = typeof body.body === 'string' ? body.body : ''
       const bytes = body.base64Encoded === true ? Buffer.from(raw, 'base64') : Buffer.from(raw, 'utf8')
       try {
@@ -2070,7 +2092,9 @@ async function captureDeclaredPlatformJson(
         if (metadata.status === 401 || metadata.status === 403) throw new Error('平台登录状态已失效，请重新登录')
         if (metadata.status === 429) throw new Error('平台请求暂时受限，请稍后重试')
         if (metadata.status < 200 || metadata.status >= 300 || !/\bjson\b/i.test(metadata.contentType)) return
-        values.push(JSON.parse(bytes.toString('utf8')))
+        const value = JSON.parse(bytes.toString('utf8'))
+        if (values.length >= limit) return
+        values.push(value)
         lastActivity = Date.now()
       } finally {
         bytes.fill(0)
@@ -2079,11 +2103,22 @@ async function captureDeclaredPlatformJson(
       failure = error instanceof Error ? error : new Error('平台响应捕获失败')
     }
   }
+  const queueHarvest = (requestId: string): void => {
+    const metadata = pending.get(requestId)
+    if (!metadata) return
+    pending.delete(requestId)
+    const task = harvestTail.then(async () => await harvest(requestId, metadata))
+    harvestTail = task
+    harvestTasks.add(task)
+    void task.finally(() => harvestTasks.delete(task))
+  }
   const onMessage = (_event: Electron.Event, method: string, params: Record<string, unknown>): void => {
     if (method === 'Network.requestWillBeSent') {
       const requestId = typeof params.requestId === 'string' ? params.requestId : ''
       const request = objectRecord(params.request)
-      if (requestId && matches(String(request.url ?? ''))) requestMethods.set(requestId, String(request.method ?? '').toUpperCase())
+      if (accepting && requestId && requestMethods.size < requestTrackingLimit && matches(String(request.url ?? ''))) {
+        requestMethods.set(requestId, String(request.method ?? '').toUpperCase())
+      }
       return
     }
     if (method === 'Network.responseReceived') {
@@ -2091,18 +2126,26 @@ async function captureDeclaredPlatformJson(
       const response = objectRecord(params.response)
       const resourceType = String(params.type ?? '')
       const url = String(response.url ?? '')
-      if (!requestId || !matches(url) || !declaration.resourceTypes.includes(resourceType as 'Fetch' | 'XHR') ||
+      const status = Number(response.status)
+      const headers = objectRecord(response.headers)
+      const contentType = String(headers['content-type'] ?? headers['Content-Type'] ?? '')
+      const actionableStatus = status === 401 || status === 403 || status === 429
+      if (!accepting || failure || values.length >= limit ||
+        pending.size + harvestTasks.size >= candidateLimit ||
+        !requestId || !matches(url) ||
+        !declaration.resourceTypes.includes(resourceType as 'Fetch' | 'XHR') ||
         requestMethods.get(requestId) !== 'GET') return
+      if (!actionableStatus && (status < 200 || status >= 300 || !/\bjson\b/i.test(contentType))) return
       pending.set(requestId, {
-        status: Number(response.status),
-        contentType: String(objectRecord(response.headers)['content-type'] ?? objectRecord(response.headers)['Content-Type'] ?? '')
+        status,
+        contentType
       })
       lastActivity = Date.now()
       return
     }
     if (method === 'Network.loadingFinished') {
       const requestId = typeof params.requestId === 'string' ? params.requestId : ''
-      if (requestId && pending.has(requestId)) void harvest(requestId)
+      if (requestId) queueHarvest(requestId)
       requestMethods.delete(requestId)
     }
     if (method === 'Network.loadingFailed') {
@@ -2115,31 +2158,58 @@ async function captureDeclaredPlatformJson(
   browserDebugger.attach('1.3')
   browserDebugger.on('message', onMessage)
   try {
-    await browserDebugger.sendCommand('Network.enable', {
-      maxTotalBufferSize: maximumTotalBytes,
-      maxResourceBufferSize: maximumResponseBytes
-    })
-    await contents.loadURL(routeUrl)
-    const startedAt = Date.now()
+    await runBeforeDeadline(
+      async () => await browserDebugger.sendCommand('Network.enable', {
+        maxTotalBufferSize: maximumTotalBytes,
+        maxResourceBufferSize: maximumResponseBytes
+      }),
+      5_000,
+      '平台响应捕获初始化超时，请稍后重试'
+    )
+    await runBeforeDeadline(
+      async () => await contents.loadURL(routeUrl),
+      20_000,
+      '平台页面加载超时，请稍后重试'
+    )
+    const activityDeadline = Math.min(Date.now() + 20_000, captureDeadline)
     let pageMoves = 0
-    while (!failure && values.length < limit && Date.now() - startedAt < 20_000) {
+    while (!failure && values.length < limit && Date.now() < activityDeadline) {
       if (declaration.pagination === 'page-down' && pageMoves < 20) {
         contents.sendInputEvent({ type: 'keyDown', keyCode: 'END' })
         contents.sendInputEvent({ type: 'keyUp', keyCode: 'END' })
         pageMoves += 1
       }
       await new Promise((resolve) => setTimeout(resolve, 350))
-      if (pending.size === 0 && Date.now() - lastActivity >= 800 &&
+      if (pending.size === 0 && harvestTasks.size === 0 && Date.now() - lastActivity >= 800 &&
         (declaration.pagination !== 'page-down' || pageMoves >= 3)) break
     }
-    await Promise.all([...pending.keys()].map(harvest))
+    accepting = false
+    for (const requestId of [...pending.keys()]) queueHarvest(requestId)
+    while (harvestTasks.size > 0) await Promise.all([...harvestTasks])
     if (failure) throw failure
     return values
   } finally {
+    accepting = false
     browserDebugger.removeListener('message', onMessage)
-    try { await browserDebugger.sendCommand('Network.disable') } catch {}
+    try {
+      await withPlatformCaptureTimeout(
+        browserDebugger.sendCommand('Network.disable'),
+        2_000,
+        '平台响应捕获清理超时'
+      )
+    } catch {}
     try { browserDebugger.detach() } catch {}
   }
+}
+
+function withPlatformCaptureTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), milliseconds)
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (error: unknown) => { clearTimeout(timer); reject(error) }
+    )
+  })
 }
 
 function matchesDeclaredCaptureUrl(

@@ -158,10 +158,193 @@ describe('declarative platform Fetch/XHR capture', () => {
     expect(browserDebugger.attached).toBe(false)
     expect(browserDebugger.listenerCount('message')).toBe(0)
   })
+
+  it('waits for concurrent response bodies and never exceeds the declared response limit', async () => {
+    vi.useFakeTimers()
+    try {
+      const declaration: PlatformCaptureDeclaration = {
+        id: 'identity.capture',
+        route: 'https://example.com/home',
+        responseOrigin: 'https://api.example.com',
+        responsePath: '/v1/account/settings.json',
+        resourceTypes: ['XHR'],
+        method: 'GET',
+        pagination: 'none',
+        maximumResponses: 1,
+        maximumResponseBytes: 1_024,
+        maximumTotalBytes: 2_048
+      }
+      const expected = 'https://api.example.com/v1/account/settings.json'
+      const browserDebugger = new FakeDebugger()
+      let releaseBodies = (): void => undefined
+      browserDebugger.bodyGate = new Promise<void>((resolve) => { releaseBodies = resolve })
+      const contents = {
+        debugger: browserDebugger,
+        isDestroyed: () => false,
+        loadURL: vi.fn(async () => {
+          emitCapture(browserDebugger, 'first', expected, 'GET', 'XHR', { screen_name: 'owner' })
+          emitCapture(browserDebugger, 'duplicate', expected, 'GET', 'XHR', { screen_name: 'owner' })
+        }),
+        sendInputEvent: vi.fn()
+      } as unknown as Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+
+      let settled = false
+      const capture = __pluginPlatformJsonTest.captureDeclaredPlatformJson(
+        contents,
+        declaration,
+        expected,
+        1
+      ).finally(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(1_100)
+
+      expect(settled).toBe(false)
+      expect(browserDebugger.attached).toBe(true)
+
+      releaseBodies()
+      await vi.runAllTimersAsync()
+      await expect(capture).resolves.toEqual([{ screen_name: 'owner' }])
+      expect(browserDebugger.commands.filter((item) => item.method === 'Network.getResponseBody'))
+        .toEqual([{ method: 'Network.getResponseBody', params: { requestId: 'first' } }])
+      expect(browserDebugger.attached).toBe(false)
+      expect(browserDebugger.listenerCount('message')).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('times out a stalled response body and releases the debugger channel', async () => {
+    vi.useFakeTimers()
+    try {
+      const declaration: PlatformCaptureDeclaration = {
+        id: 'identity.capture',
+        route: 'https://example.com/home',
+        responseOrigin: 'https://api.example.com',
+        responsePath: '/v1/account/settings.json',
+        resourceTypes: ['XHR'],
+        method: 'GET',
+        pagination: 'none',
+        maximumResponses: 1,
+        maximumResponseBytes: 1_024,
+        maximumTotalBytes: 2_048
+      }
+      const expected = 'https://api.example.com/v1/account/settings.json'
+      const browserDebugger = new FakeDebugger()
+      browserDebugger.bodyGate = new Promise<void>(() => undefined)
+      const contents = {
+        debugger: browserDebugger,
+        isDestroyed: () => false,
+        loadURL: vi.fn(async () => {
+          emitCapture(browserDebugger, 'stalled', expected, 'GET', 'XHR', { screen_name: 'owner' })
+        }),
+        sendInputEvent: vi.fn()
+      } as unknown as Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+
+      const capture = __pluginPlatformJsonTest.captureDeclaredPlatformJson(
+        contents,
+        declaration,
+        expected,
+        1
+      )
+      const assertion = expect(capture).rejects.toThrow('平台响应正文读取超时')
+      await vi.advanceTimersByTimeAsync(6_000)
+      await assertion
+
+      expect(browserDebugger.attached).toBe(false)
+      expect(browserDebugger.listenerCount('message')).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets a later valid response replace an earlier rejected candidate', async () => {
+    const declaration: PlatformCaptureDeclaration = {
+      id: 'identity.capture',
+      route: 'https://example.com/home',
+      responseOrigin: 'https://api.example.com',
+      responsePath: '/v1/account/settings.json',
+      resourceTypes: ['XHR'],
+      method: 'GET',
+      pagination: 'none',
+      maximumResponses: 1,
+      maximumResponseBytes: 1_024,
+      maximumTotalBytes: 2_048
+    }
+    const expected = 'https://api.example.com/v1/account/settings.json'
+    const browserDebugger = new FakeDebugger()
+    const contents = {
+      debugger: browserDebugger,
+      isDestroyed: () => false,
+      loadURL: vi.fn(async () => {
+        emitCapture(browserDebugger, 'rejected', expected, 'GET', 'XHR', { ignored: true }, {
+          status: 500,
+          contentType: 'application/json'
+        })
+        emitCapture(browserDebugger, 'accepted', expected, 'GET', 'XHR', { screen_name: 'owner' })
+      }),
+      sendInputEvent: vi.fn()
+    } as unknown as Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+
+    await expect(__pluginPlatformJsonTest.captureDeclaredPlatformJson(
+      contents,
+      declaration,
+      expected,
+      1
+    )).resolves.toEqual([{ screen_name: 'owner' }])
+    expect(browserDebugger.commands.filter((item) => item.method === 'Network.getResponseBody'))
+      .toEqual([{ method: 'Network.getResponseBody', params: { requestId: 'accepted' } }])
+  })
+
+  it('bounds the entire serial response drain by the capture deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const declaration: PlatformCaptureDeclaration = {
+        id: 'contents.capture',
+        route: 'https://example.com/home',
+        responseOrigin: 'https://api.example.com',
+        responsePath: '/v1/contents',
+        resourceTypes: ['XHR'],
+        method: 'GET',
+        pagination: 'none',
+        maximumResponses: 100,
+        maximumResponseBytes: 1_024,
+        maximumTotalBytes: 100 * 1_024
+      }
+      const expected = 'https://api.example.com/v1/contents'
+      const browserDebugger = new FakeDebugger()
+      browserDebugger.bodyDelayMs = 4_000
+      const contents = {
+        debugger: browserDebugger,
+        isDestroyed: () => false,
+        loadURL: vi.fn(async () => {
+          for (let index = 0; index < 20; index += 1) {
+            emitCapture(browserDebugger, `slow-${index}`, expected, 'GET', 'XHR', { index })
+          }
+        }),
+        sendInputEvent: vi.fn()
+      } as unknown as Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+
+      const capture = __pluginPlatformJsonTest.captureDeclaredPlatformJson(
+        contents,
+        declaration,
+        expected,
+        100
+      )
+      const assertion = expect(capture).rejects.toThrow('平台响应正文读取超时')
+      await vi.advanceTimersByTimeAsync(40_000)
+      await assertion
+
+      expect(browserDebugger.attached).toBe(false)
+      expect(browserDebugger.listenerCount('message')).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 class FakeDebugger extends EventEmitter {
   attached = false
+  bodyGate: Promise<void> | null = null
+  bodyDelayMs = 0
   readonly commands: Array<{ method: string; params?: Record<string, unknown> }> = []
   readonly bodies = new Map<string, string>()
 
@@ -175,6 +358,8 @@ class FakeDebugger extends EventEmitter {
   async sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.commands.push({ method, ...(params ? { params } : {}) })
     if (method === 'Network.getResponseBody') {
+      if (this.bodyGate) await this.bodyGate
+      if (this.bodyDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.bodyDelayMs))
       return { body: this.bodies.get(String(params?.requestId)) ?? '', base64Encoded: false }
     }
     return {}
@@ -187,7 +372,8 @@ function emitCapture(
   url: string,
   method: string,
   resourceType: string,
-  value: unknown = { ignored: true }
+  value: unknown = { ignored: true },
+  metadata: { status?: number; contentType?: string } = {}
 ): void {
   browserDebugger.bodies.set(requestId, JSON.stringify(value))
   browserDebugger.emit('message', {}, 'Network.requestWillBeSent', {
@@ -199,8 +385,8 @@ function emitCapture(
     type: resourceType,
     response: {
       url,
-      status: 200,
-      headers: { 'content-type': 'application/json' }
+      status: metadata.status ?? 200,
+      headers: { 'content-type': metadata.contentType ?? 'application/json' }
     }
   })
   browserDebugger.emit('message', {}, 'Network.loadingFinished', { requestId })

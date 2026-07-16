@@ -4,7 +4,7 @@
 
 ## 数据范围
 
-- 身份核验始终先读取 `account/settings.json` 的登录 handle，再以 `UserByScreenName` 返回的 `rest_id` 作为稳定账号 ID。
+- 身份核验始终先读取 `account/settings.json` 的登录 handle，并用 `UserByScreenName` 返回当前实际登录账号；确认和后续复核再以 `UserByRestId` 交叉验证已绑定的稳定账号 ID。
 - 支持仅资料、最近 20 条和最近 100 条三种范围。
 - 支持配置手动采集间隔，并按账号或分组创建自动运行计划。
 - 排除回复、纯转帖及其他账号内容；帖子链接统一为 `https://x.com/i/web/status/{id}`。

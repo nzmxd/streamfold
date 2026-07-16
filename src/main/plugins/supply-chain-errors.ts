@@ -14,6 +14,7 @@ export type PluginSupplyChainErrorCode =
   | 'PLUGIN_SANDBOX_RESOURCE_LIMIT'
   | 'PLUGIN_SANDBOX_CRASHED'
   | 'PLUGIN_SANDBOX_FAILED'
+  | 'PLUGIN_ADAPTER_IDENTITY_FAILED'
 
 /** Error whose code and message are safe to persist in plugin run history. */
 export class PluginSupplyChainError extends Error {
