@@ -96,6 +96,7 @@ export interface PlatformCaptureDeclaration {
   route: string
   responseOrigin: string
   responsePath: string
+  graphqlOperationName?: string
   resourceTypes: Array<'Fetch' | 'XHR'>
   method: 'GET'
   pagination?: 'none' | 'page-down'
@@ -518,15 +519,23 @@ function validateEndpoint(value: unknown): PlatformEndpointDeclaration {
 function validateCapture(value: unknown): PlatformCaptureDeclaration {
   const item = objectValue(value, '平台捕获规则')
   exactKeys(item, [
-    'id', 'route', 'responseOrigin', 'responsePath', 'resourceTypes', 'method', 'pagination',
+    'id', 'route', 'responseOrigin', 'responsePath', 'graphqlOperationName', 'resourceTypes', 'method', 'pagination',
     'maximumResponses', 'maximumResponseBytes', 'maximumTotalBytes'
   ], '平台捕获规则')
   if (item.method !== 'GET') throw new Error('平台捕获仅允许 GET')
+  const responsePath = pathTemplate(item.responsePath, '响应路径')
+  const operationName = item.graphqlOperationName === undefined
+    ? undefined
+    : graphqlOperationName(item.graphqlOperationName)
+  if (operationName && templateNames(responsePath).length > 0) {
+    throw new Error('GraphQL 响应路径必须是固定前缀')
+  }
   return {
     id: identifier(item.id, '捕获规则 ID'),
-    route: httpsUrl(item.route, '捕获页面'),
+    route: httpsRouteTemplate(item.route, '捕获页面'),
     responseOrigin: originValue(item.responseOrigin, '捕获来源'),
-    responsePath: pathTemplate(item.responsePath, '响应路径'),
+    responsePath,
+    ...(operationName === undefined ? {} : { graphqlOperationName: operationName }),
     resourceTypes: uniqueEnums(item.resourceTypes, ['Fetch', 'XHR'] as const, '资源类型'),
     method: 'GET',
     ...(item.pagination === undefined ? {} : {
@@ -710,6 +719,43 @@ function httpsUrl(value: unknown, label: string): string {
   }
   if (url.protocol !== 'https:' || url.username || url.password || !url.hostname) throw new Error(`${label}必须使用 HTTPS`)
   return url.href
+}
+
+function httpsRouteTemplate(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length > 2_048) throw new Error(`${label}非法`)
+  const match = /^(https:\/\/[^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/i.exec(value)
+  if (!match || /[{}]/.test(match[1]!) || /[{}]/.test(match[3] ?? '')) {
+    throw new Error(`${label}必须是固定 HTTPS 来源与路径模板`)
+  }
+  const path = pathTemplate(match[2] ?? '/', `${label}路径`)
+  if (path.startsWith('//')) throw new Error(`${label}必须是固定 HTTPS 来源与路径模板`)
+  let route: URL
+  try {
+    const safePath = path.replace(/\{[A-Za-z][A-Za-z0-9_]{0,63}\}/g, 'template')
+    route = new URL(`${match[1]}${safePath}${match[3] ?? ''}`)
+  } catch {
+    throw new Error(`${label}非法`)
+  }
+  const queryKeys = [...route.searchParams.keys()]
+  if (route.protocol !== 'https:' || route.username || route.password || route.port ||
+    hasExplicitPort(match[1]!) || !route.hostname || new Set(queryKeys).size !== queryKeys.length) {
+    throw new Error(`${label}必须是固定 HTTPS 来源与路径模板`)
+  }
+  return `${route.origin}${path}${route.search}`
+}
+
+function hasExplicitPort(origin: string): boolean {
+  const authority = origin.slice(origin.indexOf('//') + 2)
+  const host = authority.slice(authority.lastIndexOf('@') + 1)
+  if (host.startsWith('[')) return host.slice(host.indexOf(']') + 1).startsWith(':')
+  return host.includes(':')
+}
+
+function graphqlOperationName(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(value)) {
+    throw new Error('GraphQL 操作名称非法')
+  }
+  return value
 }
 
 function hostList(value: unknown, label: string): string[] {

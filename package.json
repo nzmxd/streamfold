@@ -27,6 +27,8 @@
     "sdk:test": "vitest run packages/plugin-sdk/test",
     "plugin:official-webhook:build": "pnpm sdk:build && node scripts/build-official-webhook.mjs build",
     "plugin:official-webhook:verify": "pnpm sdk:build && node scripts/build-official-webhook.mjs verify",
+    "plugin:official:build": "pnpm sdk:build && node scripts/build-official-plugins.mjs build",
+    "plugin:official:verify": "pnpm sdk:build && node scripts/build-official-plugins.mjs verify",
     "test:package-plugins": "pnpm sdk:build && node scripts/verify-packaged-plugins.mjs",
     "test:package-runtime": "node scripts/smoke-packaged.mjs",
     "test:update-artifacts": "node scripts/verify-update-artifacts.mjs",

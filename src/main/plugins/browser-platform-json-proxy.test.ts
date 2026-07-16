@@ -68,6 +68,53 @@ describe('declarative platform JSON endpoint proxy', () => {
 })
 
 describe('declarative platform Fetch/XHR capture', () => {
+  it('renders shared route and response path parameters without accepting extras', () => {
+    const declaration: PlatformCaptureDeclaration = {
+      id: 'contents.capture',
+      route: 'https://example.com/i/user/{userId}?source=official',
+      responseOrigin: 'https://api.example.com',
+      responsePath: '/v1/users/{userId}/contents',
+      resourceTypes: ['Fetch'],
+      method: 'GET'
+    }
+
+    expect(__pluginPlatformJsonTest.renderDeclaredCaptureUrls(declaration, { userId: 'owner/a' })).toEqual({
+      routeUrl: 'https://example.com/i/user/owner%2Fa?source=official',
+      responseUrl: 'https://api.example.com/v1/users/owner%2Fa/contents'
+    })
+    expect(() => __pluginPlatformJsonTest.renderDeclaredCaptureUrls(
+      declaration,
+      { userId: 'owner', admin: true }
+    )).toThrow('未声明参数')
+    expect(() => __pluginPlatformJsonTest.renderDeclaredCaptureUrls(declaration, {}))
+      .toThrow('参数 userId 无效')
+  })
+
+  it('matches GraphQL captures by a single safe query id and the declared operation', () => {
+    const declaration: PlatformCaptureDeclaration = {
+      id: 'contents.capture',
+      route: 'https://example.com/home',
+      responseOrigin: 'https://api.example.com',
+      responsePath: '/i/api/graphql',
+      graphqlOperationName: 'UserTweets',
+      resourceTypes: ['Fetch', 'XHR'],
+      method: 'GET'
+    }
+    const expected = 'https://api.example.com/i/api/graphql'
+    const matches = (url: string): boolean => __pluginPlatformJsonTest.matchesDeclaredCaptureUrl(
+      url,
+      declaration,
+      expected
+    )
+
+    expect(matches('https://api.example.com/i/api/graphql/Abc_123-x/UserTweets?variables=private')).toBe(true)
+    expect(matches('https://evil.example/i/api/graphql/Abc_123-x/UserTweets')).toBe(false)
+    expect(matches('https://api.example.com/i/api/graphql/Abc_123-x/UserByScreenName')).toBe(false)
+    expect(matches('https://api.example.com/i/api/graphql/Abc_123-x/UserTweets/extra')).toBe(false)
+    expect(matches('https://api.example.com/i/api/graphql/bad.id/UserTweets')).toBe(false)
+    expect(matches(`https://api.example.com/i/api/graphql/${'a'.repeat(129)}/UserTweets`)).toBe(false)
+  })
+
   it('captures only the declared origin, exact path, GET method and resource type', async () => {
     const declaration: PlatformCaptureDeclaration = {
       id: 'contents.capture',

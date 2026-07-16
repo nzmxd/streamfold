@@ -167,6 +167,7 @@ export interface PlatformCaptureDeclaration {
   route: string
   responseOrigin: string
   responsePath: string
+  graphqlOperationName?: string
   resourceTypes: Array<'Fetch' | 'XHR'>
   method: 'GET'
   pagination?: 'none' | 'page-down'
@@ -242,6 +243,15 @@ export interface PluginExecutionContext extends JsonObject {
   contributionId: string
 }
 
+export interface PlatformAdapterReadIdentityInput extends JsonObject {
+  expectedRemoteId: string | null
+}
+
+export interface PlatformAdapterCollectInput extends JsonObject {
+  scope: 'profile_only' | 'recent_20' | 'recent_100'
+  boundRemoteId: string
+}
+
 export interface PlatformApi {
   getJson(endpointId: string, params?: JsonObject): Promise<JsonValue>
   captureJson(captureId: string, params?: JsonObject, limit?: number): Promise<JsonValue>
@@ -275,11 +285,11 @@ export interface PluginContributionModule {
 export interface PlatformAdapterContributionModule {
   readIdentity(
     context: Readonly<PluginExecutionContext>,
-    input: JsonValue
+    input: PlatformAdapterReadIdentityInput
   ): PlatformAdapterIdentity | Promise<PlatformAdapterIdentity>
   collect(
     context: Readonly<PluginExecutionContext>,
-    input: JsonValue
+    input: PlatformAdapterCollectInput
   ): StandardDataset | Promise<StandardDataset>
 }
 

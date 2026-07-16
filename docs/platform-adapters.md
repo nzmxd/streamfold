@@ -6,7 +6,7 @@
 
 ## 1. 共同合同
 
-小红书和知乎是可信内置实现，但已注册为 Manifest v2 `platform.adapter` 贡献点并使用统一宿主编排。第三方适配器在 QuickJS 沙箱运行，其合同、权限和发布流程见[开放插件系统](plugin-system.md)。现有两项内置适配器都遵守以下规则：
+小红书和知乎是可信内置实现，X 是随应用签名分发的 QuickJS 实现；三者都注册为 Manifest v2 `platform.adapter` 贡献点并使用统一宿主编排。第三方适配器同样在 QuickJS 沙箱运行，其合同、权限和发布流程见[开放插件系统](plugin-system.md)。现有适配器都遵守以下规则：
 
 - 只处理用户在归页中创建、登录并确认归属的本人账号。
 - 只使用固定同源 JSON `GET`，或精确匹配的平台 Fetch/XHR JSON 响应。
@@ -113,7 +113,53 @@
 
 0.6.2 的自动化测试覆盖固定端点白名单、日期和 token 校验、五页分页、缺失 `next`、重复内容、赞同/喜欢分离、想法和视频、负数关注者转化、高级指标不可用状态、登录失效 JSON、响应大小与同步前后身份复验。0.6.3 进一步兼容内容分析列表的顶层 `content_token`、非负安全整数 token/ID 和平铺数值 `reaction` 指标，同时继续拒绝不安全整数与非法结构。此前本人测试账号已完成创作中心两页 32 条内容在线验收；周期和高级指标仍应使用本人账号完成脱敏响应验收。
 
-## 4. 计划中平台
+## 4. X
+
+插件 ID：`streamfold.x`，版本 1.0.0；随应用签名分发，在 QuickJS Utility Process 中运行。最小同步间隔 300 秒，建议周期 24 小时，默认关闭。
+
+X 适配器不接入开发者平台或付费 API，也不配置 Bearer Token。它只在账号自己的隔离 Chromium Session 中打开 X 官方页面，并被动捕获网页已经发出的只读 JSON 响应：
+
+| 用途 | 页面响应 | 主要数据 |
+|---|---|---|
+| 当前登录态 | `GET api.x.com/1.1/account/settings.json` | 当前已登录账号的 `screen_name`；只作为会话与账号切换证明 |
+| 本人资料 | `GET x.com/i/api/graphql/{queryId}/UserByScreenName` | 稳定 `rest_id`、handle、昵称、头像、简介、关注、粉丝和帖子数 |
+| 本人帖子 | `GET x.com/i/api/graphql/{queryId}/UserTweets` | 原创帖、引用帖、媒体类型、发布时间和可见互动指标 |
+
+`queryId` 会随 X Web 发布变化，因此 Manifest 声明固定 GraphQL 操作名，宿主只允许一个受限 query ID 路径段并精确匹配 `UserByScreenName` 或 `UserTweets`。适配器看不到 query ID、查询变量、请求头、Cookie 或请求正文，也不会读取页面 DOM。
+
+### 身份与资料
+
+1. 每次身份读取先捕获 `account/settings`；缺少该响应时不会把公开资料页误判为有效登录。
+2. 初次绑定按当前 handle 打开资料页，使用 `rest_id` 作为不可变远端账号 ID。
+3. 确认和同步复验改用 `/i/user/{rest_id}`，并继续交叉校验 settings handle、资料 handle 与稳定 ID。
+4. 同步前后都重复上述验证；退出登录、切换账号或 handle/ID 不一致时整次事务不提交。
+
+昵称优先读取资料 `core.name`，handle 读取 `core.screen_name`，头像读取 `avatar.image_url`，简介读取 `profile_bio.description`；同时兼容旧版 `legacy` 字段。关注和粉丝映射为通用资料指标，`statuses_count` 保存为平台帖子总数。X 的 `favourites_count` 表示账号主动点赞数，不等于本人内容收到的赞，因此不会误映射为累计获赞。
+
+### 内容与指标
+
+只保存作者稳定 ID 等于绑定账号的原创帖和引用帖；回复、纯转帖、推广注入、墓碑内容及其他账号帖子均不保存。长帖优先读取 `note_tweet.note_tweet_results.result.text`，普通帖读取 `legacy.full_text`。包含视频或 GIF 时保存为 `video`，否则包含图片时为 `image`，其余为 `post`。
+
+帖子远端 ID 始终保留为十进制字符串，原帖统一使用可重定向且不依赖 handle 的 `https://x.com/i/web/status/{tweetId}`。通用快照字段映射如下：
+
+- `views.count` → 浏览；
+- `favorite_count` → 点赞；
+- `reply_count` → 回复；
+- `retweet_count` → 转帖；
+- `bookmark_count` → 书签；
+- `quote_count` → 动态指标“引用”。
+
+缺失浏览或互动值保存为 `null`。所有计数必须是非负安全整数，账号和帖子 ID 从不转换为 JavaScript Number。
+
+### 分页与停止条件
+
+`recent_20` 最多捕获 3 个时间线响应，`recent_100` 最多捕获 8 个；每个响应当前包含约 20 个时间线条目。适配器按 Bottom cursor 检查推进、去重并过滤不属于本人作品的条目，达到授权目标数后截断。账号本身内容少且时间线明确终止时允许返回较少结果；仍有 Bottom cursor 但响应数、20 秒捕获时间或 2 MiB 总量达到上限时返回不完整采集错误，不提交部分数据。
+
+HTTP 401/403 按登录失效处理，429 按平台限流处理；GraphQL errors、未知身份结构、重复游标、冲突内容、非法日期/计数或响应超限都会终止本次任务。验证码和登录挑战只由用户在账号浏览器中手动完成。
+
+自动化夹具覆盖当前 `core`/`avatar`/`profile_bio` 资料结构、旧版 legacy 回退、长帖、图片/视频、引用、回复与纯转帖过滤、64 位以上字符串 ID、分页终止和不完整回滚。发布前仍需使用本人测试账号在应用隔离 Session 中完成 20/100 条在线验收，且不得保存真实 Cookie、请求头或完整响应。
+
+## 5. 计划中平台
 
 微博与抖音目前只有官方入口、隔离 Session 和账号浏览器，没有开放数据同步。将插件从 `planned` 改为 `available` 前，必须完成：
 
@@ -122,10 +168,11 @@
 - 主机、路径、方法、分页、大小和身份变化测试；
 - 空列表、限流、账号切换及真实本人测试账号验收。
 
-## 5. 调研来源
+## 6. 调研来源
 
 - [jackwener/OpenCLI](https://github.com/jackwener/OpenCLI)：同源固定请求、平台适配器组织和知乎接口参考。
 - [chouheiwa/zhixi](https://github.com/chouheiwa/zhixi)：知乎创作中心账号汇总、内容日趋势和指标字段交叉核对。
 - [ReaJason/xhs](https://github.com/ReaJason/xhs)、[jackwener/xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli)、[jzOcb/xhs-note-health-checker](https://github.com/jzOcb/xhs-note-health-checker)：小红书接口与响应形状交叉核对。
+- [d60/twikit](https://github.com/d60/twikit)：X Web GraphQL 操作、游标和字段形状交叉核对；归页未采用其 Cookie、请求头构造、登录或写操作实现。
 
 这些项目只用于调研。归页不运行其插件、Bridge、守护进程或签名实现。

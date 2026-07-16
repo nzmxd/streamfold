@@ -30,6 +30,7 @@ pnpm dev
 | `pnpm test:smoke` | 生成当前平台安装目录并执行资源检查、真实 Electron 与 QuickJS 冒烟 |
 | `pnpm test:smoke:dev` | 直接使用开发 Electron 执行快速界面冒烟或截图（受本机图形环境影响） |
 | `pnpm plugin:official-webhook:verify` | 验证随应用分发的官方 Webhook 包、签名与固定信任信息 |
+| `pnpm plugin:official:verify` | 验证随应用分发的全部官方 QuickJS 插件、签名与固定信任信息 |
 | `pnpm test:package-plugins -- release` | 检查安装目录中的沙箱入口、QuickJS 依赖和签名插件资源 |
 | `pnpm test:package-runtime -- release` | 启动安装目录应用并在真实 Utility Process 中执行 QuickJS Smoke |
 | `pnpm test:update-artifacts` | 按环境变量校验更新清单引用、SHA-512、blockmap 和安装目录更新源 |
@@ -133,7 +134,7 @@ pnpm build
 pnpm test:ui
 pnpm benchmark:content-search
 pnpm test:smoke
-pnpm plugin:official-webhook:verify
+pnpm plugin:official:verify
 git diff --check
 ```
 
@@ -141,7 +142,7 @@ git diff --check
 
 ## 9. CI、打包与发布
 
-`.github/workflows/ci.yml` 在 `master`、`main` 的推送与 Pull Request 上使用 Node.js 22.21.1、pnpm 10.24.0 和冻结锁文件执行应用与 SDK 测试、官方 Webhook 校验、类型检查、生产构建和 Electron UI 回归。该最低补丁版本规避了 Windows 上旧版实验性 `node:sqlite` 关闭后仍占用 WAL/数据库文件的问题。
+`.github/workflows/ci.yml` 在 `master`、`main` 的推送与 Pull Request 上使用 Node.js 22.21.1、pnpm 10.24.0 和冻结锁文件执行应用与 SDK 测试、官方插件校验、类型检查、生产构建和 Electron UI 回归。该最低补丁版本规避了 Windows 上旧版实验性 `node:sqlite` 关闭后仍占用 WAL/数据库文件的问题。
 
 `.github/workflows/release.yml` 支持手动打包和版本标签发布：
 
@@ -153,7 +154,7 @@ git diff --check
 
 远程插件目录是可选能力。配置 Actions Variable `STREAMFOLD_PLUGIN_CATALOG_ROOT_KEY`（Ed25519 SPKI DER Base64）后，目录 URL 固定为同一 GitHub 所有者的 `https://<owner>.github.io/streamfold-plugins/catalog.json`；未配置时工作流会把 URL 和根公钥同时编译为空，“发现”页显示未配置，但不阻塞内置插件、签名 Webhook 或应用发布。根私钥不得进入仓库或 Actions。
 
-官方 Webhook 源码位于 `tooling/builtin-plugins/streamfold.webhook`，提交的签名包位于 `resources/plugins`。日常验证只运行 `plugin:official-webhook:verify`。需要重签时，通过 `STREAMFOLD_OFFICIAL_PLUGIN_PRIVATE_KEY_FILE` 指向受保护的 Ed25519 私钥后运行 `plugin:official-webhook:build`；私钥不得进入仓库、Actions 构件或安装包。
+官方 Webhook 与 X 适配器源码位于 `tooling/builtin-plugins`，提交的签名包位于 `resources/plugins`。日常验证运行 `plugin:official:verify`；只排查旧 Webhook 时仍可使用兼容命令。需要重签时，通过 `STREAMFOLD_OFFICIAL_PLUGIN_PRIVATE_KEY_FILE` 指向受保护的 Ed25519 私钥后运行 `plugin:official:build`；私钥不得进入仓库、Actions 构件或安装包。
 
 | 平台 | 用户构件 | 在线更新资产 | 应用内更新边界 |
 |---|---|---|---|
@@ -172,7 +173,7 @@ git diff --check
 ### 正式发布清单
 
 1. 提升 `package.json` 版本；已经分发过的版本号不得复用。
-2. 执行 `pnpm test`、`pnpm sdk:test`、`pnpm typecheck`、`pnpm build`、`pnpm test:ui`、`pnpm benchmark:content-search`、`pnpm test:smoke`、`pnpm plugin:official-webhook:verify` 与 `git diff --check`。
+2. 执行 `pnpm test`、`pnpm sdk:test`、`pnpm typecheck`、`pnpm build`、`pnpm test:ui`、`pnpm benchmark:content-search`、`pnpm test:smoke`、`pnpm plugin:official:verify` 与 `git diff --check`。
 3. 确认没有提交 `.env`、证书、密钥、SQLite、Session、真实响应或个人数据。
 4. 使用 `git commit -S` 创建签名提交，并使用 `git tag -s` 创建与版本完全一致的签名稳定标签。
 5. 核对三个平台构件、Windows/Linux `latest*.yml`、blockmap、校验和及 draft Release，再正式发布。
@@ -185,7 +186,7 @@ git diff --check
 已完成：
 
 - 多账号隔离 Session、独立账号浏览器、后台 workspace lease 与登录失效提升窗口。
-- 小红书、知乎本人身份、资料、内容、指标与官方原帖链接同步。
+- 小红书、知乎和 X 的本人身份、资料、内容、指标与官方原帖链接同步。
 - 账号整理、FTS5 内容检索、收藏与批量标签、筛选导出、可靠趋势分析和加密数据库备份恢复。
 - v0 → v16 数据库迁移、自动化测试、生产构建与 Electron smoke。
 - 账号/分组批量同步、持久排队与重试链、账号和适配器互斥、失败处置、统一任务中心与托盘任务摘要。
@@ -201,4 +202,4 @@ git diff --check
 - Windows/macOS 正式签名、公证，macOS 应用内更新，以及从较低正式版本升级到后续版本的真实验收。
 - 媒体文件备份、XLSX 导出、分组拖拽和浏览器窗口位置恢复。
 
-下一阶段优先完成小红书、知乎真实多账号与长时间运行验收，建立签名插件目录并验证第三个平台，再补齐安装包代码签名和跨版本在线升级验收。详细版本范围、技术改造和验收门槛见[产品路线图](roadmap.md)。
+下一阶段优先完成三个已开放平台的真实多账号与长时间运行验收，建立签名插件目录，再补齐安装包代码签名和跨版本在线升级验收。详细版本范围、技术改造和验收门槛见[产品路线图](roadmap.md)。

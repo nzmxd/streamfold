@@ -28,6 +28,47 @@ beforeEach(() => {
 })
 
 describe('SandboxPlatformAdapter synchronization orchestration', () => {
+  it('passes the expected stable identity into probes and collection', async () => {
+    const repository = repositoryFixture()
+    repository.commitManagedSync.mockReturnValue({
+      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
+      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
+    })
+    const runtime = runtimeSequence([
+      identity('stable-owner'),
+      dataset('stable-owner'),
+      identity('stable-owner')
+    ])
+    const adapter = createAdapter(repository, runtime, jobsFixture())
+
+    await adapter.sync('account-1')
+
+    expect(runtime.invoke).toHaveBeenNthCalledWith(
+      1,
+      'example.plugin',
+      'example.adapter',
+      'readIdentity',
+      'account-1',
+      { expectedRemoteId: 'stable-owner' }
+    )
+    expect(runtime.invoke).toHaveBeenNthCalledWith(
+      2,
+      'example.plugin',
+      'example.adapter',
+      'collect',
+      'account-1',
+      { scope: 'recent_20', boundRemoteId: 'stable-owner' }
+    )
+    expect(runtime.invoke).toHaveBeenNthCalledWith(
+      3,
+      'example.plugin',
+      'example.adapter',
+      'readIdentity',
+      'account-1',
+      { expectedRemoteId: 'stable-owner' }
+    )
+  })
+
   it('rechecks identity after collection and refuses to commit a changed login', async () => {
     const repository = repositoryFixture()
     const runtime = runtimeSequence([

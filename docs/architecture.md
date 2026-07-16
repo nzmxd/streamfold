@@ -81,17 +81,17 @@ persist:social:<account_uuid>
 | 平台路由 | 根据账号绑定的贡献点选择适配器 | `platform-sync-service.ts`、`plugins/platform-adapter-registry.ts` |
 | 插件宿主 | Manifest、授权、QuickJS、事件、计划和包生命周期 | `src/main/plugins/` |
 | 事务服务 | 锁、限频、身份状态、任务、头像和数据库提交 | 内置平台服务、`plugins/sandbox-platform-adapter.ts` |
-| API 与解析 | 固定端点、分页、字段校验、标准化和身份前后复验 | `xiaohongshu-api.ts`、`zhihu-api.ts` |
+| API 与解析 | 固定端点、分页、字段校验、标准化和身份前后复验 | 内置平台模块、签名 QuickJS 适配器 |
 | 浏览器传输 | 同源固定 GET 或精确 XHR/Fetch JSON 响应捕获 | `browser-manager.ts` |
 
-小红书和知乎继续使用可信内置 TypeScript 实现；签名第三方适配器使用相同 Manifest v2 合同，在独立 Utility Process 的 QuickJS 上下文运行。所有适配器都由动态扩展注册中心发现，账号绑定具体贡献点。第三方入口只能调用声明并获授权的 `platform.getJson` / `platform.captureJson`，不能取得页面或 Session 对象。完整合同与供应链见[开放插件系统](plugin-system.md)。
+小红书和知乎继续使用可信内置 TypeScript 实现；随应用签名分发的 X 适配器与第三方适配器使用相同 Manifest v2 合同，在独立 Utility Process 的 QuickJS 上下文运行。所有适配器都由动态扩展注册中心发现，账号绑定具体贡献点。QuickJS 入口只能调用声明并获授权的 `platform.getJson` / `platform.captureJson`，不能取得页面或 Session 对象。完整合同与供应链见[开放插件系统](plugin-system.md)。
 
 ### JSON 数据传输
 
 当前只有两条数据路径：
 
 1. 在账号自己的已登录页面环境中，对固定白名单端点执行同源 `GET`。
-2. 对需要平台页面生成请求上下文的接口，使用 Chromium DevTools Protocol 的 `Network` 域捕获精确匹配的 Fetch/XHR JSON 响应。
+2. 对需要平台页面生成请求上下文的接口，使用 Chromium DevTools Protocol 的 `Network` 域捕获按固定路径或声明式 GraphQL 操作名精确匹配的 Fetch/XHR JSON 响应。
 
 第二条路径只使用请求方法和 URL 来匹配响应，再读取响应正文；不会从页面 DOM 或 HTML 提取数据。响应在进入业务模型前还会校验协议、主机、路径、状态码、Content-Type、大小、分页、ID、计数和字符串长度。
 

@@ -35,6 +35,7 @@
 | [ReaJason/xhs](https://github.com/ReaJason/xhs) | 小红书接口与字段交叉核对 | Cookie 输入、签名和公开详情回退 |
 | [jackwener/xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli) | 公开详情方案的可行性对照 | POST 签名逻辑和 HTML 回退 |
 | [Johnserf-Seed/f2](https://github.com/Johnserf-Seed/f2) | 微博、抖音候选接口调研 | 独立 Python 运行时和 Cookie 输入 |
+| [d60/twikit](https://github.com/d60/twikit) | X Web GraphQL 操作、游标和响应字段交叉核对 | Cookie 文件、Bearer/CSRF 请求头构造、登录自动化和平台写操作 |
 
 平台 DOM 变化频繁，且页面可见文本难以证明字段身份和分页完整性。固定 JSON 接口可以对白名单、响应大小、ID、计数、分页和前后身份做严格验证，因此成为唯一采集路径。
 

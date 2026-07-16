@@ -78,7 +78,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
   async verifyIdentity(accountId: string): Promise<SessionApiIdentityCheckResult> {
     return await this.withAccountLock(accountId, async () => {
       const account = this.requireAccount(accountId)
-      const identity = await this.readIdentity(accountId)
+      const identity = await this.readIdentity(accountId, account.remoteId)
       if (account.remoteId) return this.commitIdentity(account, identity)
       const preview: IdentityPreview = {
         token: randomUUID(),
@@ -114,7 +114,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
         this.contributionId,
         'readIdentity',
         accountId,
-        {},
+        { expectedRemoteId: account.remoteId },
         true
       )
       const identity = parseIdentity(value)
@@ -130,7 +130,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
       if (!preview || preview.accountId !== input.accountId) throw new Error('身份确认已过期，请重新核验')
       this.previews.delete(input.token)
       const account = this.requireAccount(input.accountId)
-      const identity = await this.readIdentity(input.accountId)
+      const identity = await this.readIdentity(input.accountId, preview.remoteId)
       if (identity.remoteId !== preview.remoteId || identity.remoteName !== preview.remoteName) {
         this.repository.markManagedIdentityMismatch(account.id, '确认前登录账号发生变化', this.now())
         return identityResult(account.id, identity, 'identity_mismatch', null, '确认前登录账号发生变化，已暂停同步。')
@@ -153,17 +153,17 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
         this.enforceMinimumInterval(account)
         job = await this.jobs.createManagedSync(account.id, this.pluginId, this.contributionId)
         this.repository.markManagedSyncStarted(account.id, this.now())
-        const before = await this.readIdentity(account.id)
+        const before = await this.readIdentity(account.id, account.remoteId)
         if (before.remoteId !== account.remoteId) throw new Error('当前登录身份与已绑定账号不一致')
         const raw = await this.runtime.invoke(
           this.pluginId,
           this.contributionId,
           'collect',
           account.id,
-          { scope: requestedMode }
+          { scope: requestedMode, boundRemoteId: before.remoteId }
         )
         const dataset = parseDataset(raw, this.platformId)
-        const after = await this.readIdentity(account.id)
+        const after = await this.readIdentity(account.id, account.remoteId)
         if (after.remoteId !== before.remoteId || after.remoteId !== account.remoteId) {
           throw new Error('同步期间平台登录身份发生变化')
         }
@@ -238,8 +238,14 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
     this.previews.clear()
   }
 
-  private async readIdentity(accountId: string): Promise<Identity> {
-    const value = await this.runtime.invoke(this.pluginId, this.contributionId, 'readIdentity', accountId, {})
+  private async readIdentity(accountId: string, expectedRemoteId: string | null): Promise<Identity> {
+    const value = await this.runtime.invoke(
+      this.pluginId,
+      this.contributionId,
+      'readIdentity',
+      accountId,
+      { expectedRemoteId }
+    )
     return parseIdentity(value)
   }
 

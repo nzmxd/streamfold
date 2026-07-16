@@ -5,14 +5,12 @@ import { access, readFile, readdir } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { verifyPluginArchive } from '../packages/plugin-sdk/dist/package-format.js'
+import { readOfficialPluginTrustDocuments } from './build-official-plugins.mjs'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const searchArgument = process.argv.slice(2).find((value) => value !== '--')
 const searchRoot = resolve(searchArgument ?? join(repositoryRoot, 'release'))
-const trust = JSON.parse(await readFile(
-  join(repositoryRoot, 'tooling', 'builtin-plugins', 'streamfold.webhook', 'trust.json'),
-  'utf8'
-))
+const officialPlugins = await readOfficialPluginTrustDocuments()
 const archives = await findFiles(searchRoot, 'app.asar', 7)
 
 if (archives.length === 0) throw new Error(`未在 ${searchRoot} 中找到已打包的 app.asar`)
@@ -31,25 +29,34 @@ for (const archivePath of archives) {
     }
   }
 
-  const packagePath = join(dirname(archivePath), 'plugins', trust.packageFile)
-  await access(packagePath)
-  const verified = await verifyPluginArchive(await readFile(packagePath), {
-    publicKey: createPublicKey({
-      key: Buffer.from(trust.publisherPublicKey, 'base64'),
-      format: 'der',
-      type: 'spki'
-    }),
-    expectedKeyId: trust.publisherKeyId,
-    requireSignature: true
-  })
-  if (
-    verified.manifest.id !== trust.pluginId ||
-    verified.manifest.version !== trust.version ||
-    verified.archiveHash !== trust.packageHash ||
-    verified.contentHash !== trust.contentHash
-  ) throw new Error('安装目录中的官方 Webhook 插件与固定信任信息不一致')
+  for (const { definition, trust } of officialPlugins) {
+    const packagePath = join(dirname(archivePath), 'plugins', trust.packageFile)
+    await access(packagePath)
+    const verified = await verifyPluginArchive(await readFile(packagePath), {
+      publicKey: createPublicKey({
+        key: Buffer.from(trust.publisherPublicKey, 'base64'),
+        format: 'der',
+        type: 'spki'
+      }),
+      expectedKeyId: trust.publisherKeyId,
+      requireSignature: true
+    })
+    const contributionIds = verified.manifest.contributions.map((item) => item.id).sort()
+    const expectedContributionIds = [...definition.contributionIds].sort()
+    if (
+      verified.manifest.id !== trust.pluginId ||
+      verified.manifest.version !== trust.version ||
+      verified.manifest.publisher.id !== 'streamfold' ||
+      verified.manifest.publisher.keyId !== trust.publisherKeyId ||
+      contributionIds.length !== expectedContributionIds.length ||
+      contributionIds.some((id, index) => id !== expectedContributionIds[index]) ||
+      verified.manifest.contributions.some((item) => item.runtime !== 'quickjs') ||
+      verified.archiveHash !== trust.packageHash ||
+      verified.contentHash !== trust.contentHash
+    ) throw new Error(`安装目录中的官方 ${definition.label} 插件与固定信任信息不一致`)
+  }
 
-  process.stdout.write(`插件打包 Smoke 通过：${archivePath}\n`)
+  process.stdout.write(`插件打包 Smoke 通过（${officialPlugins.length} 个官方插件）：${archivePath}\n`)
 }
 
 async function findFiles(root, name, depth) {

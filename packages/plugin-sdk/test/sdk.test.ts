@@ -9,6 +9,9 @@ import {
   createManifest,
   createPluginPackageSignature,
   createTestHost,
+  type PlatformAdapterCollectInput,
+  type PlatformAdapterContributionModule,
+  type PlatformAdapterReadIdentityInput,
   validateManifest,
   validatePluginEntries,
   verifyPluginArchive,
@@ -24,6 +27,16 @@ afterEach(async () => {
 })
 
 describe('Streamfold plugin SDK', () => {
+  it('exposes the host platform adapter input contracts', () => {
+    const identityInput: PlatformAdapterReadIdentityInput = { expectedRemoteId: null }
+    const collectInput: PlatformAdapterCollectInput = { scope: 'recent_100', boundRemoteId: 'owner-1' }
+    const moduleIdentityInput: Parameters<PlatformAdapterContributionModule['readIdentity']>[1] = identityInput
+    const moduleCollectInput: Parameters<PlatformAdapterContributionModule['collect']>[1] = collectInput
+
+    expect(moduleIdentityInput).toEqual({ expectedRemoteId: null })
+    expect(moduleCollectInput).toEqual({ scope: 'recent_100', boundRemoteId: 'owner-1' })
+  })
+
   it('builds manifests accepted by the application host', () => {
     const manifest = createManifest({
       id: 'community.example',
@@ -94,13 +107,27 @@ describe('Streamfold plugin SDK', () => {
           riskNote: 'Use the signed-in account session.'
         },
         endpoints: [],
-        captures: [],
+        captures: [{
+          id: 'profile.capture',
+          route: 'https://example.com/i/user/{userId}?source=official',
+          responseOrigin: 'https://api.example.com',
+          responsePath: '/graphql',
+          graphqlOperationName: 'UserContents',
+          resourceTypes: ['Fetch', 'XHR'],
+          method: 'GET'
+        }],
         minimumIntervalSeconds: 60,
         recommendedSyncIntervalHours: 24
       }]
     })
 
     expect(validatePluginManifestV2(manifest)).toEqual(manifest)
+    const contribution = manifest.contributions[0]!
+    if (contribution.kind !== 'platform.adapter') throw new Error('expected platform adapter')
+    expect(contribution.captures[0]).toMatchObject({
+      route: 'https://example.com/i/user/{userId}?source=official',
+      graphqlOperationName: 'UserContents'
+    })
     expect(() => validateManifest({
       ...manifest,
       contributions: [{
@@ -115,6 +142,51 @@ describe('Streamfold plugin SDK', () => {
         }
       }]
     })).toThrow('原帖 URL 模板参数不一致')
+
+    for (const route of [
+      'https://{host}/i/user/user-1',
+      'https://example.com:444/i/user/user-1',
+      'https://example.com:443/i/user/user-1',
+      'https://example.com/i/user/user-1?mode={private}',
+      'https://example.com/i/user/user-1?mode=one&mode=two',
+      'https://example.com/i/user/user-1#profile'
+    ]) {
+      const invalid = {
+        ...manifest,
+        contributions: [{
+          ...contribution,
+          captures: [{ ...contribution.captures[0]!, route }]
+        }]
+      }
+      expect(() => validateManifest(invalid)).toThrow()
+      expect(() => validatePluginManifestV2(invalid)).toThrow()
+    }
+
+    const invalidOperation = {
+      ...manifest,
+      contributions: [{
+        ...contribution,
+        captures: [{
+          ...contribution.captures[0]!,
+          graphqlOperationName: 'UserContents/private'
+        }]
+      }]
+    }
+    expect(() => validateManifest(invalidOperation)).toThrow('GraphQL 操作名称非法')
+    expect(() => validatePluginManifestV2(invalidOperation)).toThrow('GraphQL 操作名称非法')
+
+    const templatedGraphqlPrefix = {
+      ...manifest,
+      contributions: [{
+        ...contribution,
+        captures: [{
+          ...contribution.captures[0]!,
+          responsePath: '/graphql/{userId}'
+        }]
+      }]
+    }
+    expect(() => validateManifest(templatedGraphqlPrefix)).toThrow('GraphQL 响应路径必须是固定前缀')
+    expect(() => validatePluginManifestV2(templatedGraphqlPrefix)).toThrow('GraphQL 响应路径必须是固定前缀')
   })
 
   it('creates signed archives accepted by the application package verifier', async () => {

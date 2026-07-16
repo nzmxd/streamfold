@@ -39,7 +39,7 @@ describe('PlatformAdapterRegistryService', () => {
       'example.adapter.v2',
       'readIdentity',
       account.id,
-      {},
+      { expectedRemoteId: 'stable-owner' },
       true
     )
     expect(setAccountAdapterContribution).toHaveBeenCalledWith(

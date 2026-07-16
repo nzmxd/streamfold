@@ -4,7 +4,7 @@
 >
 > Manifest：v2；目录：v1
 
-本文是插件开发、权限审计和目录发布的统一说明。运行进程与数据库见[运行架构](architecture.md)，现有小红书和知乎数据来源见[平台适配器](platform-adapters.md)。SDK 的命令细节见 [`packages/plugin-sdk/README.md`](../packages/plugin-sdk/README.md)。
+本文是插件开发、权限审计和目录发布的统一说明。运行进程与数据库见[运行架构](architecture.md)，现有小红书、知乎和 X 数据来源见[平台适配器](platform-adapters.md)。SDK 的命令细节见 [`packages/plugin-sdk/README.md`](../packages/plugin-sdk/README.md)。
 
 ## 1. 架构与边界
 
@@ -17,7 +17,7 @@
 | `event.handler` | `handle` | 处理事务提交后的业务事件 |
 | `scheduled.task` | `run` | 按用户启用的计划执行任务 |
 
-第三方入口在独立 Electron Utility Process 的 QuickJS 上下文运行。主进程只通过经过 Schema 校验的 RPC 提供受限代理；Renderer 不会获得插件目录、Bundle、Secret、平台 Session 或数据库对象。小红书、知乎保留可信内置实现，但已经注册为相同的 `platform.adapter` 合同；官方 Webhook 使用与第三方一致的 QuickJS 调用路径。
+签名 QuickJS 入口在独立 Electron Utility Process 中运行。主进程只通过经过 Schema 校验的 RPC 提供受限代理；Renderer 不会获得插件目录、Bundle、Secret、平台 Session 或数据库对象。小红书、知乎保留可信内置实现，但已经注册为相同的 `platform.adapter` 合同；随应用分发的 X 与官方 Webhook 使用和第三方插件一致的 QuickJS 调用路径。
 
 ```mermaid
 flowchart LR
@@ -118,13 +118,30 @@ const identity = await streamfold.platform.getJson('identity', {
 })
 ```
 
-`captureJson` 只匹配 Manifest 中声明的页面路由、响应 origin/path、GET 与 Fetch/XHR 类型，并执行声明过的 `none` 或 `page-down` 分页。平台代理不向插件提供 `WebContents`、脚本执行、DOM、Cookie、请求头或请求正文。
+`captureJson` 只匹配 Manifest 中声明的页面路由、响应 origin/path、GET 与 Fetch/XHR 类型，并执行声明过的 `none` 或 `page-down` 分页。页面路由可以在 HTTPS pathname 中使用参数，例如 `https://www.example.com/users/{handle}`；参数逐段编码，不能改变 origin、查询或 Hash。
+
+GraphQL Web 客户端经常把易变 query ID 放进路径。此类捕获可以声明固定前缀与操作名：
+
+```json
+{
+  "id": "user-content",
+  "route": "https://www.example.com/users/{handle}",
+  "responseOrigin": "https://www.example.com",
+  "responsePath": "/internal/graphql",
+  "graphqlOperationName": "UserContent",
+  "resourceTypes": ["Fetch", "XHR"],
+  "method": "GET",
+  "pagination": "page-down"
+}
+```
+
+宿主只接受 `${responsePath}/{单个安全 query ID 段}/${graphqlOperationName}`，不会把 query ID、请求参数、请求头或请求正文交给插件。未声明 `graphqlOperationName` 的既有捕获继续按完整 pathname 精确匹配。平台代理也不向插件提供 `WebContents`、脚本执行、DOM 或 Cookie。
 
 `readIdentity` 返回稳定身份；`collect` 返回标准数据集：
 
 ```js
 module.exports = {
-  async readIdentity(context) {
+  async readIdentity(context, input) {
     return {
       remoteId: 'stable-account-id',
       remoteName: '昵称',
@@ -163,6 +180,8 @@ module.exports = {
   }
 }
 ```
+
+身份入口会收到 `{ expectedRemoteId }`；首次绑定时为 `null`，确认和同步复验时为已知稳定 ID。采集入口会收到 `{ scope, boundRemoteId }`，其中 `scope` 是三种已授权同步范围之一。插件仍必须从当前平台 Session 独立验证身份，不能把这些宿主值当成平台响应。
 
 内容类型只允许 `article`、`post`、`image`、`video`、`answer`。五项通用指标继续使用快照固定字段；平台扩展指标必须先在 `contentMetricDefinitions` 中声明，再写入快照 `metrics`。定义包含稳定 ID、标签、值类型、单位、分组、排序，以及可选的 `measurementKind` 和 `standardMetricId`。测量语义只允许累计值 `cumulative`、平台已聚合的周期值 `period_total` 和瞬时值 `gauge`；旧插件未声明时按 `gauge` 展示，不自动累计增量。只有口径一致的指标才映射为标准指标参与跨平台比较。宿主按贡献点和已安装包哈希固化每次观察使用的指标语义，后续更新或切换适配器不会追溯改写历史口径。宿主会验证计数、0 到 1 的比例与秒制时长。缺失指标使用 `null`；原帖 URL 必须匹配 Manifest 的 `contentUrls`。宿主统一执行本人确认、同步前后身份复验、账号互斥、同适配器串行、限频、任务状态和 SQLite 原子提交。切换适配器时，新适配器必须返回相同稳定账号 ID，历史数据不会迁移或重写。
 

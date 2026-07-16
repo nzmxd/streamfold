@@ -46,7 +46,7 @@ jobs:
         run: pnpm sdk:test
 
       - name: Verify official Webhook plugin resource
-        run: pnpm plugin:official-webhook:verify
+        run: pnpm plugin:official:verify
 
       - name: Run tests
         run: pnpm test

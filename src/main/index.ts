@@ -29,7 +29,7 @@ import { PluginAutomationService } from './plugins/automation-service'
 import { BrowserPlatformJsonProxy } from './plugins/browser-platform-json-proxy'
 import { PluginEntryResolver, PluginEntryStore } from './plugins/plugin-entry-store'
 import { PluginLifecycleService } from './plugins/plugin-lifecycle-service'
-import { verifyOfficialWebhookResource } from './plugins/official-webhook-resource'
+import { verifyAndStageOfficialPluginResources } from './plugins/official-plugin-resources'
 import { PlatformAdapterRegistryService } from './plugins/platform-adapter-registry'
 import type { VerifiedPluginPackage } from './plugins/plugin-package'
 import { PluginRuntimeExecutor } from './plugins/plugin-runtime-executor'
@@ -98,7 +98,7 @@ let pluginAutomationService: PluginAutomationService | null = null
 let syncBatchService: SyncBatchService | null = null
 let taskQueryService: TaskQueryService | null = null
 let pluginEntryStore: PluginEntryStore | null = null
-let officialWebhookPackage: VerifiedPluginPackage | null = null
+let officialPluginPackages: readonly VerifiedPluginPackage[] | null = null
 let removeTrayUpdateListener: (() => void) | null = null
 let removeTrayTaskListener: (() => void) | null = null
 let trayMenuSignature = ''
@@ -156,10 +156,10 @@ void app.whenReady().then(async () => {
   profileMediaStore = new ProfileMediaStore(join(app.getPath('userData'), 'profile-media'))
   await registerShellProtocol(profileMediaStore)
   pluginEntryStore = new PluginEntryStore(join(app.getPath('userData'), 'plugins'))
-  officialWebhookPackage = await verifyOfficialWebhookResource(
-    app.isPackaged ? process.resourcesPath : resolve(currentDir, '../../resources')
+  officialPluginPackages = await verifyAndStageOfficialPluginResources(
+    app.isPackaged ? process.resourcesPath : resolve(currentDir, '../../resources'),
+    pluginEntryStore
   )
-  await pluginEntryStore.stageAndActivate(officialWebhookPackage)
   updateService = createUpdateService()
   removeTrayUpdateListener = updateService.subscribe(refreshTrayMenu)
   createWindow()
@@ -209,7 +209,7 @@ app.on('before-quit', () => {
 function showMainWindow(): void {
   if (!app.isReady()) return
   if (!mainWindow || mainWindow.isDestroyed()) {
-    if (!profileMediaStore || !updateService || !pluginEntryStore || !officialWebhookPackage) return
+    if (!profileMediaStore || !updateService || !pluginEntryStore || !officialPluginPackages) return
     createWindow()
     return
   }
@@ -320,7 +320,7 @@ function createWindow(): void {
   if (mainWindow && !mainWindow.isDestroyed()) return
   if (!profileMediaStore) throw new Error('头像媒体缓存尚未初始化')
   if (!updateService) throw new Error('更新服务尚未初始化')
-  if (!pluginEntryStore || !officialWebhookPackage) throw new Error('官方插件资源尚未验证')
+  if (!pluginEntryStore || !officialPluginPackages) throw new Error('官方插件资源尚未验证')
 
   database = new SocialDatabase(join(app.getPath('userData'), 'social-vault.sqlite'))
   updateService.setAutomaticChecks(readAutomaticUpdatePreference(database))
@@ -399,7 +399,7 @@ function createWindow(): void {
     applicationIcon
   )
   const pluginSecretStore = new ElectronPluginSecretStore()
-  installOfficialWebhookPackage(database, officialWebhookPackage)
+  installOfficialPluginPackages(database, officialPluginPackages)
   const pluginHostService = new PluginHostService(database, pluginSecretStore)
   pluginHostService.initialize()
   registerManifestPlatforms(pluginHostService.extensionRegistry().platformDefinitions().map((platform) => ({
@@ -591,7 +591,7 @@ function createWindow(): void {
       platformSyncService.invalidatePreviews()
     },
     afterRestore: () => {
-      installOfficialWebhookPackage(database!, officialWebhookPackage!)
+      installOfficialPluginPackages(database!, officialPluginPackages!)
       pluginHostService.initialize()
       registerManifestPlatforms(pluginHostService.extensionRegistry().platformDefinitions().map((platform) => ({
         id: platform.id,
@@ -842,17 +842,19 @@ function createWindow(): void {
   })
 }
 
-function installOfficialWebhookPackage(
+function installOfficialPluginPackages(
   repository: SocialDatabase,
-  verified: VerifiedPluginPackage
+  verifiedPackages: readonly VerifiedPluginPackage[]
 ): void {
-  repository.upsertPluginPackage(verified.manifest, {
-    source: 'builtin',
-    status: 'active',
-    packageHash: verified.archiveHash,
-    publisherKeyId: verified.manifest.publisher.keyId,
-    development: false
-  })
+  for (const verified of verifiedPackages) {
+    repository.upsertPluginPackage(verified.manifest, {
+      source: 'builtin',
+      status: 'active',
+      packageHash: verified.archiveHash,
+      publisherKeyId: verified.manifest.publisher.keyId,
+      development: false
+    })
+  }
 }
 
 async function registerShellProtocol(profileMedia: ProfileMediaStore): Promise<void> {

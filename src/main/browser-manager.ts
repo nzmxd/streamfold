@@ -267,12 +267,13 @@ export class BrowserManager {
     }
     this.activeApiCaptures.add(accountId)
     try {
-      const expected = renderDeclaredUrl(capture.responseOrigin, capture.responsePath, [], params)
+      const rendered = renderDeclaredCaptureUrls(capture, params)
       return await captureDeclaredPlatformJson(
         managed.view.webContents,
         capture,
-        expected,
-        Math.min(limit ?? capture.maximumResponses ?? 20, capture.maximumResponses ?? 100)
+        rendered.responseUrl,
+        Math.min(limit ?? capture.maximumResponses ?? 20, capture.maximumResponses ?? 100),
+        rendered.routeUrl
       )
     } finally {
       this.activeApiCaptures.delete(accountId)
@@ -1884,6 +1885,37 @@ function renderDeclaredUrl(
   params: Record<string, unknown>
 ): string {
   const used = new Set<string>()
+  const target = renderDeclaredUrlWithUsed(originValue, pathTemplate, queryParameters, params, used)
+  assertNoUndeclaredParams(params, used)
+  return target
+}
+
+function renderDeclaredCaptureUrls(
+  declaration: PlatformCaptureDeclaration,
+  params: Record<string, unknown>
+): { routeUrl: string; responseUrl: string } {
+  const used = new Set<string>()
+  const route = declaredRouteTemplateParts(declaration.route)
+  const renderedRoute = new URL(renderDeclaredUrlWithUsed(route.origin, route.path, [], params, used))
+  renderedRoute.search = route.search
+  const responseUrl = renderDeclaredUrlWithUsed(
+    declaration.responseOrigin,
+    declaration.responsePath,
+    [],
+    params,
+    used
+  )
+  assertNoUndeclaredParams(params, used)
+  return { routeUrl: renderedRoute.href, responseUrl }
+}
+
+function renderDeclaredUrlWithUsed(
+  originValue: string,
+  pathTemplate: string,
+  queryParameters: readonly string[],
+  params: Record<string, unknown>,
+  used: Set<string>
+): string {
   const path = pathTemplate.replace(/\{([a-zA-Z][a-zA-Z0-9_-]{0,63})\}/g, (_match, key: string) => {
     const value = declaredScalar(params[key], key)
     used.add(key)
@@ -1900,11 +1932,40 @@ function renderDeclaredUrl(
     used.add(key)
     target.searchParams.set(key, declaredScalar(value, key))
   }
-  if (Object.keys(params).some((key) => !used.has(key))) throw new Error('平台端点包含未声明参数')
   target.username = ''
   target.password = ''
   target.hash = ''
   return target.href
+}
+
+function declaredRouteTemplateParts(value: string): { origin: string; path: string; search: string } {
+  const match = /^(https:\/\/[^/?#]+)(\/[^?#]*)?(\?[^#]*)?$/i.exec(value)
+  if (!match || /[{}]/.test(match[1]!) || /[{}]/.test(match[3] ?? '')) {
+    throw new Error('平台捕获页面路由模板非法')
+  }
+  const path = match[2] ?? '/'
+  let route: URL
+  try {
+    route = new URL(`${match[1]}${path.replace(/\{[A-Za-z][A-Za-z0-9_]{0,63}\}/g, 'template')}${match[3] ?? ''}`)
+  } catch {
+    throw new Error('平台捕获页面路由模板非法')
+  }
+  const queryKeys = [...route.searchParams.keys()]
+  if (route.protocol !== 'https:' || route.username || route.password || route.port ||
+    hasExplicitRoutePort(match[1]!) || !route.hostname || path.startsWith('//') ||
+    new Set(queryKeys).size !== queryKeys.length) throw new Error('平台捕获页面路由模板非法')
+  return { origin: route.origin, path, search: route.search }
+}
+
+function hasExplicitRoutePort(origin: string): boolean {
+  const authority = origin.slice(origin.indexOf('//') + 2)
+  const host = authority.slice(authority.lastIndexOf('@') + 1)
+  if (host.startsWith('[')) return host.slice(host.indexOf(']') + 1).startsWith(':')
+  return host.includes(':')
+}
+
+function assertNoUndeclaredParams(params: Record<string, unknown>, used: ReadonlySet<string>): void {
+  if (Object.keys(params).some((key) => !used.has(key))) throw new Error('平台端点包含未声明参数')
 }
 
 function declaredScalar(value: unknown, label: string): string {
@@ -1974,14 +2035,15 @@ async function captureDeclaredPlatformJson(
   contents: Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>,
   declaration: PlatformCaptureDeclaration,
   expectedUrl: string,
-  limit: number
+  limit: number,
+  routeUrl = declaration.route
 ): Promise<unknown[]> {
   if (contents.isDestroyed()) throw new Error('账号浏览器工作区已关闭')
   const browserDebugger = contents.debugger
   if (browserDebugger.isAttached()) throw new Error('账号浏览器调试通道正在使用')
   const expected = new URL(expectedUrl)
   const values: unknown[] = []
-  const pending = new Map<string, { status: number; contentType: string; url: string }>()
+  const pending = new Map<string, { status: number; contentType: string }>()
   const requestMethods = new Map<string, string>()
   const maximumResponseBytes = declaration.maximumResponseBytes ?? 512 * 1024
   const maximumTotalBytes = declaration.maximumTotalBytes ?? 2 * 1024 * 1024
@@ -1990,12 +2052,7 @@ async function captureDeclaredPlatformJson(
   let failure: Error | null = null
 
   const matches = (value: string): boolean => {
-    try {
-      const url = new URL(value)
-      return url.origin === expected.origin && url.pathname === expected.pathname && !url.username && !url.password
-    } catch {
-      return false
-    }
+    return matchesDeclaredCaptureUrl(value, declaration, expected)
   }
   const harvest = async (requestId: string): Promise<void> => {
     const metadata = pending.get(requestId)
@@ -2038,8 +2095,7 @@ async function captureDeclaredPlatformJson(
         requestMethods.get(requestId) !== 'GET') return
       pending.set(requestId, {
         status: Number(response.status),
-        contentType: String(objectRecord(response.headers)['content-type'] ?? objectRecord(response.headers)['Content-Type'] ?? ''),
-        url
+        contentType: String(objectRecord(response.headers)['content-type'] ?? objectRecord(response.headers)['Content-Type'] ?? '')
       })
       lastActivity = Date.now()
       return
@@ -2063,7 +2119,7 @@ async function captureDeclaredPlatformJson(
       maxTotalBufferSize: maximumTotalBytes,
       maxResourceBufferSize: maximumResponseBytes
     })
-    await contents.loadURL(declaration.route)
+    await contents.loadURL(routeUrl)
     const startedAt = Date.now()
     let pageMoves = 0
     while (!failure && values.length < limit && Date.now() - startedAt < 20_000) {
@@ -2086,6 +2142,29 @@ async function captureDeclaredPlatformJson(
   }
 }
 
+function matchesDeclaredCaptureUrl(
+  value: string,
+  declaration: PlatformCaptureDeclaration,
+  expectedValue: string | URL
+): boolean {
+  try {
+    const url = new URL(value)
+    const expected = typeof expectedValue === 'string' ? new URL(expectedValue) : expectedValue
+    if (url.origin !== expected.origin || url.username || url.password) return false
+    if (!declaration.graphqlOperationName) return url.pathname === expected.pathname
+    const prefix = `${expected.pathname}/`
+    if (!url.pathname.startsWith(prefix)) return false
+    const suffix = url.pathname.slice(prefix.length)
+    const separator = suffix.indexOf('/')
+    if (separator < 1 || suffix.indexOf('/', separator + 1) !== -1) return false
+    const queryId = suffix.slice(0, separator)
+    const operationName = suffix.slice(separator + 1)
+    return /^[A-Za-z0-9_-]{1,128}$/.test(queryId) && operationName === declaration.graphqlOperationName
+  } catch {
+    return false
+  }
+}
+
 export const __xiaohongshuApiTransportTest = Object.freeze({
   fetchPageJson: fetchXiaohongshuPageJson,
   prepareApiPage: prepareXiaohongshuApiContents,
@@ -2105,6 +2184,8 @@ export const __browserWorkspaceLeaseTest = Object.freeze({
 
 export const __pluginPlatformJsonTest = Object.freeze({
   renderDeclaredUrl,
+  renderDeclaredCaptureUrls,
+  matchesDeclaredCaptureUrl,
   fetchDeclaredPlatformJson,
   captureDeclaredPlatformJson
 })

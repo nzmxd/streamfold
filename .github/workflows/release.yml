@@ -45,7 +45,7 @@ jobs:
         run: pnpm sdk:test
 
       - name: Verify official Webhook plugin resource
-        run: pnpm plugin:official-webhook:verify
+        run: pnpm plugin:official:verify
 
       - name: Verify version tag
         if: startsWith(github.ref, 'refs/tags/')

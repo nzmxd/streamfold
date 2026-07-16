@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 2,
+  "id": "streamfold.x",
+  "name": "X",
+  "version": "1.0.0",
+  "description": "从已登录的 X 网页会话中读取本人公开资料和帖子数据。",
+  "license": "Apache-2.0",
+  "publisher": {
+    "id": "streamfold",
+    "name": "归页",
+    "keyId": "streamfold-official"
+  },
+  "minimumAppVersion": "0.7.3",
+  "sdkVersion": "1.0.0",
+  "contributions": [
+    {
+      "id": "streamfold.x.platform",
+      "kind": "platform.adapter",
+      "name": "X",
+      "description": "读取已登录 X 网页自身返回的账号资料和本人帖子。",
+      "entry": "entries/x.js",
+      "runtime": "quickjs",
+      "permissions": [
+        "platform.session-json"
+      ],
+      "platform": {
+        "id": "x",
+        "name": "X",
+        "shortName": "X",
+        "loginUrl": "https://x.com/i/flow/login",
+        "homeUrl": "https://x.com/home",
+        "navigationHosts": [
+          "x.com"
+        ],
+        "imageHosts": [
+          "pbs.twimg.com"
+        ],
+        "contentUrls": [
+          {
+            "remoteIdTemplate": "{remoteId}",
+            "origin": "https://x.com",
+            "pathTemplate": "/i/web/status/{remoteId}"
+          }
+        ],
+        "riskNote": "依赖 X 登录网页的内部 JSON 响应；网页接口调整、登录挑战或限流可能导致同步暂时失败。"
+      },
+      "endpoints": [],
+      "captures": [
+        {
+          "id": "x.identity.settings",
+          "route": "https://x.com/home",
+          "responseOrigin": "https://api.x.com",
+          "responsePath": "/1.1/account/settings.json",
+          "resourceTypes": [
+            "Fetch",
+            "XHR"
+          ],
+          "method": "GET",
+          "pagination": "none",
+          "maximumResponses": 1,
+          "maximumResponseBytes": 131072,
+          "maximumTotalBytes": 131072
+        },
+        {
+          "id": "x.identity.profile.initial",
+          "route": "https://x.com/{handle}",
+          "responseOrigin": "https://x.com",
+          "responsePath": "/i/api/graphql",
+          "graphqlOperationName": "UserByScreenName",
+          "resourceTypes": [
+            "Fetch",
+            "XHR"
+          ],
+          "method": "GET",
+          "pagination": "none",
+          "maximumResponses": 1,
+          "maximumResponseBytes": 524288,
+          "maximumTotalBytes": 524288
+        },
+        {
+          "id": "x.identity.profile.bound",
+          "route": "https://x.com/i/user/{remoteId}",
+          "responseOrigin": "https://x.com",
+          "responsePath": "/i/api/graphql",
+          "graphqlOperationName": "UserByScreenName",
+          "resourceTypes": [
+            "Fetch",
+            "XHR"
+          ],
+          "method": "GET",
+          "pagination": "none",
+          "maximumResponses": 1,
+          "maximumResponseBytes": 524288,
+          "maximumTotalBytes": 524288
+        },
+        {
+          "id": "x.contents.tweets.bound",
+          "route": "https://x.com/i/user/{remoteId}",
+          "responseOrigin": "https://x.com",
+          "responsePath": "/i/api/graphql",
+          "graphqlOperationName": "UserTweets",
+          "resourceTypes": [
+            "Fetch",
+            "XHR"
+          ],
+          "method": "GET",
+          "pagination": "page-down",
+          "maximumResponses": 8,
+          "maximumResponseBytes": 524288,
+          "maximumTotalBytes": 2097152
+        }
+      ],
+      "minimumIntervalSeconds": 300,
+      "recommendedSyncIntervalHours": 24
+    }
+  ]
+}
