@@ -105,6 +105,9 @@ export interface PlatformCaptureDeclaration {
   maximumTotalBytes?: number
 }
 
+/** Trusted host policy for a declared response capture. */
+export type PlatformCapturePolicy = 'fresh' | 'background-cache'
+
 export interface PlatformContentUrlDeclaration {
   remoteIdTemplate: string
   origin: string

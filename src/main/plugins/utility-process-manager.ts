@@ -10,6 +10,20 @@ import {
   type SandboxInvocationRequest
 } from './sandbox-protocol'
 import { PluginSupplyChainError, isPluginSupplyChainError } from './supply-chain-errors'
+import { sanitizeSandboxDiagnostic } from './sandbox-diagnostics'
+
+type SandboxFailureCode =
+  | 'PLUGIN_SANDBOX_PROTOCOL_INVALID'
+  | 'PLUGIN_SANDBOX_PERMISSION_DENIED'
+  | 'PLUGIN_SANDBOX_RESOURCE_LIMIT'
+  | 'PLUGIN_SANDBOX_CRASHED'
+  | 'PLUGIN_SANDBOX_FAILED'
+
+interface RecordedHostFailure {
+  code: SandboxFailureCode
+  operation: SandboxHostCallMessage['operation']
+  cause: unknown
+}
 
 export interface UtilityProcessLike {
   on(event: 'message', listener: (message: unknown) => void): this
@@ -64,6 +78,7 @@ export class UtilityProcessSandboxManager {
     return new Promise<JsonValue>((resolve, reject) => {
       let settled = false
       let ready = false
+      const hostFailures = new Map<string, RecordedHostFailure>()
       const readyTimer = setTimeout(() => fail(new PluginSupplyChainError(
         'PLUGIN_SANDBOX_CRASHED',
         '插件沙箱启动超时'
@@ -80,6 +95,7 @@ export class UtilityProcessSandboxManager {
         child.off('exit', onExit)
         child.off('error', onError)
         this.untrackChild(request.pluginId, child)
+        hostFailures.clear()
         child.kill()
       }
       const succeed = (value: JsonValue): void => {
@@ -107,7 +123,11 @@ export class UtilityProcessSandboxManager {
           return
         }
         if (message.type === 'ready') {
-          if (ready) return fail(new Error('duplicate ready'))
+          if (ready) return fail(new PluginSupplyChainError(
+            'PLUGIN_SANDBOX_PROTOCOL_INVALID',
+            '插件沙箱消息无效',
+            { cause: new Error('duplicate ready') }
+          ))
           ready = true
           clearTimeout(readyTimer)
           child.postMessage(request)
@@ -118,7 +138,7 @@ export class UtilityProcessSandboxManager {
           return
         }
         if (message.type === 'host-call') {
-          void this.handleHostCall(child, request, message).catch(fail)
+          void this.handleHostCall(child, request, message, hostFailures).catch(fail)
           return
         }
         if (message.type === 'result') {
@@ -129,9 +149,18 @@ export class UtilityProcessSandboxManager {
           succeed(message.value)
           return
         }
+        const diagnostic = message.error.details
+          ? sandboxDiagnosticCause(message.error.details)
+          : undefined
+        const hostFailure = message.error.originCallId
+          ? hostFailures.get(message.error.originCallId)
+          : undefined
+        const code = hostFailure?.code ?? sandboxFailureCode(message.error.code)
+        const cause = combineSandboxCauses(hostFailure, diagnostic)
         fail(new PluginSupplyChainError(
-          isResourceError(message.error.code) ? 'PLUGIN_SANDBOX_RESOURCE_LIMIT' : 'PLUGIN_SANDBOX_FAILED',
-          safeChildMessage(message.error.code)
+          code,
+          safeChildMessage(code),
+          cause === undefined ? undefined : { cause }
         ))
       }
       const onExit = (_code: number): void => fail(new PluginSupplyChainError(
@@ -175,13 +204,24 @@ export class UtilityProcessSandboxManager {
   private async handleHostCall(
     child: UtilityProcessLike,
     request: SandboxInvocationRequest,
-    message: SandboxHostCallMessage
+    message: SandboxHostCallMessage,
+    hostFailures: Map<string, RecordedHostFailure>
   ): Promise<void> {
     if (!request.allowedOperations.includes(message.operation)) {
+      const error = new PluginSupplyChainError(
+        'PLUGIN_SANDBOX_PERMISSION_DENIED',
+        '插件未获得此操作权限'
+      )
+      recordHostFailure(hostFailures, message, 'PLUGIN_SANDBOX_PERMISSION_DENIED', error)
       child.postMessage(hostFailure(request, message, 'PLUGIN_SANDBOX_PERMISSION_DENIED', '插件未获得此操作权限'))
       return
     }
     if (jsonByteLength(message.payload) > request.limits.maxRpcBytes) {
+      const error = new PluginSupplyChainError(
+        'PLUGIN_SANDBOX_RESOURCE_LIMIT',
+        '插件请求超过大小限制'
+      )
+      recordHostFailure(hostFailures, message, 'PLUGIN_SANDBOX_RESOURCE_LIMIT', error)
       child.postMessage(hostFailure(request, message, 'PLUGIN_SANDBOX_RESOURCE_LIMIT', '插件请求超过大小限制'))
       return
     }
@@ -195,6 +235,11 @@ export class UtilityProcessSandboxManager {
         }
       )
       if (jsonByteLength(value) > request.limits.maxRpcBytes) {
+        const error = new PluginSupplyChainError(
+          'PLUGIN_SANDBOX_RESOURCE_LIMIT',
+          '宿主响应超过大小限制'
+        )
+        recordHostFailure(hostFailures, message, 'PLUGIN_SANDBOX_RESOURCE_LIMIT', error)
         child.postMessage(hostFailure(request, message, 'PLUGIN_SANDBOX_RESOURCE_LIMIT', '宿主响应超过大小限制'))
         return
       }
@@ -207,12 +252,24 @@ export class UtilityProcessSandboxManager {
         value
       } satisfies SandboxHostResultMessage)
     } catch (error) {
+      const code = isPluginSupplyChainError(error)
+        ? sandboxFailureCode(error.code)
+        : 'PLUGIN_SANDBOX_FAILED'
+      recordHostFailure(hostFailures, message, code, error)
       const safe = isPluginSupplyChainError(error)
         ? { code: error.code, message: error.message }
         : { code: 'HOST_CALL_FAILED', message: '宿主操作失败' }
       child.postMessage(hostFailure(request, message, safe.code, safe.message))
     }
   }
+}
+
+function sandboxDiagnosticCause(details: string): Error | null {
+  const sanitized = sanitizeSandboxDiagnostic(details)
+  if (!sanitized) return null
+  const error = new Error(sanitized)
+  error.name = 'PluginSandboxDiagnostic'
+  return error
 }
 
 async function electronUtilityProcessFork(): Promise<UtilityProcessFork> {
@@ -243,12 +300,41 @@ function hostFailure(
   }
 }
 
-function isResourceError(code: string): boolean {
-  return code === 'PLUGIN_SANDBOX_RESOURCE_LIMIT'
+function recordHostFailure(
+  failures: Map<string, RecordedHostFailure>,
+  message: SandboxHostCallMessage,
+  code: SandboxFailureCode,
+  cause: unknown
+): void {
+  failures.set(message.callId, { code, operation: message.operation, cause })
 }
 
-function safeChildMessage(code: string): string {
+function sandboxFailureCode(value: unknown): SandboxFailureCode {
+  if (value === 'PLUGIN_SANDBOX_PROTOCOL_INVALID' ||
+      value === 'PLUGIN_SANDBOX_PERMISSION_DENIED' ||
+      value === 'PLUGIN_SANDBOX_RESOURCE_LIMIT' ||
+      value === 'PLUGIN_SANDBOX_CRASHED' ||
+      value === 'PLUGIN_SANDBOX_FAILED') return value
+  return 'PLUGIN_SANDBOX_FAILED'
+}
+
+function combineSandboxCauses(
+  hostFailure: RecordedHostFailure | undefined,
+  diagnostic: Error | null | undefined
+): unknown {
+  if (hostFailure && diagnostic) {
+    return new AggregateError(
+      [hostFailure.cause, diagnostic],
+      `插件宿主操作失败：${hostFailure.operation}`
+    )
+  }
+  return hostFailure?.cause ?? diagnostic
+}
+
+function safeChildMessage(code: SandboxFailureCode): string {
+  if (code === 'PLUGIN_SANDBOX_PROTOCOL_INVALID') return '插件沙箱消息无效'
   if (code === 'PLUGIN_SANDBOX_PERMISSION_DENIED') return '插件未获得此操作权限'
   if (code === 'PLUGIN_SANDBOX_RESOURCE_LIMIT') return '插件超过运行资源限制'
+  if (code === 'PLUGIN_SANDBOX_CRASHED') return '插件沙箱意外停止'
   return '插件执行失败'
 }

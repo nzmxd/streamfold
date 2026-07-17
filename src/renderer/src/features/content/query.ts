@@ -49,7 +49,7 @@ export function createDefaultContentSearchFilters(): ContentSearchFilters {
     publishedTo: '',
     capturedFrom: '',
     capturedTo: '',
-    sort: 'captured',
+    sort: 'published',
     order: 'desc',
     pageSize: 50
   }

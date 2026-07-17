@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { SessionApiIdentityCheckResult } from '../../shared/session-api-contracts'
 import AppDialogHost from './components/AppDialogHost.vue'
 import AppSidebar, { type AppSection } from './components/AppSidebar.vue'
 import AppTitlebar from './components/AppTitlebar.vue'
@@ -11,6 +12,7 @@ import LogCenter from './features/logs/LogCenter.vue'
 import PluginCenter from './features/plugins/PluginCenter.vue'
 import SettingsCenter from './features/settings/SettingsCenter.vue'
 import TaskCenter from './features/tasks/TaskCenter.vue'
+import { messageOf } from './features/shared/format'
 import { disposeUpdater, initializeUpdater, useUpdater } from './features/updater/useUpdater'
 import { confirmDialog } from './ui/dialog'
 import { createSidebarState } from './ui/sidebar-state'
@@ -25,6 +27,8 @@ const updaterReady = updater.ready
 const promptedUpdateStorageKey = 'streamfold:update-prompted-version'
 let promptedUpdateVersion = readPromptedUpdateVersion()
 let removeNavigationListener: (() => void) | null = null
+let removeIdentityPreviewListener: (() => void) | null = null
+const activeIdentityCandidates = new Set<string>()
 
 watch(updateState, (state) => {
   const version = state.availableVersion
@@ -66,14 +70,73 @@ async function promptDownloadedUpdate(version: string): Promise<void> {
   }
 }
 
+async function promptIdentityBinding(candidate: SessionApiIdentityCheckResult): Promise<void> {
+  if (candidate.status !== 'confirmation_required' || !candidate.confirmationToken ||
+      !candidate.remoteId || !candidate.remoteName) return
+  const candidateKey = `${candidate.accountId}:${candidate.remoteId}`
+  if (activeIdentityCandidates.has(candidateKey)) return
+  activeIdentityCandidates.add(candidateKey)
+  try {
+    const confirmed = await confirmDialog({
+      title: '绑定当前 X 账号？',
+      description: '后台监听已读取到当前登录身份。确认后会重新读取一次最新资料，再完成本地账号绑定。',
+      details: [`昵称：${candidate.remoteName}`, `账号 ID：${candidate.remoteId}`],
+      confirmLabel: '确认绑定',
+      cancelLabel: '暂不绑定'
+    })
+    if (!confirmed) return
+    if (candidate.confirmationExpiresAt && Date.parse(candidate.confirmationExpiresAt) <= Date.now()) {
+      await confirmDialog({
+        title: '绑定信息已过期',
+        description: '后台会继续监听当前登录身份，读取到最新资料后会再次提示。',
+        confirmLabel: '知道了',
+        cancelLabel: '关闭'
+      })
+      section.value = 'accounts'
+      return
+    }
+    const result = await window.socialVault.accounts.confirmIdentity({
+      accountId: candidate.accountId,
+      token: candidate.confirmationToken,
+      confirmIdentity: true
+    })
+    section.value = 'accounts'
+    if (result.status !== 'verified') {
+      await confirmDialog({
+        title: '暂未完成绑定',
+        description: result.message,
+        confirmLabel: '知道了',
+        cancelLabel: '关闭',
+        tone: result.status === 'identity_mismatch' ? 'warning' : 'default'
+      })
+    }
+  } catch (cause) {
+    section.value = 'accounts'
+    await confirmDialog({
+      title: '绑定失败',
+      description: messageOf(cause),
+      details: ['详细原因已写入日志中心，后台监听会继续等待下一次身份响应。'],
+      confirmLabel: '查看账号',
+      cancelLabel: '关闭',
+      tone: 'warning'
+    })
+  } finally {
+    activeIdentityCandidates.delete(candidateKey)
+  }
+}
+
 onMounted(() => {
   removeNavigationListener = window.socialVault.navigation.onRequested((target) => {
     section.value = target
+  })
+  removeIdentityPreviewListener = window.socialVault.accounts.onIdentityPreview((candidate) => {
+    void promptIdentityBinding(candidate)
   })
   void initializeUpdater()
 })
 onBeforeUnmount(() => {
   removeNavigationListener?.()
+  removeIdentityPreviewListener?.()
   disposeUpdater()
 })
 </script>

@@ -9,15 +9,22 @@ import {
   type Session,
   type WebContents
 } from 'electron'
-import type { Account, AppearanceState, BrowserState } from '../shared/contracts'
+import type { Account, AppearanceState, BrowserState, PlatformDefinition } from '../shared/contracts'
 import type {
   PlatformAdapterContribution,
   PlatformCaptureDeclaration,
+  PlatformCapturePolicy,
   PlatformEndpointDeclaration
 } from '../shared/plugin-host-contracts'
 import { normalizePlatformUserAgent } from './browser-compatibility'
 import { getPlatform, isOfficialUrl, shouldBlockRemoteNavigation } from './platforms'
 import type { CachedProfileAvatar, ProfileMediaStore } from './profile-media'
+import {
+  hasPluginApiError,
+  normalizePluginNetworkError,
+  pluginNetworkResponseError
+} from './plugins/network-diagnostics'
+import { XBackgroundCaptureMonitor } from './plugins/x-background-capture-monitor'
 import { isTrustedBrowserUrl } from './shell-security'
 import {
   XIAOHONGSHU_API_ENDPOINTS,
@@ -63,7 +70,14 @@ interface ManagedWorkspace {
   apiLeaseCount: number
   shellReady: Promise<void>
   apiPageReady: Promise<void> | null
+  xBackgroundCapture: XBackgroundCaptureMonitor | null
   state: BrowserState
+}
+
+export interface PluginCaptureActivity {
+  accountId: string
+  captureId: string | null
+  sequence: number
 }
 
 export interface XiaohongshuApiTransportLease {
@@ -84,6 +98,8 @@ export class BrowserManager {
   private readonly configuredSessions = new Set<string>()
   private readonly disconnecting = new Set<string>()
   private readonly activeApiCaptures = new Set<string>()
+  private readonly pluginCaptureListeners = new Set<(activity: PluginCaptureActivity) => void>()
+  private pluginCaptureSequence = 0
   private shuttingDown = false
 
   constructor(
@@ -95,6 +111,11 @@ export class BrowserManager {
     private readonly profileMedia: ProfileMediaStore | null = null,
     private readonly windowIcon: NativeImage | null = null
   ) {}
+
+  onPluginCaptureActivity(listener: (activity: PluginCaptureActivity) => void): () => void {
+    this.pluginCaptureListeners.add(listener)
+    return () => this.pluginCaptureListeners.delete(listener)
+  }
 
   async open(accountId: string, loadRemote = true): Promise<BrowserState> {
     if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
@@ -108,7 +129,10 @@ export class BrowserManager {
     }
 
     const managed = await this.createWorkspace(account, true)
-    if (loadRemote) void this.safeLoad(managed, getPlatform(account.platformId).loginUrl).catch((cause) => {
+    if (loadRemote) void this.safeLoad(
+      managed,
+      interactiveWorkspaceEntryUrl(getPlatform(account.platformId))
+    ).catch((cause) => {
       managed.state = {
         ...managed.state,
         loading: false,
@@ -253,21 +277,47 @@ export class BrowserManager {
 
   async capturePluginPlatformJson(
     accountId: string,
+    pluginId: string,
+    pluginVersion: string,
     contribution: PlatformAdapterContribution,
     captureId: string,
     params: Record<string, unknown>,
-    limit?: number
+    limit?: number,
+    policy: PlatformCapturePolicy = 'fresh'
   ): Promise<unknown[]> {
     const capture = contribution.captures.find((item) => item.id === captureId)
     if (!capture) throw new Error('平台插件请求了未声明的捕获规则')
     const managed = await this.acquirePluginWorkspace(accountId, contribution, false)
+    const rendered = renderDeclaredCaptureUrls(capture, params)
+    if (policy === 'background-cache') {
+      try {
+        if (pluginId !== 'streamfold.x' || contribution.id !== 'streamfold.x.platform') {
+          throw new Error('该平台适配器不支持后台响应监听')
+        }
+        if (!managed.xBackgroundCapture) {
+          managed.xBackgroundCapture = new XBackgroundCaptureMonitor(
+            managed.view.webContents,
+            (notice) => this.emitPluginCaptureActivity(managed, notice.captureId)
+          )
+        }
+        return managed.xBackgroundCapture.read(
+          `${pluginId}:${pluginVersion}:${contribution.id}`,
+          capture,
+          rendered.responseUrl,
+          rendered.routeUrl,
+          Math.min(limit ?? capture.maximumResponses ?? 20, capture.maximumResponses ?? 100)
+        )
+      } finally {
+        if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      }
+    }
+    this.stopWorkspaceBackgroundCapture(managed)
     if (this.activeApiCaptures.has(accountId)) {
       if (endApiLease(managed)) this.disposeWorkspace(managed, true)
       throw new Error('该账号正在执行响应捕获')
     }
     this.activeApiCaptures.add(accountId)
     try {
-      const rendered = renderDeclaredCaptureUrls(capture, params)
       return await captureDeclaredPlatformJson(
         managed.view.webContents,
         capture,
@@ -279,6 +329,15 @@ export class BrowserManager {
       this.activeApiCaptures.delete(accountId)
       if (endApiLease(managed)) this.disposeWorkspace(managed, true)
     }
+  }
+
+  stopPluginCapture(accountId: string): void {
+    const managed = this.workspaces.get(accountId)
+    if (managed) this.stopWorkspaceBackgroundCapture(managed)
+  }
+
+  stopAllPluginCaptures(): void {
+    for (const managed of this.workspaces.values()) this.stopWorkspaceBackgroundCapture(managed)
   }
 
   private async acquirePluginWorkspace(
@@ -580,6 +639,7 @@ export class BrowserManager {
 
   async disconnect(accountId: string): Promise<void> {
     if (this.disconnecting.has(accountId)) throw new Error('账号正在断开')
+    this.stopPluginCapture(accountId)
     const active = this.workspaces.get(accountId)
     if ((active?.apiLeaseCount ?? 0) > 0 || this.activeApiCaptures.has(accountId)) {
       throw new Error('账号正在同步或核验，请稍候')
@@ -690,6 +750,13 @@ export class BrowserManager {
       app.getName()
     ))
     this.configureSession(account.sessionPartition, view.webContents.session)
+    try {
+      await initializeRemoteWorkspace(view.webContents)
+    } catch (error) {
+      try { view.webContents.close() } catch {}
+      window.destroy()
+      throw error
+    }
     const managed: ManagedWorkspace = {
       account,
       window,
@@ -700,6 +767,7 @@ export class BrowserManager {
       apiLeaseCount: 0,
       shellReady: Promise.resolve(),
       apiPageReady: null,
+      xBackgroundCapture: null,
       state: {
         accountId: account.id,
         platformId: account.platformId,
@@ -712,7 +780,7 @@ export class BrowserManager {
         canGoForward: false,
         official: false,
         windowOpen: foregroundRequested,
-        message: '正在打开平台官方登录入口…'
+        message: '正在打开平台官方账号页面…'
       }
     }
 
@@ -789,7 +857,13 @@ export class BrowserManager {
       managed.state = { ...managed.state, loading: true, message: '正在加载官方页面…' }
       this.emitState(managed)
     })
-    contents.on('did-stop-loading', () => this.refreshState(managed))
+    contents.on('did-stop-loading', () => {
+      this.refreshState(managed)
+      const account = this.findAccount(managed.account.id)
+      if (account?.platformId === 'x' && !account.remoteId && isOfficialUrl('x', contents.getURL())) {
+        this.emitPluginCaptureActivity(managed, null)
+      }
+    })
     contents.on('did-navigate', () => this.refreshState(managed))
     contents.on('did-navigate-in-page', () => this.refreshState(managed))
     contents.on('page-title-updated', (_event, title) => {
@@ -855,6 +929,23 @@ export class BrowserManager {
     if (!managed.window.isDestroyed()) managed.window.webContents.send('browser:state', state)
   }
 
+  private emitPluginCaptureActivity(managed: ManagedWorkspace, captureId: string | null): void {
+    if (managed.disposed || this.findAccount(managed.account.id)?.platformId !== 'x') return
+    const activity: PluginCaptureActivity = {
+      accountId: managed.account.id,
+      captureId,
+      sequence: ++this.pluginCaptureSequence
+    }
+    for (const listener of this.pluginCaptureListeners) {
+      try { listener(activity) } catch {}
+    }
+  }
+
+  private stopWorkspaceBackgroundCapture(managed: ManagedWorkspace): void {
+    managed.xBackgroundCapture?.dispose()
+    managed.xBackgroundCapture = null
+  }
+
   private workspaceForSender(event: IpcMainInvokeEvent): ManagedWorkspace {
     const accountId = this.senderAccounts.get(event.sender.id)
     const managed = accountId ? this.workspaces.get(accountId) : undefined
@@ -904,6 +995,7 @@ export class BrowserManager {
   private disposeWorkspace(managed: ManagedWorkspace, closeWindow: boolean): void {
     if (managed.disposed) return
     managed.disposed = true
+    this.stopWorkspaceBackgroundCapture(managed)
     if (this.workspaces.get(managed.account.id) === managed) {
       this.workspaces.delete(managed.account.id)
     }
@@ -2017,18 +2109,35 @@ async function fetchDeclaredPlatformJson(
   })()`
   const result = objectRecord(await contents.executeJavaScript(script, true))
   const status = Number(result.status)
-  if (status === 401 || status === 403) throw new Error('平台登录状态已失效，请重新登录')
-  if (status === 429) throw new Error('平台请求暂时受限，请稍后重试')
-  if (!Number.isSafeInteger(status) || status < 200 || status >= 300) throw new Error('平台 JSON 端点返回异常状态')
-  if (String(result.url) !== target) throw new Error('平台 JSON 响应地址与清单端点不一致')
-  if (!/\bjson\b/i.test(String(result.contentType))) throw new Error('平台端点未返回 JSON')
+  const contentType = String(result.contentType ?? '')
   const text = String(result.text ?? '')
-  if (Buffer.byteLength(text, 'utf8') > maximumBytes) throw new Error('平台 JSON 响应超过大小限制')
-  try {
-    return JSON.parse(text)
-  } catch {
-    throw new Error('平台端点返回了无效 JSON')
+  const diagnosticInput = { status, contentType, body: text }
+  if (status === 401 || status === 403) {
+    throw pluginNetworkResponseError('平台登录状态已失效，请重新登录', diagnosticInput)
   }
+  if (status === 429) {
+    throw pluginNetworkResponseError('平台请求暂时受限，请稍后重试', diagnosticInput)
+  }
+  if (!Number.isSafeInteger(status) || status < 200 || status >= 300) {
+    throw pluginNetworkResponseError('平台 JSON 端点返回异常状态', diagnosticInput)
+  }
+  if (String(result.url) !== target) throw new Error('平台 JSON 响应地址与清单端点不一致')
+  if (!/\bjson\b/i.test(contentType)) {
+    throw pluginNetworkResponseError('平台端点未返回 JSON', diagnosticInput)
+  }
+  if (Buffer.byteLength(text, 'utf8') > maximumBytes) {
+    throw pluginNetworkResponseError('平台 JSON 响应超过大小限制', diagnosticInput)
+  }
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    throw pluginNetworkResponseError('平台端点返回了无效 JSON', diagnosticInput)
+  }
+  if (hasPluginApiError(value)) {
+    throw pluginNetworkResponseError('平台 JSON 端点返回 API 错误', diagnosticInput)
+  }
+  return value
 }
 
 async function captureDeclaredPlatformJson(
@@ -2055,6 +2164,7 @@ async function captureDeclaredPlatformJson(
   let totalBytes = 0
   let lastActivity = Date.now()
   let failure: Error | null = null
+  let rejectedFailure: Error | null = null
   let accepting = true
 
   const runBeforeDeadline = async <T>(
@@ -2085,15 +2195,47 @@ async function captureDeclaredPlatformJson(
       const raw = typeof body.body === 'string' ? body.body : ''
       const bytes = body.base64Encoded === true ? Buffer.from(raw, 'base64') : Buffer.from(raw, 'utf8')
       try {
-        totalBytes += bytes.byteLength
-        if (bytes.byteLength > maximumResponseBytes || totalBytes > maximumTotalBytes) {
-          throw new Error('平台捕获响应超过清单限制')
+        const diagnosticInput = {
+          status: metadata.status,
+          contentType: metadata.contentType,
+          body: bytes
         }
-        if (metadata.status === 401 || metadata.status === 403) throw new Error('平台登录状态已失效，请重新登录')
-        if (metadata.status === 429) throw new Error('平台请求暂时受限，请稍后重试')
-        if (metadata.status < 200 || metadata.status >= 300 || !/\bjson\b/i.test(metadata.contentType)) return
-        const value = JSON.parse(bytes.toString('utf8'))
+        if (bytes.byteLength > maximumResponseBytes) {
+          throw pluginNetworkResponseError('平台捕获响应超过清单限制', diagnosticInput)
+        }
+        if (metadata.status === 401 || metadata.status === 403) {
+          throw pluginNetworkResponseError('平台登录状态已失效，请重新登录', diagnosticInput)
+        }
+        if (metadata.status === 429) {
+          throw pluginNetworkResponseError('平台请求暂时受限，请稍后重试', diagnosticInput)
+        }
+        if (metadata.status < 200 || metadata.status >= 300) {
+          rejectedFailure = pluginNetworkResponseError('平台捕获端点返回异常状态', diagnosticInput)
+          return
+        }
+        if (!/\bjson\b/i.test(metadata.contentType)) {
+          rejectedFailure = pluginNetworkResponseError('平台捕获端点未返回 JSON', diagnosticInput)
+          return
+        }
+        let value: unknown
+        try {
+          value = JSON.parse(bytes.toString('utf8'))
+        } catch {
+          rejectedFailure = pluginNetworkResponseError('平台捕获端点返回了无效 JSON', diagnosticInput)
+          return
+        }
+        if (hasPluginApiError(value)) {
+          rejectedFailure = pluginNetworkResponseError('平台捕获端点返回 API 错误', diagnosticInput)
+          return
+        }
+        if (totalBytes + bytes.byteLength > maximumTotalBytes) {
+          throw pluginNetworkResponseError('平台捕获响应超过清单限制', diagnosticInput)
+        }
         if (values.length >= limit) return
+        totalBytes += bytes.byteLength
+        // A valid response that arrives after a rejected candidate proves the
+        // page recovered. A later rejected response remains actionable.
+        rejectedFailure = null
         values.push(value)
         lastActivity = Date.now()
       } finally {
@@ -2129,13 +2271,11 @@ async function captureDeclaredPlatformJson(
       const status = Number(response.status)
       const headers = objectRecord(response.headers)
       const contentType = String(headers['content-type'] ?? headers['Content-Type'] ?? '')
-      const actionableStatus = status === 401 || status === 403 || status === 429
       if (!accepting || failure || values.length >= limit ||
         pending.size + harvestTasks.size >= candidateLimit ||
         !requestId || !matches(url) ||
         !declaration.resourceTypes.includes(resourceType as 'Fetch' | 'XHR') ||
         requestMethods.get(requestId) !== 'GET') return
-      if (!actionableStatus && (status < 200 || status >= 300 || !/\bjson\b/i.test(contentType))) return
       pending.set(requestId, {
         status,
         contentType
@@ -2154,16 +2294,24 @@ async function captureDeclaredPlatformJson(
       requestMethods.delete(requestId)
     }
   }
+  const onDetach = (): void => {
+    if (!accepting || failure) return
+    failure = normalizePluginNetworkError(
+      new Error('账号浏览器调试通道意外断开'),
+      '平台响应捕获调试通道意外断开'
+    )
+  }
 
   browserDebugger.attach('1.3')
   browserDebugger.on('message', onMessage)
+  browserDebugger.on('detach', onDetach)
   try {
     await runBeforeDeadline(
       async () => await browserDebugger.sendCommand('Network.enable', {
         maxTotalBufferSize: maximumTotalBytes,
         maxResourceBufferSize: maximumResponseBytes
       }),
-      5_000,
+      12_000,
       '平台响应捕获初始化超时，请稍后重试'
     )
     await runBeforeDeadline(
@@ -2180,18 +2328,20 @@ async function captureDeclaredPlatformJson(
         pageMoves += 1
       }
       await new Promise((resolve) => setTimeout(resolve, 350))
-      if (values.length > 0 && pending.size === 0 && harvestTasks.size === 0 &&
-        Date.now() - lastActivity >= 800 &&
-        (declaration.pagination !== 'page-down' || pageMoves >= 3)) break
+      if (declaration.pagination !== 'page-down' &&
+        values.length > 0 && pending.size === 0 && harvestTasks.size === 0 &&
+        Date.now() - lastActivity >= 800) break
     }
     accepting = false
     for (const requestId of [...pending.keys()]) queueHarvest(requestId)
     while (harvestTasks.size > 0) await Promise.all([...harvestTasks])
     if (failure) throw failure
+    if (rejectedFailure) throw rejectedFailure
     return values
   } finally {
     accepting = false
     browserDebugger.removeListener('message', onMessage)
+    browserDebugger.removeListener('detach', onDetach)
     try {
       await withPlatformCaptureTimeout(
         browserDebugger.sendCommand('Network.disable'),
@@ -2250,8 +2400,23 @@ export const __zhihuApiTransportTest = Object.freeze({
 export const __browserWorkspaceLeaseTest = Object.freeze({
   begin: beginApiLease,
   end: endApiLease,
-  promote: promoteApiWorkspace
+  promote: promoteApiWorkspace,
+  entryUrl: interactiveWorkspaceEntryUrl,
+  initializeRemote: initializeRemoteWorkspace
 })
+
+function interactiveWorkspaceEntryUrl(
+  platform: Pick<PlatformDefinition, 'id' | 'loginUrl' | 'homeUrl'>
+): string {
+  return platform.id === 'x' ? platform.homeUrl : platform.loginUrl
+}
+
+async function initializeRemoteWorkspace(
+  contents: Pick<WebContents, 'isDestroyed' | 'loadURL'>
+): Promise<void> {
+  if (contents.isDestroyed()) throw new Error('账号浏览器工作区已关闭')
+  await contents.loadURL('about:blank')
+}
 
 export const __pluginPlatformJsonTest = Object.freeze({
   renderDeclaredUrl,

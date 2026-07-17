@@ -3,6 +3,7 @@ import type { JobRecord } from './job-contracts'
 
 /** Identity states shared by every first-party, session-backed platform adapter. */
 export type SessionApiIdentityStatus =
+  | 'capture_pending'
   | 'confirmation_required'
   | 'verified'
   | 'identity_mismatch'
@@ -64,5 +65,6 @@ export interface SessionApiSyncResult {
   contentCount: number
   stats: SessionApiSyncStats
   job: JobRecord
+  warnings?: string[]
   message: string
 }

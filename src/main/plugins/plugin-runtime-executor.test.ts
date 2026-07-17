@@ -14,12 +14,21 @@ import {
   webhookPluginManifest
 } from './builtin-webhook.test-fixture'
 import {
+  X_PLATFORM_CONTRIBUTION_ID,
+  X_PLUGIN_ID,
+  xEntrySource,
+  xPluginManifest
+} from './builtin-x.test-fixture'
+import {
+  PluginPlatformSessionError,
   PluginRuntimeExecutor,
   type PluginRuntimeHost,
   type PluginRuntimeRepository
 } from './plugin-runtime-executor'
 import { PublicHttpsBroker } from './public-https-broker'
 import { executeQuickJsContribution } from './quickjs-engine'
+import { formatSandboxDiagnostic } from './sandbox-diagnostics'
+import { PluginSupplyChainError } from './supply-chain-errors'
 import {
   DEFAULT_SANDBOX_LIMITS,
   type JsonObject,
@@ -126,12 +135,22 @@ describe('official Webhook contribution', () => {
     [429, '120', true, 120_000],
     [503, null, true, null],
     [400, null, false, null]
-  ] as const)('classifies HTTP %s without exposing response bodies', async (status, retryAfter, retryable, delay) => {
+  ] as const)('classifies HTTP %s and retains a credential-redacted response body', async (
+    status,
+    retryAfter,
+    retryable,
+    delay
+  ) => {
     const fixture = runtimeFixture({
       brokerRequest: vi.fn(async () => ({
         status,
-        contentType: 'text/plain',
-        body: 'sensitive remote response',
+        contentType: 'application/json',
+        body: JSON.stringify({
+          reason: 'service unavailable',
+          requestId: `remote-${status}`,
+          token: 'private-token',
+          cookie: 'private-cookie'
+        }),
         retryAfter
       })),
       invoke: async (sandboxRequest, executor) => executor.hostCall({
@@ -152,7 +171,47 @@ describe('official Webhook contribution', () => {
       expect(error).not.toBeInstanceOf(RetryablePluginError)
     }
     expect(error.message).toContain(String(status))
-    expect(error.message).not.toContain('sensitive remote response')
+    expect(error.message).not.toContain('service unavailable')
+    const diagnostic = formatSandboxDiagnostic(error) ?? ''
+    expect(diagnostic).toContain(`插件版本：${webhookPluginManifest.version}`)
+    expect(diagnostic).toContain(`入口：${webhookContribution().contribution.entry}`)
+    expect(diagnostic).toContain('执行方法：handle')
+    expect(diagnostic).toContain('service unavailable')
+    expect(diagnostic).toContain(`remote-${status}`)
+    expect(diagnostic).not.toContain('private-token')
+    expect(diagnostic).not.toContain('private-cookie')
+  })
+
+  it('retains a sanitized transport failure even when guest code converts it to HTTP 599', async () => {
+    const fixture = runtimeFixture({
+      brokerRequest: vi.fn(async () => {
+        throw new Error(
+          'connection refused by remote service https://hooks.example/events?token=private ' +
+          'headers={Authorization: Bearer private-header}'
+        )
+      }),
+      invoke: async (sandboxRequest, executor) => {
+        try {
+          await executor.hostCall({
+            operation: 'network.https',
+            payload: { url: 'https://hooks.example/events', method: 'POST', body: { safe: true } }
+          }, {
+            invocationId: sandboxRequest.invocationId,
+            pluginId: sandboxRequest.pluginId,
+            contributionId: sandboxRequest.contributionId
+          })
+        } catch {}
+        return { status: 599, retryAfter: null }
+      }
+    })
+
+    const error = await rejectionOf(() => fixture.executor.execute(executionRequest()))
+    expect(error).toMatchObject({ code: 'WEBHOOK_RETRYABLE_HTTP' })
+    const diagnostic = formatSandboxDiagnostic(error) ?? ''
+    expect(diagnostic).toContain('connection refused by remote service')
+    expect(diagnostic).not.toContain('private-header')
+    expect(diagnostic).not.toContain('token=private')
+    expect(diagnostic).not.toContain('hooks.example')
   })
 })
 
@@ -181,7 +240,13 @@ describe('PluginRuntimeExecutor authorization', () => {
       platformProxy()
     )
 
-    await expect(executor.execute(executionRequest())).rejects.toThrow('授权')
+    const error = await rejectionOf(() => executor.execute(executionRequest()))
+
+    expect(error).toBeInstanceOf(PluginSupplyChainError)
+    expect(error).toMatchObject({
+      code: 'PLUGIN_SANDBOX_PERMISSION_DENIED',
+      message: '插件贡献点尚未授权或授权已失效'
+    })
     expect(sandbox.invoke).toHaveBeenCalledOnce()
   })
 
@@ -196,10 +261,251 @@ describe('PluginRuntimeExecutor authorization', () => {
       platformProxy()
     )
 
-    await expect(executor.execute({ ...executionRequest(), accountId: 'account-2' }))
-      .rejects.toThrow('未获准访问此账号')
+    const error = await rejectionOf(() => executor.execute({ ...executionRequest(), accountId: 'account-2' }))
+
+    expect(error).not.toBeInstanceOf(PluginSupplyChainError)
+    expect(error.message).toContain('未获准访问此账号')
     expect(entries.readEntry).not.toHaveBeenCalled()
     expect(sandbox.invoke).not.toHaveBeenCalled()
+  })
+
+  it('reports an ungranted network origin as a sandbox permission denial', async () => {
+    const brokerRequest = vi.fn()
+    const fixture = runtimeFixture({
+      brokerRequest,
+      invoke: async (sandboxRequest, executor) => executor.hostCall({
+        operation: 'network.https',
+        payload: { url: 'https://untrusted.example/events', method: 'POST', body: {} }
+      }, {
+        invocationId: sandboxRequest.invocationId,
+        pluginId: sandboxRequest.pluginId,
+        contributionId: sandboxRequest.contributionId
+      })
+    })
+
+    const error = await rejectionOf(() => fixture.executor.execute(executionRequest()))
+
+    expect(error).toMatchObject({
+      code: 'PLUGIN_SANDBOX_PERMISSION_DENIED',
+      message: '插件网络目标未获授权'
+    })
+    expect(brokerRequest).not.toHaveBeenCalled()
+  })
+
+  it('reports a disallowed host operation as a sandbox permission denial', async () => {
+    const fixture = runtimeFixture({
+      brokerRequest: vi.fn(),
+      invoke: async (sandboxRequest, executor) => executor.hostCall({
+        operation: 'data.read',
+        payload: { resource: 'accounts', query: {} }
+      }, {
+        invocationId: sandboxRequest.invocationId,
+        pluginId: sandboxRequest.pluginId,
+        contributionId: sandboxRequest.contributionId
+      })
+    })
+
+    const error = await rejectionOf(() => fixture.executor.execute(executionRequest()))
+
+    expect(error).toMatchObject({
+      code: 'PLUGIN_SANDBOX_PERMISSION_DENIED',
+      message: '插件操作未获授权'
+    })
+  })
+
+  it.each([
+    ['profiles', {}, '插件未获准读取此类数据'],
+    ['accounts', { accountId: 'account-2' }, '插件无权访问此账号']
+  ] as const)('reports rejected %s data access as a sandbox permission denial', async (
+    resource,
+    query,
+    message
+  ) => {
+    const permissions: PluginGrant['permissions'] = ['events.subscribe', 'accounts.read']
+    const baseState = webhookContribution()
+    const state: PluginContributionState = {
+      ...baseState,
+      contribution: { ...baseState.contribution, permissions }
+    }
+    const grant: PluginGrant = {
+      ...webhookGrant(),
+      permissions,
+      dataScopes: ['account'],
+      networkOrigins: []
+    }
+    let executor!: PluginRuntimeExecutor
+    const sandbox = {
+      invoke: vi.fn(async (request: SandboxInvocationRequest) => executor.hostCall({
+        operation: 'data.read',
+        payload: { resource, query }
+      }, {
+        invocationId: request.invocationId,
+        pluginId: request.pluginId,
+        contributionId: request.contributionId
+      }))
+    }
+    executor = new PluginRuntimeExecutor(
+      {
+        ...runtimeHost(),
+        listContributions: () => [state]
+      },
+      runtimeRepository(() => grant),
+      { readEntry: async () => webhookEntrySource },
+      sandbox,
+      platformProxy()
+    )
+
+    const error = await rejectionOf(() => executor.execute(executionRequest()))
+
+    expect(error).toMatchObject({ code: 'PLUGIN_SANDBOX_PERMISSION_DENIED', message })
+  })
+})
+
+describe('PluginRuntimeExecutor platform diagnostics', () => {
+  it.each([
+    'PLUGIN_SANDBOX_PROTOCOL_INVALID',
+    'PLUGIN_SANDBOX_PERMISSION_DENIED',
+    'PLUGIN_SANDBOX_RESOURCE_LIMIT',
+    'PLUGIN_SANDBOX_CRASHED',
+    'PLUGIN_SANDBOX_FAILED'
+  ] as const)('enriches %s without inventing plugin source frames', async (code) => {
+    const originalMessage = `original ${code}`
+    const originalCause = new Error(
+      'plain cause mentioning streamfold:streamfold.webhook/streamfold.webhook.events.js:99:4 without a stack frame'
+    )
+    const fixture = runtimeFixture({
+      brokerRequest: vi.fn(),
+      invoke: async () => {
+        throw new PluginSupplyChainError(code, originalMessage, { cause: originalCause })
+      }
+    })
+
+    const error = await rejectionOf(() => fixture.executor.execute(executionRequest()))
+
+    expect(error).toBeInstanceOf(PluginSupplyChainError)
+    expect(error).toMatchObject({ code, message: originalMessage })
+    expect(error.cause).toBeInstanceOf(AggregateError)
+    expect((error.cause as AggregateError).errors).toContain(originalCause)
+    const diagnostic = String(error.cause)
+    expect(diagnostic).toContain(`插件：${WEBHOOK_PLUGIN_ID}`)
+    expect(diagnostic).toContain(`插件版本：${webhookPluginManifest.version}`)
+    expect(diagnostic).toContain(`贡献点：${WEBHOOK_EVENT_ID}`)
+    expect(diagnostic).toContain(`入口：${webhookContribution().contribution.entry}`)
+    expect(diagnostic).toContain('执行方法：handle')
+    expect(diagnostic).not.toContain('插件函数：')
+    expect(diagnostic).not.toContain('源码位置：')
+    expect(diagnostic).not.toContain('插件调用链')
+    expect(diagnostic).not.toContain('源码上下文')
+  })
+
+  it('keeps a trusted platform host failure as the fixed sandbox error cause', async () => {
+    const contribution = xPluginManifest.contributions.find((item) => item.id === X_PLATFORM_CONTRIBUTION_ID)!
+    const state: PluginContributionState = {
+      pluginId: X_PLUGIN_ID,
+      pluginName: xPluginManifest.name,
+      pluginVersion: xPluginManifest.version,
+      contribution,
+      enabled: true,
+      granted: true,
+      suspendedReason: ''
+    }
+    const hostFailure = new Error('平台登录状态已失效：HTTP 401 response={"reason":"session expired"}')
+    const guestFailure = new Error([
+      'Error: X 数据无效：UserTweets.data.user.result 必须是对象',
+      '    at fail (streamfold:streamfold.x/streamfold.x.platform.js:28:18)',
+      '    at object (streamfold:streamfold.x/streamfold.x.platform.js:36:25)',
+      '    at parseTimelineResponse (streamfold:streamfold.x/streamfold.x.platform.js:327:18)',
+      '    at collect (streamfold:streamfold.x/streamfold.x.platform.js:417:24)'
+    ].join('\n'))
+    let executor!: PluginRuntimeExecutor
+    const sandbox = {
+      invoke: vi.fn(async (request: SandboxInvocationRequest) => {
+        try {
+          await executor.hostCall({
+            operation: 'platform.captureJson',
+            payload: { captureId: 'x.identity.settings', params: {}, limit: 1 }
+          }, {
+            invocationId: request.invocationId,
+            pluginId: request.pluginId,
+            contributionId: request.contributionId
+          })
+        } catch {
+          throw new PluginSupplyChainError(
+            'PLUGIN_SANDBOX_FAILED',
+            '插件执行失败',
+            {
+              cause: new AggregateError(
+                [hostFailure, guestFailure],
+                '插件宿主操作失败：platform.captureJson'
+              )
+            }
+          )
+        }
+        return {}
+      })
+    }
+    executor = new PluginRuntimeExecutor(
+      {
+        listContributions: () => [state],
+        getConfig: () => ({
+          pluginId: X_PLUGIN_ID,
+          contributionId: X_PLATFORM_CONTRIBUTION_ID,
+          values: { manualCollectionIntervalMinutes: 5 },
+          configuredSecrets: [],
+          updatedAt: now
+        }),
+        getRuntimeSecrets: () => ({})
+      },
+      {
+        getPluginGrant: () => ({
+          pluginId: X_PLUGIN_ID,
+          contributionId: X_PLATFORM_CONTRIBUTION_ID,
+          permissions: ['platform.session-json'],
+          accountIds: ['account-1'],
+          groupIds: [],
+          dataScopes: [],
+          networkOrigins: [],
+          grantedAt: now,
+          updatedAt: now
+        }),
+        listAccounts: () => [{
+          ...account('account-1'),
+          platformId: 'x',
+          adapterContributionId: X_PLATFORM_CONTRIBUTION_ID
+        }],
+        listContents: () => [],
+        listAccountSnapshots: () => []
+      },
+      { readEntry: async () => xEntrySource },
+      sandbox,
+      {
+        getJson: vi.fn(async (): Promise<JsonValue> => ({})),
+        captureJson: vi.fn(async (): Promise<JsonValue> => { throw hostFailure })
+      }
+    )
+
+    const error = await rejectionOf(() => executor.invoke(
+      X_PLUGIN_ID,
+      X_PLATFORM_CONTRIBUTION_ID,
+      'readIdentity',
+      'account-1',
+      { expectedRemoteId: null }
+    ))
+
+    expect(error).toBeInstanceOf(PluginPlatformSessionError)
+    expect(error).toMatchObject({ kind: 'expired', message: '平台登录状态已失效，请重新登录' })
+    expect(error.message).not.toContain('sensitive guest failure text')
+    const sandboxFailure = error.cause as PluginSupplyChainError
+    expect(sandboxFailure).toMatchObject({ code: 'PLUGIN_SANDBOX_FAILED', message: '插件执行失败' })
+    const pluginDiagnostic = formatSandboxDiagnostic(error) ?? ''
+    expect(pluginDiagnostic).toContain('HTTP 401')
+    expect(pluginDiagnostic).toContain(`插件版本：${xPluginManifest.version}`)
+    expect(pluginDiagnostic).toContain('插件函数：parseTimelineResponse')
+    expect(pluginDiagnostic).toContain('源码位置：entries/x.js:321:18')
+    expect(pluginDiagnostic).toContain('1. fail @ entries/x.js:22:18')
+    expect(pluginDiagnostic).toContain('2. object @ entries/x.js:30:25')
+    expect(pluginDiagnostic).toContain('3. parseTimelineResponse @ entries/x.js:321:18')
+    expect(pluginDiagnostic).not.toContain('源码位置：entries/x.js:22:18')
   })
 })
 

@@ -15,8 +15,7 @@ const IDENTITY_FAILURE_KEY = '__streamfoldFailure';
 const IDENTITY_FAILURES = Object.freeze({
   settingsEmpty: 'X_IDENTITY_SETTINGS_EMPTY',
   currentProfileEmpty: 'X_IDENTITY_CURRENT_PROFILE_EMPTY',
-  responseInvalid: 'X_IDENTITY_RESPONSE_INVALID',
-  stableIdVerifyFailed: 'X_IDENTITY_STABLE_ID_VERIFY_FAILED'
+  responseInvalid: 'X_IDENTITY_RESPONSE_INVALID'
 });
 
 function fail(message) {
@@ -373,7 +372,7 @@ function parseTimelineResponse(value, boundRemoteId) {
 }
 
 async function readIdentity(_context, rawInput) {
-  const expectedRemoteId = readIdentityInput(rawInput);
+  readIdentityInput(rawInput);
   const settingsResponses = await streamfold.platform.captureJson('x.identity.settings', {}, 1);
   if (!Array.isArray(settingsResponses)) return identityFailure(IDENTITY_FAILURES.responseInvalid);
   if (settingsResponses.length === 0) return identityFailure(IDENTITY_FAILURES.settingsEmpty);
@@ -406,25 +405,6 @@ async function readIdentity(_context, rawInput) {
   if (current.screenName.toLowerCase() !== authenticatedHandle.toLowerCase()) {
     return identityFailure(IDENTITY_FAILURES.responseInvalid);
   }
-  if (expectedRemoteId !== null && current.remoteId === expectedRemoteId) {
-    const boundResponses = await streamfold.platform.captureJson(
-      'x.identity.profile.bound',
-      { remoteId: expectedRemoteId },
-      1
-    );
-    if (!Array.isArray(boundResponses) || boundResponses.length !== 1 || !isObject(boundResponses[0])) {
-      return identityFailure(IDENTITY_FAILURES.stableIdVerifyFailed);
-    }
-    let bound;
-    try {
-      bound = parseProfileResponse(boundResponses[0], 'UserByRestId');
-    } catch {
-      return identityFailure(IDENTITY_FAILURES.stableIdVerifyFailed);
-    }
-    if (bound.remoteId !== expectedRemoteId) {
-      return identityFailure(IDENTITY_FAILURES.stableIdVerifyFailed);
-    }
-  }
   return { remoteId: current.remoteId, remoteName: current.remoteName, profile: current.profile };
 }
 
@@ -436,7 +416,7 @@ async function collect(_context, rawInput) {
   }
 
   const target = input.scope === 'recent_20' ? 20 : 100;
-  const responseLimit = input.scope === 'recent_20' ? 3 : 8;
+  const responseLimit = input.scope === 'recent_20' ? 5 : 20;
   const responses = array(await streamfold.platform.captureJson(
     'x.contents.tweets.bound',
     { remoteId: input.boundRemoteId },
@@ -466,15 +446,21 @@ async function collect(_context, rawInput) {
   }
 
   const contents = Array.from(contentsById.values());
+  const warnings = [];
+  if (ignoredInstruction) warnings.push('已忽略 X 时间线中的非内容指令。');
   if (contents.length < target && lastPage && lastPage.bottomCursor !== null && !lastPage.terminatedBottom) {
-    fail('分页未完整采集');
+    warnings.push(
+      'X 时间线在完整捕获窗口内读取 ' + responses.length + '/' + responseLimit +
+      ' 个响应后仍有更多内容；本次已保存 ' + contents.length +
+      ' 条已验证本人内容，少于请求的 ' + target + ' 条。'
+    );
   }
   return {
     capturedAt,
     profile: null,
     contentMetricDefinitions: CONTENT_METRIC_DEFINITIONS,
     contents: contents.slice(0, target),
-    warnings: ignoredInstruction ? ['已忽略 X 时间线中的非内容指令。'] : []
+    warnings
   };
 }
 

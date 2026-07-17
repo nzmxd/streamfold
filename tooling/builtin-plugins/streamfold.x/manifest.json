@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "streamfold.x",
   "name": "X",
-  "version": "1.1.2",
+  "version": "1.1.4",
   "description": "从已登录的 X 网页会话中读取本人公开资料和帖子数据。",
   "license": "Apache-2.0",
   "publisher": {
@@ -10,7 +10,7 @@
     "name": "归页",
     "keyId": "streamfold-official"
   },
-  "minimumAppVersion": "0.7.7",
+  "minimumAppVersion": "0.7.9",
   "sdkVersion": "1.0.0",
   "contributions": [
     {
@@ -96,22 +96,6 @@
           "maximumTotalBytes": 524288
         },
         {
-          "id": "x.identity.profile.bound",
-          "route": "https://x.com/i/user/{remoteId}",
-          "responseOrigin": "https://x.com",
-          "responsePath": "/i/api/graphql",
-          "graphqlOperationName": "UserByRestId",
-          "resourceTypes": [
-            "Fetch",
-            "XHR"
-          ],
-          "method": "GET",
-          "pagination": "none",
-          "maximumResponses": 1,
-          "maximumResponseBytes": 524288,
-          "maximumTotalBytes": 524288
-        },
-        {
           "id": "x.contents.tweets.bound",
           "route": "https://x.com/i/user/{remoteId}",
           "responseOrigin": "https://x.com",
@@ -123,7 +107,7 @@
           ],
           "method": "GET",
           "pagination": "page-down",
-          "maximumResponses": 8,
+          "maximumResponses": 20,
           "maximumResponseBytes": 524288,
           "maximumTotalBytes": 2097152
         }

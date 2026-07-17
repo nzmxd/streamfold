@@ -54,6 +54,32 @@ describe('AppLogService', () => {
     expect(service.list().items[0]?.context).toEqual({ accountId: 'account-1' })
   })
 
+  it('redacts common platform session keys from details, URLs and context', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'streamfold-logs-'))
+    const service = new AppLogService(directory)
+    const secrets = {
+      ct0: 'X_CT0_SECRET',
+      twid: 'X_TWID_SECRET',
+      z_c0: 'ZHIHU_ZC0_SECRET',
+      d_c0: 'ZHIHU_DC0_SECRET',
+      q_c1: 'ZHIHU_QC1_SECRET',
+      a1: 'XHS_A1_SECRET',
+      web_session: 'XHS_SESSION_SECRET',
+      webid: 'XHS_WEBID_SECRET'
+    }
+    service.error('network', 'platform response failed', {
+      details: `${JSON.stringify(secrets)}\nhttps://api.example.test/items?page=2&ct0=URL_CT0_SECRET`,
+      context: { ...secrets, status: 502 }
+    })
+    const serialized = JSON.stringify(service.list().items[0])
+
+    expect(serialized).toContain('502')
+    expect(serialized).toContain('page=2')
+    for (const secret of [...Object.values(secrets), 'URL_CT0_SECRET']) {
+      expect(serialized).not.toContain(secret)
+    }
+  })
+
   it('redacts URL credentials and preserves structured non-Error rejection details', () => {
     const directory = mkdtempSync(join(tmpdir(), 'streamfold-logs-'))
     const service = new AppLogService(directory)
@@ -133,6 +159,7 @@ describe('AppLogService', () => {
     expect(entry?.details).toContain('原因')
     expect(entry?.details).toContain('聚合错误 1')
     expect(entry?.details).toContain('request-1')
+    expect(entry?.details).toContain('service unavailable')
     expect(entry?.details).not.toContain('RESPONSE_TOKEN')
     expect(entry?.details).not.toContain('REMOTE_COOKIE')
   })

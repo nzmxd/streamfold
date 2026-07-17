@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountDisplayName } from './presentation'
+import { accountDisplayName, formatBrowserLastVisitedPage } from './presentation'
 
 describe('accountDisplayName', () => {
   it('prefers the local note name', () => {
@@ -12,5 +12,11 @@ describe('accountDisplayName', () => {
 
   it('provides a useful label before identity binding', () => {
     expect(accountDisplayName({ alias: '', remoteName: '' }, '小红书')).toBe('小红书账号')
+  })
+
+  it('shows a concise last-visited page without credentials or URL parameters', () => {
+    expect(formatBrowserLastVisitedPage('https://user:password@x.com/home?token=secret#timeline'))
+      .toBe('x.com/home')
+    expect(formatBrowserLastVisitedPage('')).toBe('尚未访问页面')
   })
 })

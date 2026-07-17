@@ -193,9 +193,88 @@ describe('IPC trust and maintenance boundary', () => {
     expect(fixture.pluginAutomation.start).toHaveBeenCalledOnce()
     expect(fixture.syncBatches.start).toHaveBeenCalledOnce()
   })
+
+  it('deduplicates capture sequences while allowing a later binding prompt retry', async () => {
+    const fixture = ipcFixture()
+    fixture.platformSync.discoverIdentity
+      .mockResolvedValueOnce({
+        accountId: 'x-account',
+        status: 'capture_pending',
+        remoteId: null,
+        remoteName: null,
+        confirmationToken: null,
+        confirmationExpiresAt: null,
+        verifiedAt: null,
+        message: '正在后台监听。'
+      })
+      .mockResolvedValueOnce({
+        accountId: 'x-account',
+        status: 'confirmation_required',
+        remoteId: 'remote-1',
+        remoteName: 'Owner',
+        confirmationToken: 'preview-token',
+        confirmationExpiresAt: '2026-07-17T08:00:00.000Z',
+        verifiedAt: null,
+        message: '请确认。'
+      })
+      .mockResolvedValueOnce({
+        accountId: 'x-account',
+        status: 'confirmation_required',
+        remoteId: 'remote-1',
+        remoteName: 'Owner',
+        confirmationToken: 'preview-token-2',
+        confirmationExpiresAt: '2026-07-17T08:02:00.000Z',
+        verifiedAt: null,
+        message: '请再次确认。'
+      })
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+
+    fixture.emitCapture({ accountId: 'x-account', captureId: null, sequence: 1 })
+    await vi.waitFor(() => expect(fixture.platformSync.discoverIdentity).toHaveBeenCalledOnce())
+    expect(fixture.window.webContents.send).not.toHaveBeenCalledWith(
+      'accounts:identity-preview',
+      expect.anything()
+    )
+
+    fixture.emitCapture({ accountId: 'x-account', captureId: 'x.identity.settings', sequence: 2 })
+    await vi.waitFor(() => expect(fixture.window.webContents.send).toHaveBeenCalledWith(
+      'accounts:identity-preview',
+      expect.objectContaining({ accountId: 'x-account', remoteId: 'remote-1' })
+    ))
+    fixture.emitCapture({ accountId: 'x-account', captureId: 'x.identity.settings', sequence: 2 })
+    await Promise.resolve()
+    expect(fixture.platformSync.discoverIdentity).toHaveBeenCalledTimes(2)
+
+    fixture.emitCapture({ accountId: 'x-account', captureId: 'x.identity.profile.initial', sequence: 3 })
+    await vi.waitFor(() => expect(fixture.platformSync.discoverIdentity).toHaveBeenCalledTimes(3))
+    const send = fixture.window.webContents.send as unknown as ReturnType<typeof vi.fn>
+    expect(send.mock.calls.filter((call) => call[0] === 'accounts:identity-preview')).toHaveLength(2)
+  })
+
+  it('stops only X captures when the official X package is disabled', async () => {
+    const fixture = ipcFixture()
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+
+    await requiredHandler('plugins:set-package-enabled')(
+      eventFixture(fixture),
+      'safe-package',
+      false
+    )
+    expect(fixture.browser.stopPluginCapture).not.toHaveBeenCalled()
+    expect(fixture.browser.stopAllPluginCaptures).not.toHaveBeenCalled()
+
+    await requiredHandler('plugins:set-package-enabled')(
+      eventFixture(fixture),
+      'streamfold.x',
+      false
+    )
+    expect(fixture.browser.stopPluginCapture).toHaveBeenCalledWith('x-account')
+    expect(fixture.browser.stopAllPluginCaptures).not.toHaveBeenCalled()
+  })
 })
 
 function ipcFixture() {
+  let captureListener: ((activity: { accountId: string; captureId: string | null; sequence: number }) => void) | null = null
   const mainFrame = { url: 'app://shell/index.html' }
   const webContents = {
     id: 42,
@@ -208,10 +287,12 @@ function ipcFixture() {
     setTitleBarOverlay: vi.fn()
   } as unknown as BrowserWindow
   const pluginHost = {
-    listPackages: vi.fn<() => unknown>(() => [{ id: 'safe-package' }])
+    listPackages: vi.fn<() => unknown>(() => [{ id: 'safe-package' }]),
+    setPackageEnabled: vi.fn(() => ({ enabled: false }))
   }
   const pluginLifecycle = {
-    installDevelopment: vi.fn(async () => null)
+    installDevelopment: vi.fn(async () => null),
+    stop: vi.fn()
   }
   const pluginAutomation = {
     onChanged: vi.fn(() => vi.fn()),
@@ -229,6 +310,10 @@ function ipcFixture() {
     getState: vi.fn(() => ({ phase: 'downloaded' })),
     restartAndInstall: vi.fn()
   }
+  const platformSync = {
+    discoverIdentity: vi.fn(),
+    isAccountActive: vi.fn(() => false)
+  }
   const services = {
     logs: {
       onChanged: vi.fn(() => vi.fn()),
@@ -242,6 +327,7 @@ function ipcFixture() {
     pluginAutomation,
     syncBatches,
     jobs: { onChanged: vi.fn(() => vi.fn()) },
+    platformSync,
     updates
   } as unknown as IpcServices
   const settings = new Map<string, unknown>()
@@ -258,7 +344,16 @@ function ipcFixture() {
       platformId: 'zhihu',
       metricDefinitions: [],
       snapshots: []
-    }))
+    })),
+    getAccount: vi.fn((id: string) => id === 'x-account'
+      ? { id, platformId: 'x', remoteId: null, adapterContributionId: 'streamfold.x.platform' }
+      : null),
+    listAccounts: vi.fn(() => [{
+      id: 'x-account',
+      platformId: 'x',
+      remoteId: null,
+      adapterContributionId: 'streamfold.x.platform'
+    }])
   } as unknown as Parameters<typeof registerIpc>[1]
   return {
     mainFrame,
@@ -268,10 +363,22 @@ function ipcFixture() {
     pluginAutomation,
     syncBatches,
     updates,
+    platformSync,
     services,
     database,
     settings,
-    browser: { applyAppearance: vi.fn() } as unknown as Parameters<typeof registerIpc>[2]
+    browser: {
+      applyAppearance: vi.fn(),
+      onPluginCaptureActivity: vi.fn((listener) => {
+        captureListener = listener
+        return () => { captureListener = null }
+      }),
+      stopPluginCapture: vi.fn(),
+      stopAllPluginCaptures: vi.fn()
+    } as unknown as Parameters<typeof registerIpc>[2],
+    emitCapture: (activity: { accountId: string; captureId: string | null; sequence: number }) => {
+      captureListener?.(activity)
+    }
   }
 }
 

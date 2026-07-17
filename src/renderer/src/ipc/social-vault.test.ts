@@ -118,4 +118,18 @@ describe('social vault renderer facade', () => {
 
     expect(on).toHaveBeenCalledWith('tasks:changed', expect.any(Function))
   })
+
+  it('subscribes to background identity previews through a fixed event channel', () => {
+    const listener = vi.fn()
+    const on = vi.fn(() => () => undefined)
+    const bridge: SocialVaultBridge = {
+      runtime: { platform: 'win32' },
+      invoke: vi.fn(async () => undefined),
+      on
+    }
+
+    createSocialVaultApi(bridge).accounts.onIdentityPreview(listener)
+
+    expect(on).toHaveBeenCalledWith('accounts:identity-preview', expect.any(Function))
+  })
 })

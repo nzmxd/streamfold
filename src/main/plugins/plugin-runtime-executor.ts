@@ -6,10 +6,13 @@ import type {
   PluginContribution,
   PluginContributionState,
   PluginEventEnvelope,
-  PluginGrant
+  PluginGrant,
+  PlatformCapturePolicy
 } from '../../shared/plugin-host-contracts'
 import { RetryablePluginError, type PluginExecutionRequest, type PluginExecutor } from './automation-service'
 import { PublicHttpsBroker } from './public-https-broker'
+import { formatSandboxDiagnostic, sanitizeSandboxDiagnostic } from './sandbox-diagnostics'
+import { normalizePluginNetworkError, pluginNetworkResponseError } from './network-diagnostics'
 import {
   DEFAULT_SANDBOX_LIMITS,
   type JsonObject,
@@ -18,6 +21,11 @@ import {
   type SandboxHostOperation
 } from './sandbox-protocol'
 import type { SandboxHostCallHandler, UtilityProcessSandboxManager } from './utility-process-manager'
+import {
+  PluginSupplyChainError,
+  isPluginSupplyChainError,
+  type PluginSupplyChainErrorCode
+} from './supply-chain-errors'
 
 export interface PluginEntrySource {
   readEntry(pluginId: string, version: string, entry: string): Promise<string>
@@ -46,11 +54,13 @@ export interface PlatformJsonProxy {
   }): Promise<JsonValue>
   captureJson(input: {
     pluginId: string
+    pluginVersion: string
     contribution: Extract<PluginContribution, { kind: 'platform.adapter' }>
     accountId: string
     captureId: string
     params: JsonObject
     limit?: number
+    policy: PlatformCapturePolicy
   }): Promise<JsonValue>
 }
 
@@ -63,12 +73,16 @@ interface ActiveInvocation {
   contribution: PluginContributionState
   grant: PluginGrant
   allowUnboundAdapter: boolean
-  sessionIssue: 'expired' | 'risk' | null
+  capturePolicy: PlatformCapturePolicy
+  recentHostResponses: Array<{ operation: SandboxHostOperation; diagnostic: Error }>
 }
 
 export class PluginPlatformSessionError extends Error {
-  constructor(readonly kind: 'expired' | 'risk') {
-    super(kind === 'expired' ? '平台登录状态已失效，请重新登录' : '平台请求暂时受限，请稍后重试')
+  constructor(readonly kind: 'expired' | 'risk', options?: ErrorOptions) {
+    super(
+      kind === 'expired' ? '平台登录状态已失效，请重新登录' : '平台请求暂时受限，请稍后重试',
+      options
+    )
     this.name = 'PluginPlatformSessionError'
   }
 }
@@ -129,13 +143,15 @@ export class PluginRuntimeExecutor implements PluginExecutor {
       state.pluginVersion,
       state.contribution.entry
     )
-    this.active.set(invocationId, {
+    const invocation: ActiveInvocation = {
       request,
       contribution: state,
       grant,
       allowUnboundAdapter: false,
-      sessionIssue: null
-    })
+      capturePolicy: 'fresh',
+      recentHostResponses: []
+    }
+    this.active.set(invocationId, invocation)
     try {
       const value = await this.sandbox.invoke({
         protocolVersion: 1,
@@ -164,6 +180,16 @@ export class PluginRuntimeExecutor implements PluginExecutor {
       }
       validateWebhookResult(request.pluginId, value as Record<string, JsonValue>)
       return value as Record<string, unknown>
+    } catch (error) {
+      const detailed = enrichPluginExecutionFailure(error, {
+        pluginId: request.pluginId,
+        pluginVersion: state.pluginVersion,
+        contributionId: request.contributionId,
+        entry: state.contribution.entry,
+        method: contributionMethod(state.contribution, request.trigger),
+        entrySource
+      })
+      throw attachRecentHostResponses(detailed, invocation.recentHostResponses)
     } finally {
       this.active.delete(invocationId)
     }
@@ -175,7 +201,8 @@ export class PluginRuntimeExecutor implements PluginExecutor {
     method: 'readIdentity' | 'collect',
     accountId: string,
     input: JsonObject,
-    allowUnboundAdapter = false
+    allowUnboundAdapter = false,
+    capturePolicy: PlatformCapturePolicy = 'fresh'
   ): Promise<Record<string, unknown>> {
     const state = this.requireContribution(pluginId, contributionId)
     if (state.contribution.kind !== 'platform.adapter') throw new Error('贡献点不是平台适配器')
@@ -198,7 +225,8 @@ export class PluginRuntimeExecutor implements PluginExecutor {
       contribution: state,
       grant,
       allowUnboundAdapter,
-      sessionIssue: null
+      capturePolicy,
+      recentHostResponses: []
     }
     this.active.set(invocationId, invocation)
     try {
@@ -223,8 +251,20 @@ export class PluginRuntimeExecutor implements PluginExecutor {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('平台适配器返回结果无效')
       return value as Record<string, unknown>
     } catch (error) {
-      if (invocation.sessionIssue) throw new PluginPlatformSessionError(invocation.sessionIssue)
-      throw error
+      const detailed = enrichPluginExecutionFailure(error, {
+        pluginId,
+        pluginVersion: state.pluginVersion,
+        contributionId,
+        entry: state.contribution.entry,
+        method,
+        entrySource
+      })
+      const sessionIssue = platformSessionIssue(detailed)
+      const diagnosed = attachRecentHostResponses(detailed, invocation.recentHostResponses)
+      if (sessionIssue) {
+        throw new PluginPlatformSessionError(sessionIssue, { cause: diagnosed })
+      }
+      throw diagnosed
     } finally {
       this.active.delete(invocationId)
     }
@@ -236,65 +276,79 @@ export class PluginRuntimeExecutor implements PluginExecutor {
   ): Promise<JsonValue> {
     const active = this.active.get(identity.invocationId)
     if (!active || active.request.pluginId !== identity.pluginId ||
-      active.request.contributionId !== identity.contributionId) throw new Error('插件调用上下文已失效')
+      active.request.contributionId !== identity.contributionId) {
+      throw new PluginSupplyChainError('PLUGIN_SANDBOX_PROTOCOL_INVALID', '插件调用上下文已失效')
+    }
 
-    const state = this.requireContribution(identity.pluginId, identity.contributionId)
-    const grant = this.requireGrant(identity.pluginId, identity.contributionId, state.contribution)
-    if (!allowedOperations(state.contribution, grant).includes(call.operation)) throw new Error('插件操作未获授权')
-
-    if (call.operation === 'network.https') return await this.networkCall(active, grant, call.payload)
-    if (call.operation === 'data.read') return this.readData(active, grant, call.payload)
-    if (state.contribution.kind !== 'platform.adapter' || !active.request.accountId) {
-      throw new Error('平台 Session 操作只允许已绑定的平台适配器')
+    const state = this.requireContribution(identity.pluginId, identity.contributionId, true)
+    const grant = this.requireGrant(identity.pluginId, identity.contributionId, state.contribution, true)
+    if (!allowedOperations(state.contribution, grant).includes(call.operation)) {
+      throw sandboxPermissionDenied('插件操作未获授权')
     }
-    const account = this.repository.listAccounts().find((item) => item.id === active.request.accountId)
-    if (!account || (!active.allowUnboundAdapter && account.adapterContributionId !== state.contribution.id)) {
-      throw new Error('平台适配器未绑定此账号')
-    }
-    if (!accountAllowed(active.request.accountId, grant, this.repository.listAccounts())) {
-      throw new Error('平台适配器无权访问此账号')
-    }
-    try {
+    let value: JsonValue
+    if (call.operation === 'network.https') {
+      value = await this.networkCall(active, grant, call.payload)
+    } else if (call.operation === 'data.read') {
+      value = this.readData(active, grant, call.payload)
+    } else {
+      if (state.contribution.kind !== 'platform.adapter' || !active.request.accountId) {
+        throw sandboxPermissionDenied('平台 Session 操作只允许已绑定的平台适配器')
+      }
+      const account = this.repository.listAccounts().find((item) => item.id === active.request.accountId)
+      if (!account || (!active.allowUnboundAdapter && account.adapterContributionId !== state.contribution.id)) {
+        throw sandboxPermissionDenied('平台适配器未绑定此账号')
+      }
+      if (!accountAllowed(active.request.accountId, grant, this.repository.listAccounts())) {
+        throw sandboxPermissionDenied('平台适配器无权访问此账号')
+      }
       if (call.operation === 'platform.getJson') {
-        return await this.platform.getJson({
+        value = await this.platform.getJson({
           pluginId: identity.pluginId,
           contribution: state.contribution,
           accountId: active.request.accountId,
           endpointId: String(call.payload.endpointId),
           params: (call.payload.params ?? {}) as JsonObject
         })
+      } else {
+        value = await this.platform.captureJson({
+          pluginId: identity.pluginId,
+          pluginVersion: state.pluginVersion,
+          contribution: state.contribution,
+          accountId: active.request.accountId,
+          captureId: String(call.payload.captureId),
+          params: (call.payload.params ?? {}) as JsonObject,
+          ...(typeof call.payload.limit === 'number' ? { limit: call.payload.limit } : {}),
+          policy: active.capturePolicy
+        })
       }
-      return await this.platform.captureJson({
-        pluginId: identity.pluginId,
-        contribution: state.contribution,
-        accountId: active.request.accountId,
-        captureId: String(call.payload.captureId),
-        params: (call.payload.params ?? {}) as JsonObject,
-        ...(typeof call.payload.limit === 'number' ? { limit: call.payload.limit } : {})
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ''
-      if (message.includes('登录状态已失效')) active.sessionIssue = 'expired'
-      if (message.includes('暂时受限')) active.sessionIssue = 'risk'
-      throw error
     }
+    rememberHostResponse(active, call.operation, value)
+    return value
   }
 
   private async networkCall(active: ActiveInvocation, grant: PluginGrant, payload: JsonObject): Promise<JsonValue> {
     const target = new URL(String(payload.url))
-    if (!grant.networkOrigins.includes(target.origin)) throw new Error('插件网络目标未获授权')
+    if (!grant.networkOrigins.includes(target.origin)) throw sandboxPermissionDenied('插件网络目标未获授权')
     const headers = stringHeaders(payload.headers)
     const body = payload.body
     if (active.request.pluginId === 'streamfold.webhook') {
       this.injectWebhookCredentials(active, headers, body)
     }
-    const response = await this.https.request({
-      url: target.href,
-      method: payload.method === 'GET' ? 'GET' : 'POST',
-      headers,
-      ...(body === undefined ? {} : { jsonBody: body }),
-      ...(typeof payload.timeoutMs === 'number' ? { timeoutMs: payload.timeoutMs } : {})
-    })
+    let response
+    try {
+      response = await this.https.request({
+        url: target.href,
+        method: payload.method === 'GET' ? 'GET' : 'POST',
+        headers,
+        ...(body === undefined ? {} : { jsonBody: body }),
+        ...(typeof payload.timeoutMs === 'number' ? { timeoutMs: payload.timeoutMs } : {})
+      })
+    } catch (error) {
+      const diagnostic = normalizePluginNetworkError(error, '插件 HTTPS 请求失败')
+      active.recentHostResponses.push({ operation: 'network.https', diagnostic })
+      if (active.recentHostResponses.length > 3) active.recentHostResponses.shift()
+      throw diagnostic
+    }
     return {
       status: response.status,
       contentType: response.contentType,
@@ -332,14 +386,18 @@ export class PluginRuntimeExecutor implements PluginExecutor {
     const access = dataResourceAccess(resource)
     if (!active.contribution.contribution.permissions.includes(access.permission) ||
       !grant.permissions.includes(access.permission) || !grant.dataScopes.includes(access.scope)) {
-      throw new Error('插件未获准读取此类数据')
+      throw sandboxPermissionDenied('插件未获准读取此类数据')
     }
     if (Object.keys(query).some((key) => key !== 'accountId' && key !== 'limit')) {
       throw new Error('插件数据查询包含未知参数')
     }
     const requestedAccount = typeof query.accountId === 'string' ? query.accountId : active.request.accountId
-    const accounts = this.repository.listAccounts().filter((account) => (
-      (!requestedAccount || account.id === requestedAccount) && accountAllowed(account.id, grant, this.repository.listAccounts())
+    const allAccounts = this.repository.listAccounts()
+    if (requestedAccount && !accountAllowed(requestedAccount, grant, allAccounts)) {
+      throw sandboxPermissionDenied('插件无权访问此账号')
+    }
+    const accounts = allAccounts.filter((account) => (
+      (!requestedAccount || account.id === requestedAccount) && accountAllowed(account.id, grant, allAccounts)
     ))
     if (resource === 'accounts' || resource === 'profiles') {
       return accounts.map((account) => sanitizeAccount(account, resource === 'profiles', grant)) as JsonValue
@@ -353,21 +411,265 @@ export class PluginRuntimeExecutor implements PluginExecutor {
       .map((snapshot) => ({ accountId: account.id, snapshot }))).slice(0, integerLimit(query.limit, 100)) as JsonValue
   }
 
-  private requireContribution(pluginId: string, contributionId: string): PluginContributionState {
+  private requireContribution(
+    pluginId: string,
+    contributionId: string,
+    sandboxHostCall = false
+  ): PluginContributionState {
     const state = this.host.listContributions().find((item) => (
       item.pluginId === pluginId && item.contribution.id === contributionId
     ))
-    if (!state?.enabled || state.suspendedReason) throw new Error('插件贡献点未启用')
+    if (!state?.enabled || state.suspendedReason) {
+      if (sandboxHostCall) throw sandboxPermissionDenied('插件贡献点未启用')
+      throw new Error('插件贡献点未启用')
+    }
     return state
   }
 
-  private requireGrant(pluginId: string, contributionId: string, contribution: PluginContribution): PluginGrant {
+  private requireGrant(
+    pluginId: string,
+    contributionId: string,
+    contribution: PluginContribution,
+    sandboxHostCall = false
+  ): PluginGrant {
     const grant = this.repository.getPluginGrant(pluginId, contributionId)
     if (!grant || grant.permissions.some((permission) => !contribution.permissions.includes(permission))) {
+      if (sandboxHostCall) throw sandboxPermissionDenied('插件贡献点尚未授权或授权已失效')
       throw new Error('插件贡献点尚未授权或授权已失效')
     }
     return grant
   }
+}
+
+interface PluginExecutionDiagnosticContext {
+  pluginId: string
+  pluginVersion: string
+  contributionId: string
+  entry: string
+  method: string
+  entrySource: string
+}
+
+function enrichPluginExecutionFailure(
+  error: unknown,
+  context: PluginExecutionDiagnosticContext
+): unknown {
+  if (!(error instanceof Error)) return error
+  const sandboxFailure = isDiagnosableSandboxError(error)
+  const diagnostic = formatSandboxDiagnostic(error)
+  const location = diagnostic ? pluginEntryLocation(diagnostic, context) : null
+  const sourceExcerpt = location ? pluginSourceExcerpt(context.entrySource, location.entryLine) : ''
+  const details = sanitizeSandboxDiagnostic([
+    `插件：${context.pluginId}`,
+    `插件版本：${context.pluginVersion}`,
+    `贡献点：${context.contributionId}`,
+    `入口：${context.entry}`,
+    `执行方法：${context.method}`,
+    ...(location ? [
+      ...(location.functionName ? [`插件函数：${location.functionName}`] : []),
+      `源码位置：${context.entry}:${location.entryLine}:${location.column}`,
+      `沙箱位置：${location.sandboxLocation}`,
+      `插件调用链\n${location.frames.map((frame, index) => (
+        `${index + 1}. ${frame.functionName || '<anonymous>'} @ ${context.entry}:${frame.entryLine}:${frame.column}`
+      )).join('\n')}`
+    ] : []),
+    ...(sourceExcerpt ? [`源码上下文\n${sourceExcerpt}`] : []),
+    ...(diagnostic ? [`${sandboxFailure ? '沙箱错误' : '执行错误'}\n${diagnostic}`] : [])
+  ].join('\n\n'))
+  if (!details) return error
+  if (sandboxFailure) {
+    const cause = executionDiagnosticCause(error.cause, details)
+    return new PluginSupplyChainError(error.code, error.message, { cause })
+  }
+  const diagnosticCause = new Error(details)
+  diagnosticCause.name = 'PluginExecutionDiagnostic'
+  const originalCause = ownDataProperty(error, 'cause')
+  const cause = originalCause === undefined
+    ? diagnosticCause
+    : new AggregateError([originalCause, diagnosticCause], '插件执行诊断')
+  Object.defineProperty(error, 'cause', {
+    value: cause,
+    configurable: true,
+    enumerable: false,
+    writable: true
+  })
+  return error
+}
+
+function attachRecentHostResponses(
+  error: unknown,
+  responses: ActiveInvocation['recentHostResponses']
+): unknown {
+  if (!(error instanceof Error) || responses.length === 0) return error
+  const existingCause = ownDataProperty(error, 'cause')
+  const causes = [
+    ...(existingCause === undefined ? [] : [existingCause]),
+    ...responses.map((response) => response.diagnostic)
+  ]
+  const cause = causes.length === 1
+    ? causes[0]
+    : new AggregateError(causes, '插件执行前的最近宿主响应')
+  Object.defineProperty(error, 'cause', {
+    value: cause,
+    configurable: true,
+    enumerable: false,
+    writable: true
+  })
+  return error
+}
+
+function rememberHostResponse(
+  active: ActiveInvocation,
+  operation: SandboxHostOperation,
+  value: JsonValue
+): void {
+  let status: unknown = null
+  let contentType: unknown = 'application/json'
+  let body = ''
+  if (operation === 'network.https' && value && typeof value === 'object' && !Array.isArray(value)) {
+    status = value.status
+    contentType = value.contentType
+    body = typeof value.body === 'string' ? value.body : JSON.stringify(value)
+  } else {
+    body = JSON.stringify(value)
+  }
+  active.recentHostResponses.push({
+    operation,
+    diagnostic: pluginNetworkResponseError(`插件宿主响应快照：${operation}`, {
+      status,
+      contentType,
+      body
+    })
+  })
+  if (active.recentHostResponses.length > 3) active.recentHostResponses.shift()
+}
+
+function platformSessionIssue(error: unknown): 'expired' | 'risk' | null {
+  const queue: unknown[] = [error]
+  const visited = new Set<object>()
+  for (let index = 0; index < queue.length && index < 32; index += 1) {
+    const current = queue[index]
+    if (!current || (typeof current !== 'object' && typeof current !== 'function')) continue
+    if (visited.has(current as object)) continue
+    visited.add(current as object)
+    const message = ownDataProperty(current, 'message')
+    if (typeof message === 'string') {
+      if (message.includes('平台登录状态已失效')) return 'expired'
+      if (message.includes('平台请求暂时受限')) return 'risk'
+    }
+    const cause = ownDataProperty(current, 'cause')
+    if (cause !== undefined) queue.push(cause)
+    const errors = ownDataProperty(current, 'errors')
+    if (Array.isArray(errors)) queue.push(...errors.slice(0, 8))
+  }
+  return null
+}
+
+function ownDataProperty(value: unknown, key: string): unknown {
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return undefined
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)
+    return descriptor && 'value' in descriptor ? descriptor.value : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function executionDiagnosticCause(originalCause: unknown, details: string): Error {
+  if (originalCause !== undefined) return new AggregateError([originalCause], details)
+  const cause = new Error(details)
+  cause.name = 'PluginExecutionDiagnostic'
+  return cause
+}
+
+const DIAGNOSABLE_SANDBOX_CODES: ReadonlySet<PluginSupplyChainErrorCode> = new Set([
+  'PLUGIN_SANDBOX_PROTOCOL_INVALID',
+  'PLUGIN_SANDBOX_PERMISSION_DENIED',
+  'PLUGIN_SANDBOX_RESOURCE_LIMIT',
+  'PLUGIN_SANDBOX_CRASHED',
+  'PLUGIN_SANDBOX_FAILED'
+])
+
+function isDiagnosableSandboxError(error: unknown): error is PluginSupplyChainError {
+  return isPluginSupplyChainError(error) && DIAGNOSABLE_SANDBOX_CODES.has(error.code)
+}
+
+function sandboxPermissionDenied(message: string): PluginSupplyChainError {
+  return new PluginSupplyChainError('PLUGIN_SANDBOX_PERMISSION_DENIED', message)
+}
+
+function pluginEntryLocation(
+  diagnostic: string,
+  context: Pick<PluginExecutionDiagnosticContext, 'pluginId' | 'contributionId'>
+): {
+  entryLine: number
+  column: number
+  functionName: string
+  sandboxLocation: string
+  frames: Array<{ entryLine: number; column: number; functionName: string }>
+} | null {
+  const filename = `streamfold:${context.pluginId}/${context.contributionId}.js`
+  const escapedFilename = escapeRegExp(filename)
+  const stackFramePattern = new RegExp(
+    `(?:^|\\n)\\s*at\\s+(?:(.*?)\\s+\\()?${escapedFilename}:(\\d+):(\\d+)\\)?`,
+    'g'
+  )
+  const parsedFrames = [...diagnostic.matchAll(stackFramePattern)].map((match) => ({
+    functionName: normalizePluginFunctionName(match[1] ?? ''),
+    generatedLine: Number(match[2]),
+    column: Number(match[3])
+  })).filter((frame) => (
+    Number.isSafeInteger(frame.generatedLine) && Number.isSafeInteger(frame.column)
+  ))
+  const frames = parsedFrames.filter((frame, index) => (
+    parsedFrames.findIndex((candidate) => (
+      candidate.functionName === frame.functionName &&
+      candidate.generatedLine === frame.generatedLine &&
+      candidate.column === frame.column
+    )) === index
+  )).slice(0, 6)
+  if (frames.length === 0) return null
+  const frame = frames.find((candidate) => !isGenericFailureFrame(candidate.functionName)) ?? frames[0]
+  const generatedLine = frame?.generatedLine
+  const column = frame?.column
+  if (generatedLine === undefined || column === undefined ||
+    !Number.isSafeInteger(generatedLine) || !Number.isSafeInteger(column)) return null
+  return {
+    entryLine: Math.max(1, generatedLine - 6),
+    column: Math.max(1, column),
+    functionName: frame?.functionName ?? '',
+    sandboxLocation: `${filename}:${generatedLine}:${column}`,
+    frames: frames.map((candidate) => ({
+      entryLine: Math.max(1, candidate.generatedLine - 6),
+      column: Math.max(1, candidate.column),
+      functionName: candidate.functionName
+    }))
+  }
+}
+
+function normalizePluginFunctionName(value: string): string {
+  return value.trim().replace(/^(?:async|new)\s+/u, '')
+}
+
+function isGenericFailureFrame(functionName: string): boolean {
+  const leaf = functionName.split('.').at(-1)?.replace(/^\[as\s+|\]$/gu, '') ?? ''
+  return /^(?:assert.*|array|boolean|count|date|exactKeys|fail|failure|handle|id|integer|invalid|invariant|malformed|number|object|optionalString|panic|raise|record|required|string|text|throwError|url|value)$/iu.test(leaf)
+}
+
+function pluginSourceExcerpt(source: string, targetLine: number): string {
+  const lines = source.split(/\r?\n/)
+  if (targetLine < 1 || targetLine > lines.length) return ''
+  const start = Math.max(1, targetLine - 2)
+  const end = Math.min(lines.length, targetLine + 2)
+  const width = String(end).length
+  return lines.slice(start - 1, end).map((line, index) => {
+    const lineNumber = start + index
+    return `${lineNumber === targetLine ? '>' : ' '} ${String(lineNumber).padStart(width, ' ')} | ${line}`
+  }).join('\n')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function dataResourceAccess(resource: string): {

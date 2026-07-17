@@ -16,7 +16,7 @@ const OTHER_ID = '900719925474099312345678902'
 describe('built-in X platform adapter', () => {
   it('declares only the bounded signed-in web-session surface', () => {
     expect(xPluginManifest.id).toBe(X_PLUGIN_ID)
-    expect(xPluginManifest).toMatchObject({ version: '1.1.2', minimumAppVersion: '0.7.7' })
+    expect(xPluginManifest).toMatchObject({ version: '1.1.4', minimumAppVersion: '0.7.9' })
     const contribution = xPluginManifest.contributions[0]
     expect(contribution).toMatchObject({
       id: X_PLATFORM_CONTRIBUTION_ID,
@@ -48,9 +48,10 @@ describe('built-in X platform adapter', () => {
     expect(contribution.captures.map(({ id, graphqlOperationName }) => ({ id, graphqlOperationName }))).toEqual([
       { id: 'x.identity.settings', graphqlOperationName: undefined },
       { id: 'x.identity.profile.initial', graphqlOperationName: 'UserByScreenName' },
-      { id: 'x.identity.profile.bound', graphqlOperationName: 'UserByRestId' },
       { id: 'x.contents.tweets.bound', graphqlOperationName: 'UserTweets' }
     ])
+    expect(contribution.captures.find(({ id }) => id === 'x.contents.tweets.bound'))
+      .toMatchObject({ maximumResponses: 20 })
   })
 
   it('proves the authenticated handle before binding the current live profile shape', async () => {
@@ -105,13 +106,6 @@ describe('built-in X platform adapter', () => {
         name: 'Renamed owner',
         currentShape: true,
         root: 'screen-name'
-      })],
-      'x.identity.profile.bound': [profileResponse({
-        remoteId: OWNER_ID,
-        handle: 'renamed_owner',
-        name: 'Renamed owner',
-        currentShape: false,
-        root: 'rest-id'
       })]
     })
 
@@ -123,14 +117,6 @@ describe('built-in X platform adapter', () => {
         payload: {
           captureId: 'x.identity.profile.initial',
           params: { handle: 'renamed_owner' },
-          limit: 1
-        }
-      },
-      {
-        operation: 'platform.captureJson',
-        payload: {
-          captureId: 'x.identity.profile.bound',
-          params: { remoteId: OWNER_ID },
           limit: 1
         }
       }
@@ -195,8 +181,8 @@ describe('built-in X platform adapter', () => {
     expect(JSON.stringify(result)).not.toContain('sensitive upstream response body')
   })
 
-  it('reports a failed stable-ID cross-check without returning bound-profile details', async () => {
-    const shared = {
+  it('uses the authenticated current profile as the stable-ID proof without a reverse lookup', async () => {
+    const host = hostWith({
       'x.identity.settings': [{ screen_name: 'authenticated' }],
       'x.identity.profile.initial': [profileResponse({
         remoteId: OWNER_ID,
@@ -204,26 +190,16 @@ describe('built-in X platform adapter', () => {
         name: 'Authenticated owner',
         currentShape: true
       })]
-    }
-    await expect(invoke(hostWith({
-      ...shared,
-      'x.identity.profile.bound': []
-    }), 'readIdentity', { expectedRemoteId: OWNER_ID })).resolves.toEqual({
-      __streamfoldFailure: 'X_IDENTITY_STABLE_ID_VERIFY_FAILED'
     })
 
-    const mismatchedBound = await invoke(hostWith({
-      ...shared,
-      'x.identity.profile.bound': [profileResponse({
-        remoteId: OTHER_ID,
-        handle: 'authenticated',
-        name: 'Unexpected owner',
-        currentShape: true,
-        root: 'rest-id'
-      })]
-    }), 'readIdentity', { expectedRemoteId: OWNER_ID })
-    expect(mismatchedBound).toEqual({ __streamfoldFailure: 'X_IDENTITY_STABLE_ID_VERIFY_FAILED' })
-    expect(JSON.stringify(mismatchedBound)).not.toContain('Unexpected owner')
+    await expect(invoke(host, 'readIdentity', { expectedRemoteId: OWNER_ID })).resolves.toMatchObject({
+      remoteId: OWNER_ID,
+      remoteName: 'Authenticated owner'
+    })
+    expect(host.calls.map((call) => call.payload.captureId)).toEqual([
+      'x.identity.settings',
+      'x.identity.profile.initial'
+    ])
   })
 
   it('does not convert capture host rejections into guest stage envelopes', async () => {
@@ -330,7 +306,7 @@ describe('built-in X platform adapter', () => {
       payload: {
         captureId: 'x.contents.tweets.bound',
         params: { remoteId: OWNER_ID },
-        limit: 3
+        limit: 5
       }
     }])
   })
@@ -356,7 +332,7 @@ describe('built-in X platform adapter', () => {
       expect(payload).toEqual({
         captureId: 'x.contents.tweets.bound',
         params: { remoteId: OWNER_ID },
-        limit: 3
+        limit: 5
       })
       return [response]
     })
@@ -410,18 +386,47 @@ describe('built-in X platform adapter', () => {
     expect(output.contents).toHaveLength(100)
     expect((output.contents as Array<Record<string, unknown>>)[99]!.remoteId)
       .toBe('80000000000000000000099')
-    expect(host.calls[0]?.payload.limit).toBe(8)
+    expect(host.calls[0]?.payload.limit).toBe(20)
   })
 
-  it('fails closed when pagination is incomplete, stalled or contains conflicting duplicates', async () => {
+  it('returns verified owner content with a warning when the response limit is exhausted', async () => {
+    const responses = Array.from({ length: 5 }, (_, page) => timelineResponse([
+      tweetEntry(tweet({
+        remoteId: `71000000000000000000${page}`,
+        text: `Verified post ${page}`
+      }))
+    ], { cursor: `cursor-${page}` }))
+    const host = hostWith({ 'x.contents.tweets.bound': responses })
+
+    const output = asRecord(await invoke(host, 'collect', {
+      scope: 'recent_20',
+      boundRemoteId: OWNER_ID
+    }))
+    expect(output.contents).toHaveLength(5)
+    expect(output.warnings).toEqual([
+      'X 时间线在完整捕获窗口内读取 5/5 个响应后仍有更多内容；本次已保存 5 条已验证本人内容，少于请求的 20 条。'
+    ])
+    expect(host.calls[0]?.payload.limit).toBe(5)
+  })
+
+  it('returns verified partial data after the full capture window when a next page remains', async () => {
     const incomplete = hostWith({
       'x.contents.tweets.bound': [timelineResponse([
         tweetEntry(tweet({ remoteId: '700000000000000000001', text: 'only one' }))
       ], { cursor: 'more' })]
     })
-    await expect(invoke(incomplete, 'collect', { scope: 'recent_20', boundRemoteId: OWNER_ID }))
-      .rejects.toThrow('分页未完整采集')
+    const output = asRecord(await invoke(
+      incomplete,
+      'collect',
+      { scope: 'recent_20', boundRemoteId: OWNER_ID }
+    ))
+    expect(output.contents).toHaveLength(1)
+    expect(output.warnings).toEqual([
+      'X 时间线在完整捕获窗口内读取 1/5 个响应后仍有更多内容；本次已保存 1 条已验证本人内容，少于请求的 20 条。'
+    ])
+  })
 
+  it('fails closed when pagination stalls or contains conflicting duplicates', async () => {
     const stalled = hostWith({
       'x.contents.tweets.bound': [
         timelineResponse([], { cursor: 'same' }),

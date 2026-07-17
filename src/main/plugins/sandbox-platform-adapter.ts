@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Account, SyncMode } from '../../shared/contracts'
+import type { PlatformCapturePolicy } from '../../shared/plugin-host-contracts'
 import type {
   AccountMetricDefinition,
   AccountMetricPeriod,
@@ -89,6 +90,15 @@ const X_IDENTITY_FAILURES: ReadonlyMap<string, {
   }]
 ])
 
+class PluginIdentityCapturePendingError extends Error {
+  constructor(readonly stage: 'settings' | 'profile') {
+    super(stage === 'settings'
+      ? '正在后台监听 X 登录账号设置。'
+      : '已识别 X 登录账号，正在后台监听账号资料。')
+    this.name = 'PluginIdentityCapturePendingError'
+  }
+}
+
 /** Host orchestration shared by every untrusted platform.adapter contribution. */
 export class SandboxPlatformAdapter implements SessionApiPlatformService {
   private readonly activeAccounts = new Set<string>()
@@ -108,9 +118,37 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
   ) {}
 
   async verifyIdentity(accountId: string): Promise<SessionApiIdentityCheckResult> {
+    return await this.verifyIdentityWithPolicy(accountId, 'fresh')
+  }
+
+  async discoverIdentity(accountId: string): Promise<SessionApiIdentityCheckResult> {
+    return await this.verifyIdentityWithPolicy(accountId, 'background-cache')
+  }
+
+  private async verifyIdentityWithPolicy(
+    accountId: string,
+    capturePolicy: PlatformCapturePolicy
+  ): Promise<SessionApiIdentityCheckResult> {
     return await this.withAccountLock(accountId, async () => {
       const account = this.requireAccount(accountId)
-      const identity = await this.readIdentity(accountId, account.remoteId)
+      let identity: Identity
+      try {
+        identity = await this.readIdentity(accountId, account.remoteId, false, capturePolicy)
+      } catch (error) {
+        if (error instanceof PluginIdentityCapturePendingError) {
+          return {
+            accountId,
+            status: 'capture_pending',
+            remoteId: null,
+            remoteName: null,
+            confirmationToken: null,
+            confirmationExpiresAt: null,
+            verifiedAt: null,
+            message: error.message
+          }
+        }
+        throw error
+      }
       if (account.remoteId) return this.commitIdentity(account, identity)
       const preview: IdentityPreview = {
         token: randomUUID(),
@@ -251,7 +289,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
               await this.jobs.transition(job, 'failed', {
                 progress: 100,
                 stage: '同步失败',
-                errorCode: 'PLUGIN_ADAPTER_FAILED',
+                errorCode: syncFailureCode(error),
                 errorMessage: message,
                 finishedAt: this.now()
               })
@@ -288,25 +326,49 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
   private async readIdentity(
     accountId: string,
     expectedRemoteId: string | null,
-    allowUnboundAdapter = false
+    allowUnboundAdapter = false,
+    capturePolicy: PlatformCapturePolicy = 'fresh'
   ): Promise<Identity> {
     try {
-      const value = allowUnboundAdapter
+      const runtimeInput = {
+        expectedRemoteId: this.pluginId === OFFICIAL_X_PLUGIN_ID &&
+          this.contributionId === OFFICIAL_X_CONTRIBUTION_ID
+          ? null
+          : expectedRemoteId
+      }
+      const value = capturePolicy === 'background-cache'
         ? await this.runtime.invoke(
             this.pluginId,
             this.contributionId,
             'readIdentity',
             accountId,
-            { expectedRemoteId },
-            true
+            runtimeInput,
+            allowUnboundAdapter,
+            capturePolicy
           )
-        : await this.runtime.invoke(
-            this.pluginId,
-            this.contributionId,
-            'readIdentity',
-            accountId,
-            { expectedRemoteId }
-          )
+        : allowUnboundAdapter
+          ? await this.runtime.invoke(
+              this.pluginId,
+              this.contributionId,
+              'readIdentity',
+              accountId,
+              runtimeInput,
+              true
+            )
+          : await this.runtime.invoke(
+              this.pluginId,
+              this.contributionId,
+              'readIdentity',
+              accountId,
+              runtimeInput
+            )
+      const pending = officialXIdentityCapturePending(
+        this.pluginId,
+        this.contributionId,
+        value,
+        capturePolicy
+      )
+      if (pending) throw pending
       const reportedFailure = officialXIdentityFailure(this.pluginId, this.contributionId, value)
       if (reportedFailure) throw reportedFailure
       return parseIdentity(value)
@@ -401,6 +463,20 @@ interface Identity {
   contentCount: number | null
   viewsTotal: number | null
   likesAndFavoritesTotal: number | null
+}
+
+function officialXIdentityCapturePending(
+  pluginId: string,
+  contributionId: string,
+  value: Record<string, unknown>,
+  capturePolicy: PlatformCapturePolicy
+): PluginIdentityCapturePendingError | null {
+  if (capturePolicy !== 'background-cache' || pluginId !== OFFICIAL_X_PLUGIN_ID ||
+      contributionId !== OFFICIAL_X_CONTRIBUTION_ID) return null
+  const code = value[OFFICIAL_IDENTITY_FAILURE_KEY]
+  if (code === 'X_IDENTITY_SETTINGS_EMPTY') return new PluginIdentityCapturePendingError('settings')
+  if (code === 'X_IDENTITY_CURRENT_PROFILE_EMPTY') return new PluginIdentityCapturePendingError('profile')
+  return null
 }
 
 function officialXIdentityFailure(
@@ -700,6 +776,8 @@ function toSyncResult(
   job: JobRecord
 ): SessionApiSyncResult {
   const profile = dataset.profile!
+  const warnings = [...dataset.warnings]
+  const message = `已同步账号资料和 ${dataset.contents.length} 条内容。`
   return {
     accountId: account.id,
     mode,
@@ -718,7 +796,10 @@ function toSyncResult(
     contentCount: dataset.contents.length,
     stats: committed.stats,
     job,
-    message: `已同步账号资料和 ${dataset.contents.length} 条内容。`
+    warnings,
+    message: warnings.length > 0
+      ? `${message} 有 ${warnings.length} 项提示：${warnings[0]}`
+      : message
   }
 }
 
@@ -745,4 +826,8 @@ function nullableNumber(value: unknown): number | null {
 
 function safeMessage(error: unknown): string {
   return (error instanceof Error ? error.message : '平台插件执行失败').slice(0, 500)
+}
+
+function syncFailureCode(error: unknown): PluginSupplyChainErrorCode | 'PLUGIN_ADAPTER_FAILED' {
+  return isPluginSupplyChainError(error) ? error.code : 'PLUGIN_ADAPTER_FAILED'
 }

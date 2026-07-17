@@ -88,6 +88,8 @@ export interface SandboxErrorMessage {
 export interface SandboxErrorPayload {
   code: string
   message: string
+  details?: string
+  originCallId?: string
 }
 
 export type SandboxParentToChildMessage = SandboxInvocationRequest | SandboxHostResultMessage
@@ -325,11 +327,20 @@ function validateOutboundHeaders(value: unknown): void {
 
 function parseErrorPayload(value: unknown): SandboxErrorPayload {
   const record = objectValue(value)
-  exactKeys(record, ['code', 'message'])
+  exactKeys(record, ['code', 'message', 'details', 'originCallId'])
   if (typeof record.code !== 'string' || !/^[A-Z][A-Z0-9_]{2,63}$/.test(record.code) ||
       typeof record.message !== 'string' || record.message.length === 0 || record.message.length > 300 ||
       /[\u0000-\u001f\u007f]/u.test(record.message)) invalidProtocol()
-  return { code: record.code, message: record.message }
+  if (record.details !== undefined && (typeof record.details !== 'string' ||
+      record.details.length === 0 || record.details.length > 16_000 || /\0/u.test(record.details))) invalidProtocol()
+  return {
+    code: record.code,
+    message: record.message,
+    ...(typeof record.details === 'string' ? { details: record.details } : {}),
+    ...(record.originCallId === undefined
+      ? {}
+      : { originCallId: invocationIdentifier(record.originCallId) })
+  }
 }
 
 function hostOperation(value: unknown): SandboxHostOperation {

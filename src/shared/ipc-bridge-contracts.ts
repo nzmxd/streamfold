@@ -91,6 +91,7 @@ export const socialVaultEventChannels = [
   'appearance:changed',
   'updates:changed',
   'accounts:changed',
+  'accounts:identity-preview',
   'browser:state',
   'content:changed',
   'tasks:changed',

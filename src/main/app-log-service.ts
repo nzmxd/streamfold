@@ -31,7 +31,7 @@ const MAX_DIAGNOSTIC_NODES = 240
 const MAX_DIAGNOSTIC_CHARACTERS = 48_000
 const MAX_DIAGNOSTIC_STRING_LENGTH = 12_000
 const MAX_SANITIZE_SOURCE_LENGTH = 256_000
-const SENSITIVE_KEY_SOURCE = '(?:password|passwd|pwd|passphrase|[a-z0-9_.-]*(?:cookie|authorization|secret|token|credential)[a-z0-9_.-]*|(?:access|refresh|auth|id|confirmation|xsec)[-_. ]*token|auth[-_. ]?code|oauth[-_. ]?code|api[-_. ]?key|x[-_. ]?api[-_. ]?key|private[-_. ]?key|csrf|xsrf|session(?:[-_. ]?id)?|ticket)'
+const SENSITIVE_KEY_SOURCE = '(?:password|passwd|pwd|passphrase|[a-z0-9_.-]*(?:cookie|authorization|secret|token|credential)[a-z0-9_.-]*|(?:access|refresh|auth|id|confirmation|xsec)[-_. ]*token|auth[-_. ]?code|oauth[-_. ]?code|api[-_. ]?key|x[-_. ]?api[-_. ]?key|private[-_. ]?key|csrf|xsrf|session(?:[-_. ]?id)?|ticket|a1|web[_-]?session|webid|xsecappid|ct0|twid|z_c0|d_c0|q_c1)'
 const DOUBLE_QUOTED_SECRET = new RegExp(`("${SENSITIVE_KEY_SOURCE}"\\s*:\\s*)"(?:\\\\.|[^"\\\\])*"`, 'gi')
 const SINGLE_QUOTED_SECRET = new RegExp(`('${SENSITIVE_KEY_SOURCE}'\\s*:\\s*)'(?:\\\\.|[^'\\\\])*'`, 'gi')
 const UNTERMINATED_DOUBLE_QUOTED_SECRET = new RegExp(`("${SENSITIVE_KEY_SOURCE}"\\s*:\\s*)"(?:\\\\.|[^"\\\\\\r\\n])*(?=$|\\r?\\n)`, 'gim')
@@ -434,7 +434,8 @@ function serializeUnknown(value: unknown): string {
 
 function isSensitiveKey(key: string): boolean {
   const normalized = key.toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
-  return /(?:password|passwd|pwd|passphrase|cookie|authorization|secret|token|apikey|privatekey|credential|csrf|xsrf|sessionid|^session$|ticket)/.test(normalized)
+  return /(?:password|passwd|pwd|passphrase|cookie|authorization|secret|token|apikey|privatekey|credential|csrf|xsrf|sessionid|^session$|ticket)/.test(normalized) ||
+    /^(?:a1|websession|webid|xsecappid|ct0|twid|zc0|dc0|qc1)$/.test(normalized)
 }
 
 function formatErrorDetails(error: unknown): string | null {

@@ -12,11 +12,19 @@ import {
   type SandboxInvocationRequest
 } from './sandbox-protocol'
 import { PluginSupplyChainError, isPluginSupplyChainError } from './supply-chain-errors'
+import { formatSandboxDiagnostic } from './sandbox-diagnostics'
 
 interface PendingHostCall {
   resolve: (value: JsonValue) => void
   reject: (error: Error) => void
 }
+
+type SandboxFailureCode =
+  | 'PLUGIN_SANDBOX_PROTOCOL_INVALID'
+  | 'PLUGIN_SANDBOX_PERMISSION_DENIED'
+  | 'PLUGIN_SANDBOX_RESOURCE_LIMIT'
+  | 'PLUGIN_SANDBOX_CRASHED'
+  | 'PLUGIN_SANDBOX_FAILED'
 
 export function startUtilityProcessRunner(parentPort: ParentPort): void {
   const pending = new Map<string, PendingHostCall>()
@@ -68,29 +76,28 @@ export function startUtilityProcessRunner(parentPort: ParentPort): void {
         return
       }
       if (!activeInvocation || result.invocationId !== activeInvocation.invocationId) {
-        postError(activeInvocation?.invocationId ?? 'invalid_msg', new Error('invocation mismatch'))
+        postError(activeInvocation?.invocationId ?? 'invalid_msg', protocolError('invocation mismatch'))
         return
       }
       const hostCall = pending.get(result.callId)
       if (!hostCall) {
-        postError(activeInvocation.invocationId, new Error('unknown host call'))
+        postError(activeInvocation.invocationId, protocolError('unknown host call'))
         return
       }
       pending.delete(result.callId)
       if (result.ok) hostCall.resolve(result.value as JsonValue)
       else {
-        const code = result.error?.code === 'PLUGIN_SANDBOX_PERMISSION_DENIED'
-          ? 'PLUGIN_SANDBOX_PERMISSION_DENIED'
-          : result.error?.code === 'PLUGIN_SANDBOX_RESOURCE_LIMIT'
-            ? 'PLUGIN_SANDBOX_RESOURCE_LIMIT'
-            : 'PLUGIN_SANDBOX_FAILED'
-        hostCall.reject(new PluginSupplyChainError(code, result.error?.message ?? '宿主操作失败'))
+        const code = sandboxFailureCode(result.error?.code)
+        hostCall.reject(withOriginCallId(
+          new PluginSupplyChainError(code, result.error?.message ?? '宿主操作失败'),
+          result.callId
+        ))
       }
       return
     }
 
     if (invocationStarted) {
-      postError(activeInvocation?.invocationId ?? 'invalid_msg', new Error('multiple invocations'))
+      postError(activeInvocation?.invocationId ?? 'invalid_msg', protocolError('multiple invocations'))
       return
     }
     invocationStarted = true
@@ -144,8 +151,56 @@ function rejectPending(pending: Map<string, PendingHostCall>): void {
 }
 
 function safeRunnerError(error: unknown): SandboxErrorPayload {
-  if (isPluginSupplyChainError(error)) return { code: error.code, message: error.message }
-  return { code: 'PLUGIN_SANDBOX_FAILED', message: '插件执行失败' }
+  const details = formatSandboxDiagnostic(error)
+  const originCallId = errorOriginCallId(error)
+  if (isPluginSupplyChainError(error)) {
+    return {
+      code: sandboxFailureCode(error.code),
+      message: error.message,
+      ...(details ? { details } : {}),
+      ...(originCallId ? { originCallId } : {})
+    }
+  }
+  return {
+    code: 'PLUGIN_SANDBOX_FAILED',
+    message: '插件执行失败',
+    ...(details ? { details } : {}),
+    ...(originCallId ? { originCallId } : {})
+  }
+}
+
+function protocolError(reason: string): PluginSupplyChainError {
+  return new PluginSupplyChainError(
+    'PLUGIN_SANDBOX_PROTOCOL_INVALID',
+    '插件沙箱消息无效',
+    { cause: new Error(reason) }
+  )
+}
+
+function sandboxFailureCode(value: unknown): SandboxFailureCode {
+  if (value === 'PLUGIN_SANDBOX_PROTOCOL_INVALID' ||
+      value === 'PLUGIN_SANDBOX_PERMISSION_DENIED' ||
+      value === 'PLUGIN_SANDBOX_RESOURCE_LIMIT' ||
+      value === 'PLUGIN_SANDBOX_CRASHED' ||
+      value === 'PLUGIN_SANDBOX_FAILED') return value
+  return 'PLUGIN_SANDBOX_FAILED'
+}
+
+function withOriginCallId<T extends Error>(error: T, callId: string): T {
+  Object.defineProperty(error, 'originCallId', {
+    value: callId,
+    configurable: false,
+    enumerable: true,
+    writable: false
+  })
+  return error
+}
+
+function errorOriginCallId(error: unknown): string | null {
+  if (!error || typeof error !== 'object') return null
+  const descriptor = Object.getOwnPropertyDescriptor(error, 'originCallId')
+  const value = descriptor && 'value' in descriptor ? descriptor.value : undefined
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(value) ? value : null
 }
 
 function isHostResultCandidate(value: unknown): boolean {
@@ -159,5 +214,10 @@ function candidateInvocationId(value: unknown): string {
   }
   return 'invalid_msg'
 }
+
+export const __utilityProcessRunnerTest = Object.freeze({
+  safeRunnerError,
+  withOriginCallId
+})
 
 if (process.parentPort) startUtilityProcessRunner(process.parentPort)

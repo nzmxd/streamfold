@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_SANDBOX_LIMITS,
   assertHostCallPayload,
+  parseSandboxChildMessage,
   parseSandboxInvocationRequest,
   type JsonObject,
   type SandboxInvocationRequest
@@ -44,6 +45,33 @@ describe('sandbox RPC validation', () => {
       method: 'POST',
       headers: { authorization: 'Bearer secret' },
       body: { ok: true }
+    })).toThrowError(expect.objectContaining({ code: 'PLUGIN_SANDBOX_PROTOCOL_INVALID' }))
+  })
+
+  it('accepts only bounded origin call IDs on sandbox errors', () => {
+    expect(parseSandboxChildMessage({
+      protocolVersion: 1,
+      type: 'error',
+      invocationId: 'invoke_00000001',
+      error: {
+        code: 'PLUGIN_SANDBOX_FAILED',
+        message: '插件执行失败',
+        originCallId: 'call_00000001'
+      }
+    })).toMatchObject({
+      type: 'error',
+      error: { originCallId: 'call_00000001' }
+    })
+
+    expect(() => parseSandboxChildMessage({
+      protocolVersion: 1,
+      type: 'error',
+      invocationId: 'invoke_00000001',
+      error: {
+        code: 'PLUGIN_SANDBOX_FAILED',
+        message: '插件执行失败',
+        originCallId: 'bad id'
+      }
     })).toThrowError(expect.objectContaining({ code: 'PLUGIN_SANDBOX_PROTOCOL_INVALID' }))
   })
 })

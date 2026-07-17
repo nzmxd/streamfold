@@ -55,6 +55,7 @@ const saving = ref(false)
 const batchSaving = ref(false)
 const exportBusy = ref(false)
 const openingOriginalId = ref<string | null>(null)
+const copyingOriginalId = ref<string | null>(null)
 const error = ref('')
 const notice = ref('')
 const advancedFiltersOpen = ref(false)
@@ -327,6 +328,21 @@ async function openOriginal(): Promise<void> {
   }
 }
 
+async function copyOriginalUrl(value: Pick<ContentSummary, 'id' | 'title' | 'url'>): Promise<void> {
+  if (!value.url || copyingOriginalId.value) return
+  copyingOriginalId.value = value.id
+  error.value = ''
+  notice.value = ''
+  try {
+    await navigator.clipboard.writeText(value.url)
+    notice.value = `已复制《${value.title || '未命名内容'}》的原帖链接。`
+  } catch (cause) {
+    error.value = `无法复制原帖链接：${messageOf(cause)}`
+  } finally {
+    if (copyingOriginalId.value === value.id) copyingOriginalId.value = null
+  }
+}
+
 function metricValue(item: ContentSummary, metricId: ContentMetricId): number | null {
   return contentMetricValue(item.latestSnapshot, metricId)
 }
@@ -482,16 +498,27 @@ onBeforeUnmount(() => {
           </div>
           <article v-for="item in items" v-else :key="item.id" class="content-row" :class="{ active: selectedId === item.id }">
             <label class="content-row-check" @click.stop><input v-model="selectedContentIds" type="checkbox" :value="item.id" :aria-label="`选择《${item.title || '未命名内容'}》`" /></label>
-            <button class="content-row-open" type="button" :aria-current="selectedId === item.id ? 'true' : undefined" @click="selectedId = item.id">
-              <span class="content-kind">{{ contentTypeLabel(item.type) }}</span>
-              <span class="content-row-main">
-                <strong><i v-if="item.isBookmarked" title="本地收藏">★</i>{{ item.title || '未命名内容' }}</strong>
+            <span class="content-kind">{{ contentTypeLabel(item.type) }}</span>
+            <span class="content-row-main">
+              <span class="content-row-title">
+                <button class="content-row-open" type="button" :aria-current="selectedId === item.id ? 'true' : undefined" @click="selectedId = item.id"><i v-if="item.isBookmarked" title="本地收藏">★</i>{{ item.title || '未命名内容' }}</button>
+                <button
+                  v-if="item.url"
+                  class="content-copy-link"
+                  type="button"
+                  :disabled="copyingOriginalId === item.id"
+                  :aria-label="`复制《${item.title || '未命名内容'}》原帖链接`"
+                  :title="copyingOriginalId === item.id ? '正在复制原帖链接' : '复制原帖链接'"
+                  @click="copyOriginalUrl(item)"
+                ><span aria-hidden="true">⧉</span></button>
+              </span>
+              <button class="content-row-secondary" type="button" @click="selectedId = item.id">
                 <small>{{ item.accountAlias }} · {{ platformName(item.platformId) }} · 发布 {{ formatDate(item.publishedAt) }}</small>
                 <em>{{ item.bodyExcerpt || '没有正文摘要' }}</em>
                 <span v-if="item.tags.length > 0" class="content-row-tags"><b v-for="tag in item.tags.slice(0, 3)" :key="tag">{{ tag }}</b></span>
-              </span>
-              <span class="content-row-metric"><strong>{{ formatNumber(primaryContentMetric(item).value) }}</strong><small>{{ primaryContentMetric(item).label }}</small></span>
-            </button>
+              </button>
+            </span>
+            <span class="content-row-metric"><strong>{{ formatNumber(primaryContentMetric(item).value) }}</strong><small>{{ primaryContentMetric(item).label }}</small></span>
           </article>
         </div>
         <footer class="content-pagination">
@@ -506,7 +533,15 @@ onBeforeUnmount(() => {
         <div v-else-if="!detail || !selectedSummary" class="feature-empty"><span>⌁</span><strong>选择一条内容查看详情</strong><p>可以查看原帖、指标历史并整理本地标签和备注。</p></div>
         <template v-else>
           <header class="content-detail-head">
-            <div><span class="content-kind">{{ contentTypeLabel(detail.type) }}</span><h2>{{ detail.title || '未命名内容' }}</h2><p>{{ detail.accountAlias }} · {{ platformName(detail.platformId) }} · 发布于 {{ formatDate(detail.publishedAt) }} · 采集于 {{ formatDate(detail.lastCapturedAt, true) }}</p></div>
+            <div><span class="content-kind">{{ contentTypeLabel(detail.type) }}</span><span class="content-detail-title"><h2>{{ detail.title || '未命名内容' }}</h2><button
+              v-if="detail.url"
+              class="content-copy-link"
+              type="button"
+              :disabled="copyingOriginalId === detail.id"
+              :aria-label="`复制《${detail.title || '未命名内容'}》原帖链接`"
+              :title="copyingOriginalId === detail.id ? '正在复制原帖链接' : '复制原帖链接'"
+              @click="copyOriginalUrl(detail)"
+            ><span aria-hidden="true">⧉</span></button></span><p>{{ detail.accountAlias }} · {{ platformName(detail.platformId) }} · 发布于 {{ formatDate(detail.publishedAt) }} · 采集于 {{ formatDate(detail.lastCapturedAt, true) }}</p></div>
             <div class="content-detail-actions">
               <span class="snapshot-time">最新快照 {{ formatDate(detail.latestSnapshot?.capturedAt, true) }}</span>
               <div>

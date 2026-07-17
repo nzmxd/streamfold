@@ -73,6 +73,7 @@ let removeNativeThemeListener: (() => void) | null = null
 let removeUpdateListener: (() => void) | null = null
 let removeTaskListener: (() => void) | null = null
 let removeLogListener: (() => void) | null = null
+let removePluginCaptureListener: (() => void) | null = null
 
 export function registerIpc(
   window: BrowserWindow,
@@ -95,6 +96,55 @@ export function registerIpc(
   const notifyTasksChanged = (): void => {
     if (!window.isDestroyed()) window.webContents.send('tasks:changed')
   }
+  const discoveryStates = new Map<string, {
+    latestSequence: number
+    processedSequence: number
+    running: boolean
+  }>()
+  const runIdentityDiscovery = (accountId: string): void => {
+    const state = discoveryStates.get(accountId)
+    if (!state || state.running) return
+    state.running = true
+    void (async () => {
+      try {
+        while (state.processedSequence < state.latestSequence) {
+          const sequence = state.latestSequence
+          state.processedSequence = sequence
+          const account = database.getAccount(accountId)
+          if (!account || account.remoteId || account.adapterContributionId !== 'streamfold.x.platform') {
+            browser.stopPluginCapture(accountId)
+            return
+          }
+          if (services.platformSync.isAccountActive(accountId)) return
+          try {
+            const result = await services.platformSync.discoverIdentity(accountId)
+            if (result.status !== 'confirmation_required' || !result.confirmationToken ||
+                !result.remoteId || !result.remoteName) continue
+            if (!window.isDestroyed()) window.webContents.send('accounts:identity-preview', result)
+          } catch (error) {
+            services.logs.captureError('sync', error, {
+              accountId,
+              stage: '后台身份发现'
+            })
+          }
+        }
+      } finally {
+        state.running = false
+        if (state.processedSequence < state.latestSequence) runIdentityDiscovery(accountId)
+      }
+    })()
+  }
+  removePluginCaptureListener?.()
+  removePluginCaptureListener = browser.onPluginCaptureActivity((activity) => {
+    const state = discoveryStates.get(activity.accountId) ?? {
+      latestSequence: 0,
+      processedSequence: 0,
+      running: false
+    }
+    state.latestSequence = Math.max(state.latestSequence, activity.sequence)
+    discoveryStates.set(activity.accountId, state)
+    runIdentityDiscovery(activity.accountId)
+  })
   const runTracked = async <T>(handler: () => T | Promise<T>): Promise<T> => {
     if (maintenance) throw new Error(maintenanceMessage)
     activeOperations += 1
@@ -120,6 +170,14 @@ export function registerIpc(
   const endMaintenance = (): void => {
     maintenance = false
     maintenanceMessage = '本地数据库正在恢复，请稍候'
+  }
+  const stopCapturesForPlugin = (pluginId: string): void => {
+    if (pluginId !== 'streamfold.x') return
+    for (const account of database.listAccounts()) {
+      if (account.adapterContributionId === 'streamfold.x.platform') {
+        browser.stopPluginCapture(account.id)
+      }
+    }
   }
   const registerIpcHandler = ipcMain.handle.bind(ipcMain)
   const trusted = <T>(handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => T | Promise<T>) => {
@@ -261,7 +319,9 @@ export function registerIpc(
     const input = parseConfirmApiIdentity(value)
     if (disconnectingAccounts.has(input.accountId)) throw new Error('账号正在处理，请稍候')
     try {
-      return await services.platformSync.confirmIdentity(input)
+      const result = await services.platformSync.confirmIdentity(input)
+      if (result.status === 'verified') browser.stopPluginCapture(input.accountId)
+      return result
     } finally {
       notifyAccountsChanged()
     }
@@ -294,7 +354,9 @@ export function registerIpc(
     services.adapterRegistry.listForAccount(parseId(value))
   )))
   handleIpc('accounts:switch-adapter', trusted(async (_event, accountId, contributionId) => {
-    const account = await services.adapterRegistry.switchAdapter(parseId(accountId), parseId(contributionId))
+    const parsedAccountId = parseId(accountId)
+    const account = await services.adapterRegistry.switchAdapter(parsedAccountId, parseId(contributionId))
+    browser.stopPluginCapture(parsedAccountId)
     notifyAccountsChanged()
     return account
   }))
@@ -447,22 +509,34 @@ export function registerIpc(
   handleIpc('plugins:set-package-enabled', trusted((_event, id, enabled) => {
     const pluginId = parseId(id)
     const next = parseBoolean(enabled, '插件包开关')
-    if (!next) services.pluginLifecycle.stop(pluginId)
-    return services.pluginHost.setPackageEnabled(pluginId, next)
+    const result = services.pluginHost.setPackageEnabled(pluginId, next)
+    if (!next) {
+      stopCapturesForPlugin(pluginId)
+      services.pluginLifecycle.stop(pluginId)
+    }
+    return result
   }))
   handleIpc('plugins:set-contribution-enabled', trusted((_event, pluginId, contributionId, enabled) => {
     const parsedPluginId = parseId(pluginId)
     const next = parseBoolean(enabled, '贡献点开关')
-    if (!next) services.pluginLifecycle.stop(parsedPluginId)
-    return services.pluginHost.setContributionEnabled(
+    const parsedContributionId = parseId(contributionId)
+    const result = services.pluginHost.setContributionEnabled(
       parsedPluginId,
-      parseId(contributionId),
+      parsedContributionId,
       next
     )
+    if (!next) {
+      stopCapturesForPlugin(parsedPluginId)
+      services.pluginLifecycle.stop(parsedPluginId)
+    }
+    return result
   }))
-  handleIpc('plugins:grant', trusted((_event, value) => (
-    services.pluginHost.grant(parsePluginGrant(value))
-  )))
+  handleIpc('plugins:grant', trusted((_event, value) => {
+    const grant = parsePluginGrant(value)
+    const result = services.pluginHost.grant(grant)
+    stopCapturesForPlugin(grant.pluginId)
+    return result
+  }))
   handleIpc('plugins:get-config', trusted((_event, pluginId, contributionId) => (
     services.pluginHost.getConfig(parseId(pluginId), parseId(contributionId))
   )))
@@ -504,20 +578,24 @@ export function registerIpc(
     return installed
   }))
   handleIpc('plugins:update', trusted(async (_event, pluginId, confirmPermissionExpansion) => {
+    const parsedPluginId = parseId(pluginId)
     const installed = await services.pluginLifecycle.update(
-      parseId(pluginId),
+      parsedPluginId,
       confirmPermissionExpansion === undefined
         ? false
         : parseBoolean(confirmPermissionExpansion, '更新权限确认')
     )
     registerNewManifestPlatforms(services.pluginHost)
     services.adapterRegistry.reconcile()
+    stopCapturesForPlugin(parsedPluginId)
     return installed
   }))
   handleIpc('plugins:uninstall', trusted(async (_event, pluginId) => {
-    await services.pluginLifecycle.uninstall(parseId(pluginId))
+    const parsedPluginId = parseId(pluginId)
+    await services.pluginLifecycle.uninstall(parsedPluginId)
     registerNewManifestPlatforms(services.pluginHost)
     services.adapterRegistry.reconcile()
+    stopCapturesForPlugin(parsedPluginId)
   }))
   handleIpc('plugins:get-developer-mode', trusted(() => services.pluginLifecycle.getDeveloperMode()))
   handleIpc('plugins:set-developer-mode', trusted((_event, enabled) => (
@@ -645,6 +723,8 @@ export function unregisterIpc(): void {
   removeTaskListener = null
   removeLogListener?.()
   removeLogListener = null
+  removePluginCaptureListener?.()
+  removePluginCaptureListener = null
   for (const channel of [
     'appearance:get',
     'appearance:set',

@@ -54,6 +54,19 @@ describe('PlatformSyncService', () => {
     expect(xiaohongshu.sync).not.toHaveBeenCalled()
   })
 
+  it('uses an adapter background discovery path without replacing explicit verification', async () => {
+    const repository = createRepository([{ id: 'x-account', platformId: 'x' }])
+    const x = createAdapter('X')
+    const service = new PlatformSyncService({ repository, adapters: { x } })
+
+    await expect(service.discoverIdentity('x-account')).resolves.toMatchObject({
+      accountId: 'x-account',
+      remoteName: 'X'
+    })
+    expect(x.discoverIdentity).toHaveBeenCalledWith('x-account')
+    expect(x.verifyIdentity).not.toHaveBeenCalled()
+  })
+
   it('reports missing accounts and platforms without an adapter', async () => {
     const repository = createRepository([{ id: 'weibo-account', platformId: 'weibo' }])
     const service = new PlatformSyncService({ repository, adapters: {} })
@@ -115,6 +128,7 @@ function createRepository(
 }
 
 function createAdapter(name: string, active = false): SessionApiPlatformService & {
+  discoverIdentity: ReturnType<typeof vi.fn<(accountId: string) => Promise<SessionApiIdentityCheckResult>>>
   verifyIdentity: ReturnType<typeof vi.fn<(accountId: string) => Promise<SessionApiIdentityCheckResult>>>
   confirmIdentity: ReturnType<typeof vi.fn<(input: ConfirmSessionApiIdentityInput) => Promise<SessionApiIdentityCheckResult>>>
   sync: ReturnType<typeof vi.fn<(
@@ -127,6 +141,7 @@ function createAdapter(name: string, active = false): SessionApiPlatformService 
   return {
     pluginId: `${name}-plugin`,
     contributionId: `${name}-adapter`,
+    discoverIdentity: vi.fn(async (accountId) => identityResult(accountId, name)),
     verifyIdentity: vi.fn(async (accountId) => identityResult(accountId, name)),
     confirmIdentity: vi.fn(async (input) => identityResult(input.accountId, name)),
     sync: vi.fn(async (accountId) => syncResult(accountId, name)),

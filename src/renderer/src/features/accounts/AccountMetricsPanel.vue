@@ -41,6 +41,8 @@ const trendLoading = ref(false)
 const summaryError = ref('')
 const trendError = ref('')
 const selectedTrendMetricId = ref<string | null>(null)
+const summaryExpanded = ref(false)
+const trendExpanded = ref(false)
 let summarySequence = 0
 let trendSequence = 0
 
@@ -93,6 +95,10 @@ watch(trendDefinitions, (next) => {
     ?? next[0]?.id
     ?? null
 }, { immediate: true })
+watch(() => props.accountId, () => {
+  summaryExpanded.value = false
+  trendExpanded.value = false
+})
 
 async function loadSummary(): Promise<void> {
   const sequence = ++summarySequence
@@ -168,49 +174,77 @@ function isAdvancedMetric(metricId: string): boolean {
 </script>
 
 <template>
-  <section class="account-metrics-panel" aria-labelledby="account-metrics-title">
-    <header class="account-metrics-head">
-      <div>
-        <span class="eyebrow">知乎创作数据</span>
-        <h3 id="account-metrics-title">创作指标</h3>
-        <p>{{ periodDescription || '同步后查看官方周期指标和每日趋势' }}</p>
-      </div>
-      <div class="segmented account-metric-periods" role="group" aria-label="创作指标周期">
+  <section class="account-metrics-panel" aria-label="知乎创作数据">
+    <section class="account-metric-section" aria-labelledby="account-metrics-title">
+      <header class="account-metrics-head">
+        <div>
+          <span class="eyebrow">知乎创作数据</span>
+          <h3 id="account-metrics-title">创作指标</h3>
+          <p>{{ periodDescription || '同步后查看官方周期指标' }}</p>
+        </div>
         <button
-          v-for="option in accountMetricPeriodOptions"
-          :key="option.value"
+          class="account-metric-disclosure"
           type="button"
-          :class="{ active: selectedPeriod === option.value }"
-          :aria-pressed="selectedPeriod === option.value"
-          @click="selectedPeriod = option.value"
-        >{{ option.label }}</button>
+          :aria-expanded="summaryExpanded"
+          aria-controls="account-metric-summary-content"
+          :aria-label="summaryExpanded ? '折叠知乎创作数据' : '展开知乎创作数据'"
+          :title="summaryExpanded ? '折叠知乎创作数据' : '展开知乎创作数据'"
+          @click="summaryExpanded = !summaryExpanded"
+        ><span aria-hidden="true">{{ summaryExpanded ? '⌃' : '⌄' }}</span></button>
+      </header>
+
+      <div v-if="summaryExpanded" id="account-metric-summary-content" class="account-metric-section-content">
+        <div class="segmented account-metric-periods" role="group" aria-label="创作指标周期">
+          <button
+            v-for="option in accountMetricPeriodOptions"
+            :key="option.value"
+            type="button"
+            :class="{ active: selectedPeriod === option.value }"
+            :aria-pressed="selectedPeriod === option.value"
+            @click="selectedPeriod = option.value"
+          >{{ option.label }}</button>
+        </div>
+        <div v-if="summaryError" class="account-metric-error">
+          <span>{{ summaryError }}</span><button type="button" @click="loadSummary">重试</button>
+        </div>
+        <div v-else-if="summaryLoading && !summary" class="account-metric-loading">正在读取周期指标…</div>
+        <div v-else-if="!latestSnapshot" class="account-metric-empty">
+          <strong>暂无创作指标</strong>
+          <span>完成一次知乎数据同步后，这里会显示官方统计。</span>
+        </div>
+        <div v-else class="account-metric-grid" :aria-busy="summaryLoading">
+          <article
+            v-for="definition in summaryDefinitions"
+            :key="definition.id"
+            :data-metric-group="definition.group"
+          >
+            <span>{{ definition.label }}<em>{{ metricGroupLabel(definition.group) }}</em></span>
+            <strong>{{ formatContentMetric(accountMetricValue(latestSnapshot, definition.id), definition) }}</strong>
+            <small :class="metricDeltaClass(definition)">{{ metricSecondaryText(definition) }}</small>
+          </article>
+        </div>
+        <footer v-if="latestSnapshot" class="account-metric-foot">
+          <span>{{ periodDescription }}</span>
+          <span>最近同步 {{ formatDate(latestSnapshot.capturedAt, true) }}</span>
+        </footer>
       </div>
-    </header>
+    </section>
 
-    <div v-if="summaryError" class="account-metric-error">
-      <span>{{ summaryError }}</span><button type="button" @click="loadSummary">重试</button>
-    </div>
-    <div v-else-if="summaryLoading && !summary" class="account-metric-loading">正在读取周期指标…</div>
-    <div v-else-if="!latestSnapshot" class="account-metric-empty">
-      <strong>暂无创作指标</strong>
-      <span>完成一次知乎数据同步后，这里会显示官方统计。</span>
-    </div>
-    <div v-else class="account-metric-grid" :aria-busy="summaryLoading">
-      <article
-        v-for="definition in summaryDefinitions"
-        :key="definition.id"
-        :data-metric-group="definition.group"
-      >
-        <span>{{ definition.label }}<em>{{ metricGroupLabel(definition.group) }}</em></span>
-        <strong>{{ formatContentMetric(accountMetricValue(latestSnapshot, definition.id), definition) }}</strong>
-        <small :class="metricDeltaClass(definition)">{{ metricSecondaryText(definition) }}</small>
-      </article>
-    </div>
-
-    <section class="account-metric-trend">
+    <section class="account-metric-section account-metric-trend" aria-labelledby="account-metric-trend-title">
       <div class="account-metric-trend-head">
-        <div><h4>最近 30 天趋势</h4><p>按知乎官方每日口径记录</p></div>
-        <label v-if="trendDefinitions.length > 0">
+        <div><h4 id="account-metric-trend-title">最近 30 天趋势</h4><p>按知乎官方每日口径记录</p></div>
+        <button
+          class="account-metric-disclosure"
+          type="button"
+          :aria-expanded="trendExpanded"
+          aria-controls="account-metric-trend-content"
+          :aria-label="trendExpanded ? '折叠最近 30 天趋势' : '展开最近 30 天趋势'"
+          :title="trendExpanded ? '折叠最近 30 天趋势' : '展开最近 30 天趋势'"
+          @click="trendExpanded = !trendExpanded"
+        ><span aria-hidden="true">{{ trendExpanded ? '⌃' : '⌄' }}</span></button>
+      </div>
+      <div v-if="trendExpanded" id="account-metric-trend-content" class="account-metric-section-content">
+        <label v-if="trendDefinitions.length > 0" class="account-metric-trend-select">
           <span>指标</span>
           <select v-model="selectedTrendMetricId">
             <option v-for="definition in trendDefinitions" :key="definition.id" :value="definition.id">
@@ -218,43 +252,44 @@ function isAdvancedMetric(metricId: string): boolean {
             </option>
           </select>
         </label>
-      </div>
-      <div v-if="trendLoading && !daily" class="account-metric-loading compact">正在读取每日趋势…</div>
-      <div v-else-if="trendError" class="account-metric-error compact">
-        <span>{{ trendError }}</span><button type="button" @click="loadTrend">重试</button>
-      </div>
-      <div v-else-if="!trendDefinition || trendSeries.length === 0" class="account-metric-empty compact">
-        <span>暂无可用的每日趋势</span>
-      </div>
-      <div v-else class="account-metric-chart-wrap">
-        <svg class="account-metric-chart" viewBox="0 0 720 164" preserveAspectRatio="none" role="img" :aria-label="`${trendDefinition.label}最近 30 天趋势`">
-          <line v-if="zeroLineY !== null" x1="14" x2="706" :y1="zeroLineY" :y2="zeroLineY" class="account-metric-zero" />
-          <polyline :points="trendPolyline" class="account-metric-line" />
-          <circle v-for="point in trendPoints" :key="`${point.date}-${point.capturedAt}`" :cx="point.x" :cy="point.y" r="3" class="account-metric-dot">
-            <title>{{ formatAccountMetricDate(point.date) }}：{{ formatContentMetric(point.value, trendDefinition) }} {{ trendDefinition.label }}</title>
-          </circle>
-        </svg>
-        <div class="account-metric-chart-axis">
-          <span>{{ formatAccountMetricDate(trendSeries[0]?.date) }}</span>
-          <strong>{{ trendDefinition.label }} · {{ trendSeries.length }} 天</strong>
-          <span>{{ formatAccountMetricDate(trendSeries.at(-1)?.date) }}</span>
+        <div v-if="trendLoading && !daily" class="account-metric-loading compact">正在读取每日趋势…</div>
+        <div v-else-if="trendError" class="account-metric-error compact">
+          <span>{{ trendError }}</span><button type="button" @click="loadTrend">重试</button>
+        </div>
+        <div v-else-if="!trendDefinition || trendSeries.length === 0" class="account-metric-empty compact">
+          <span>暂无可用的每日趋势</span>
+        </div>
+        <div v-else class="account-metric-chart-wrap">
+          <svg class="account-metric-chart" viewBox="0 0 720 164" preserveAspectRatio="none" role="img" :aria-label="`${trendDefinition.label}最近 30 天趋势`">
+            <line v-if="zeroLineY !== null" x1="14" x2="706" :y1="zeroLineY" :y2="zeroLineY" class="account-metric-zero" />
+            <polyline :points="trendPolyline" class="account-metric-line" />
+            <circle v-for="point in trendPoints" :key="`${point.date}-${point.capturedAt}`" :cx="point.x" :cy="point.y" r="3" class="account-metric-dot">
+              <title>{{ formatAccountMetricDate(point.date) }}：{{ formatContentMetric(point.value, trendDefinition) }} {{ trendDefinition.label }}</title>
+            </circle>
+          </svg>
+          <div class="account-metric-chart-axis">
+            <span>{{ formatAccountMetricDate(trendSeries[0]?.date) }}</span>
+            <strong>{{ trendDefinition.label }} · {{ trendSeries.length }} 天</strong>
+            <span>{{ formatAccountMetricDate(trendSeries.at(-1)?.date) }}</span>
+          </div>
         </div>
       </div>
     </section>
-
-    <footer v-if="latestSnapshot" class="account-metric-foot">
-      <span>{{ periodDescription }}</span>
-      <span>最近同步 {{ formatDate(latestSnapshot.capturedAt, true) }}</span>
-    </footer>
   </section>
 </template>
 
 <style scoped>
-.account-metrics-panel { display: grid; gap: 13px; margin-bottom: 15px; padding: 2px 0 15px; border-bottom: 1px solid var(--border); }
+.account-metrics-panel { display: grid; margin-bottom: 15px; border-bottom: 1px solid var(--border); }
+.account-metric-section { display: grid; gap: 13px; padding: 13px 0; }
+.account-metric-section:first-child { padding-top: 2px; }
+.account-metric-section + .account-metric-section { border-top: 1px solid var(--border); }
+.account-metric-section-content { display: grid; gap: 13px; }
 .account-metrics-head, .account-metric-trend-head, .account-metric-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .account-metrics-head h3 { margin-top: 3px; font-size: var(--font-section); line-height: var(--line-section); }
 .account-metrics-head p, .account-metric-trend-head p { margin-top: 2px; color: var(--text-tertiary); font-size: var(--font-secondary); line-height: var(--line-secondary); }
-.account-metric-periods { flex: 0 0 auto; }
+.account-metric-periods { width: fit-content; }
+.account-metric-disclosure { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; padding: 0; color: var(--text-secondary); background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; font-size: 18px; line-height: 1; }
+.account-metric-disclosure:hover { color: var(--brand); border-color: var(--brand); }
 .account-metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; opacity: 1; transition: opacity .12s ease; }
 .account-metric-grid[aria-busy="true"] { opacity: .6; }
 .account-metric-grid article { display: grid; min-width: 0; gap: 5px; padding: 11px 12px; background: var(--surface-subtle); border: 1px solid var(--border); border-radius: 8px; }
@@ -266,10 +301,10 @@ function isAdvancedMetric(metricId: string): boolean {
 .account-metric-grid small { min-height: var(--line-caption); overflow: hidden; color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); text-overflow: ellipsis; white-space: nowrap; }
 .account-metric-grid small.positive { color: var(--success); }
 .account-metric-grid small.negative { color: var(--danger); }
-.account-metric-trend { display: grid; gap: 10px; padding-top: 13px; border-top: 1px solid var(--border); }
+.account-metric-trend { gap: 13px; }
 .account-metric-trend-head h4 { font-size: var(--font-body); line-height: var(--line-body); }
-.account-metric-trend-head label { display: flex; align-items: center; gap: 7px; color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
-.account-metric-trend-head select { min-width: 132px; min-height: 33px; padding-block: 5px; }
+.account-metric-trend-select { display: flex; width: fit-content; align-items: center; gap: 7px; color: var(--text-tertiary); font-size: var(--font-caption); line-height: var(--line-caption); }
+.account-metric-trend-select select { min-width: 132px; min-height: 33px; padding-block: 5px; }
 .account-metric-chart-wrap { min-width: 0; }
 .account-metric-chart { display: block; width: 100%; aspect-ratio: 720 / 164; overflow: visible; }
 .account-metric-line { fill: none; stroke: var(--brand); stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
@@ -288,7 +323,6 @@ function isAdvancedMetric(metricId: string): boolean {
 :global(html[data-theme="dark"]) .account-metric-grid article[data-metric-group="engagement"] em { color: #c3b8ef; background: #2e2944; }
 @media (max-width: 1180px) { .account-metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 900px) {
-  .account-metrics-head { align-items: flex-start; flex-direction: column; }
   .account-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .account-metric-periods { width: 100%; }
   .account-metric-periods button { flex: 1; }

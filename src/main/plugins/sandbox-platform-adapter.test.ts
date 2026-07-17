@@ -71,6 +71,33 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
     }
   })
 
+  it('treats empty official X background stages as pending without weakening explicit verification', async () => {
+    const runtime = runtimeSequence([{ __streamfoldFailure: 'X_IDENTITY_SETTINGS_EMPTY' }])
+    const adapter = createAdapter(
+      repositoryFixture(),
+      runtime,
+      jobsFixture(),
+      undefined,
+      60,
+      { pluginId: 'streamfold.x', contributionId: 'streamfold.x.platform' }
+    )
+
+    await expect(adapter.discoverIdentity('account-1')).resolves.toMatchObject({
+      status: 'capture_pending',
+      confirmationToken: null,
+      message: '正在后台监听 X 登录账号设置。'
+    })
+    expect(runtime.invoke).toHaveBeenCalledWith(
+      'streamfold.x',
+      'streamfold.x.platform',
+      'readIdentity',
+      'account-1',
+      { expectedRemoteId: null },
+      false,
+      'background-cache'
+    )
+  })
+
   it('rejects malformed or unknown official X envelopes without leaking guest text', async () => {
     const guestText = 'sensitive guest or upstream response body'
     const values = [
@@ -118,7 +145,7 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
       'streamfold.x.platform',
       'readIdentity',
       'account-1',
-      { expectedRemoteId: 'stable-owner' },
+      { expectedRemoteId: null },
       true
     )
   })
@@ -213,6 +240,49 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
     )
   })
 
+  it('persists a trusted identity failure code when synchronization stops before collection', async () => {
+    const repository = repositoryFixture()
+    const jobs = jobsFixture()
+    const runtime = runtimeSequence([{ __streamfoldFailure: 'X_IDENTITY_STABLE_ID_VERIFY_FAILED' }])
+    const adapter = createAdapter(
+      repository,
+      runtime,
+      jobs,
+      undefined,
+      60,
+      { pluginId: 'streamfold.x', contributionId: 'streamfold.x.platform' }
+    )
+
+    await expect(adapter.sync('account-1')).rejects.toMatchObject({
+      code: 'PLUGIN_ADAPTER_IDENTITY_STABLE_ID_FAILED'
+    })
+    expect(runtime.invoke).toHaveBeenCalledOnce()
+    expect(repository.commitManagedSync).not.toHaveBeenCalled()
+    expect(repository.markManagedIdentityMismatch).not.toHaveBeenCalled()
+    expect(jobs.transition).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'failed',
+      expect.objectContaining({ errorCode: 'PLUGIN_ADAPTER_IDENTITY_STABLE_ID_FAILED' })
+    )
+  })
+
+  it('does not trust a generic error with a forged synchronization code', async () => {
+    const repository = repositoryFixture()
+    const jobs = jobsFixture()
+    const forged = Object.assign(new Error('fake failure'), {
+      code: 'PLUGIN_ADAPTER_IDENTITY_STABLE_ID_FAILED'
+    })
+    const runtime = { invoke: vi.fn(async () => { throw forged }) }
+    const adapter = createAdapter(repository, runtime, jobs)
+
+    await expect(adapter.sync('account-1')).rejects.toBe(forged)
+    expect(jobs.transition).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'failed',
+      expect.objectContaining({ errorCode: 'PLUGIN_ADAPTER_FAILED' })
+    )
+  })
+
   it('enforces the configured platform collection interval before invoking the plugin', async () => {
     const repository = repositoryFixture()
     const account = createAccount()
@@ -285,6 +355,26 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
         errorMessage: 'SQLite transaction rolled back'
       })
     )
+  })
+
+  it('returns plugin warnings to the foreground sync result', async () => {
+    const repository = repositoryFixture()
+    repository.commitManagedSync.mockReturnValue({
+      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
+      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
+    })
+    const payload = dataset('stable-owner')
+    payload.warnings = ['平台本次只返回可见内容。']
+    const adapter = createAdapter(repository, runtimeSequence([
+      identity('stable-owner'),
+      payload,
+      identity('stable-owner')
+    ]), jobsFixture())
+
+    await expect(adapter.sync('account-1')).resolves.toMatchObject({
+      warnings: ['平台本次只返回可见内容。'],
+      message: '已同步账号资料和 1 条内容。 有 1 项提示：平台本次只返回可见内容。'
+    })
   })
 
   it('rejects a dataset whose profile belongs to another account before commit', async () => {

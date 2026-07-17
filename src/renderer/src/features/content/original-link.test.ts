@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const contentCenter = readFileSync(new URL('./ContentCenter.vue', import.meta.url), 'utf8')
+const accountContentWidget = readFileSync(new URL('./AccountContentWidget.vue', import.meta.url), 'utf8')
 const rendererBridge = readFileSync(new URL('../../ipc/social-vault.ts', import.meta.url), 'utf8')
 const bridgeContracts = readFileSync(new URL('../../../../shared/ipc-bridge-contracts.ts', import.meta.url), 'utf8')
 const ipc = readFileSync(new URL('../../../../main/ipc.ts', import.meta.url), 'utf8')
@@ -33,5 +34,14 @@ describe('content original-link workflow', () => {
     expect(contentCenter).toContain('暂无原帖链接')
     expect(contentCenter).not.toContain('target="_blank"')
     expect(contentCenter).not.toContain('window.open(')
+  })
+
+  it('copies the saved original URL from the content list, detail, and account content tab', () => {
+    expect(contentCenter).toContain('await navigator.clipboard.writeText(value.url)')
+    expect(contentCenter).toContain('class="content-copy-link"')
+    expect(contentCenter).toContain('已复制《${value.title || \'未命名内容\'}》的原帖链接。')
+    expect(accountContentWidget).toContain('await navigator.clipboard.writeText(item.url)')
+    expect(accountContentWidget).toContain('class="content-copy-link"')
+    expect(accountContentWidget).toContain('无法复制原帖链接')
   })
 })

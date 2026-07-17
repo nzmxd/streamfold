@@ -21,7 +21,7 @@ describe('content search query helpers', () => {
     expect(contentSearchQueryFromFilters(filters, 100)).toEqual({
       keyword: '选题复盘',
       type: 'article',
-      sort: 'captured',
+      sort: 'published',
       order: 'desc',
       limit: 100,
       offset: 100
@@ -57,7 +57,7 @@ describe('content search query helpers', () => {
     })
 
     expect(contentSearchQueryFromFilters(filters)).toEqual({
-      sort: 'captured',
+      sort: 'published',
       order: 'desc',
       limit: 50,
       offset: 0,
@@ -71,6 +71,13 @@ describe('content search query helpers', () => {
       publishedTo: new Date(2026, 6, 13, 23, 59, 59, 999).toISOString(),
       capturedFrom: new Date(2026, 6, 2, 0, 0, 0, 0).toISOString(),
       capturedTo: new Date(2026, 6, 14, 23, 59, 59, 999).toISOString()
+    })
+  })
+
+  it('defaults to newest published content first', () => {
+    expect(createDefaultContentSearchFilters()).toMatchObject({
+      sort: 'published',
+      order: 'desc'
     })
   })
 

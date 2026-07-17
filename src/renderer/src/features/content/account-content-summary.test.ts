@@ -15,6 +15,7 @@ describe('content excerpt visibility and refresh', () => {
     expect(widget).toContain('{{ item.bodyExcerpt }}')
     expect(widget).toContain('平台未提供正文摘要')
     expect(widget).toContain('{{ excerptCount }}/{{ items.length }} 条包含摘要')
+    expect(widget).toContain('复制《${item.title || \'未命名内容\'}》原帖链接')
   })
 
   it('invalidates mounted content views after main-process content changes', () => {

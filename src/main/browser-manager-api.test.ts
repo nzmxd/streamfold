@@ -131,6 +131,31 @@ describe('BrowserManager Xiaohongshu API transport', () => {
     expect(__browserWorkspaceLeaseTest.end(workspace)).toBe(false)
   })
 
+  it('opens the X home entry without forcing an already authenticated session through login', () => {
+    expect(__browserWorkspaceLeaseTest.entryUrl({
+      id: 'x',
+      loginUrl: 'https://x.com/i/flow/login',
+      homeUrl: 'https://x.com/home'
+    })).toBe('https://x.com/home')
+    expect(__browserWorkspaceLeaseTest.entryUrl({
+      id: 'example',
+      loginUrl: 'https://example.com/login',
+      homeUrl: 'https://example.com/home'
+    })).toBe('https://example.com/login')
+  })
+
+  it('initializes a cold remote view before attaching platform capture diagnostics', async () => {
+    const loadURL = vi.fn(async () => undefined)
+
+    await __browserWorkspaceLeaseTest.initializeRemote({
+      isDestroyed: () => false,
+      loadURL
+    })
+
+    expect(loadURL).toHaveBeenCalledOnce()
+    expect(loadURL).toHaveBeenCalledWith('about:blank')
+  })
+
   it('loads the fixed creator home for a cold API workspace and waits until navigation is stable', async () => {
     let currentUrl = ''
     let loading = false

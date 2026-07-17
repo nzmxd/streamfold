@@ -11,6 +11,7 @@ import type { AccountExecutionCoordinator } from './services/account-execution-c
 export interface SessionApiPlatformService {
   readonly pluginId: string
   readonly contributionId: string
+  discoverIdentity?(accountId: string): Promise<SessionApiIdentityCheckResult>
   verifyIdentity(accountId: string): Promise<SessionApiIdentityCheckResult>
   confirmIdentity(input: ConfirmSessionApiIdentityInput): Promise<SessionApiIdentityCheckResult>
   sync(accountId: string, trigger?: SessionApiSyncTrigger): Promise<SessionApiSyncResult>
@@ -71,6 +72,16 @@ export class PlatformSyncService {
 
   async verifyIdentity(accountId: string): Promise<SessionApiIdentityCheckResult> {
     const action = () => this.adapterForAccount(accountId).verifyIdentity(accountId)
+    return this.options.coordinator
+      ? await this.options.coordinator.run(accountId, action)
+      : await action()
+  }
+
+  async discoverIdentity(accountId: string): Promise<SessionApiIdentityCheckResult> {
+    const adapter = this.adapterForAccount(accountId)
+    const action = () => adapter.discoverIdentity
+      ? adapter.discoverIdentity(accountId)
+      : adapter.verifyIdentity(accountId)
     return this.options.coordinator
       ? await this.options.coordinator.run(accountId, action)
       : await action()

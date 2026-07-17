@@ -82,3 +82,14 @@ export function accountDisplayName(
 ): string {
   return account.alias.trim() || account.remoteName.trim() || `${platformName}账号`
 }
+
+export function formatBrowserLastVisitedPage(value: string): string {
+  const candidate = value.trim()
+  if (!candidate) return '尚未访问页面'
+  try {
+    const url = new URL(candidate)
+    return `${url.host}${url.pathname || '/'}`
+  } catch {
+    return '地址不可用'
+  }
+}

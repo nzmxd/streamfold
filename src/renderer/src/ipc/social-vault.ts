@@ -46,6 +46,10 @@ export function createSocialVaultApi(bridge: SocialVaultBridge): SocialVaultApi 
     accounts: {
       list: () => invoke('accounts:list'),
       onChanged: (callback) => subscribe('accounts:changed', () => callback()),
+      onIdentityPreview: (callback) => subscribe(
+        'accounts:identity-preview',
+        (result) => callback(result as import('../../../shared/session-api-contracts').SessionApiIdentityCheckResult)
+      ),
       create: (input) => invoke('accounts:create', input),
       update: (input) => invoke('accounts:update', input),
       bulkUpdate: (input) => invoke('accounts:bulk-update', input),

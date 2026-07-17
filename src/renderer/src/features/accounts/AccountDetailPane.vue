@@ -20,6 +20,7 @@ import AccountMetricsPanel from './AccountMetricsPanel.vue'
 import {
   accountDisplayName,
   connectionStatusLabel,
+  formatBrowserLastVisitedPage,
   ownershipStatusLabel,
   syncModeLabel,
   syncStatusLabel
@@ -44,6 +45,7 @@ const props = defineProps<{
 const activeTab = ref<DetailTab>('overview')
 const busy = ref(false)
 const localMessage = ref('')
+const syncMessageHasWarnings = ref(false)
 const verification = ref<SessionApiIdentityCheckResult | null>(null)
 const messageSyncAt = ref<string | null>(null)
 const adapters = ref<AccountAdapterOption[]>([])
@@ -85,6 +87,7 @@ watch(
     if (previous?.id !== account.id) {
       activeTab.value = 'overview'
       localMessage.value = ''
+      syncMessageHasWarnings.value = false
       verification.value = null
       messageSyncAt.value = null
     } else if (previous.lastSyncedAt !== account.lastSyncedAt && messageSyncAt.value !== account.lastSyncedAt) {
@@ -221,9 +224,11 @@ async function syncOwnedData(): Promise<void> {
   if (!props.account || busy.value) return
   busy.value = true
   localMessage.value = ''
+  syncMessageHasWarnings.value = false
   try {
     const result = await props.syncAccount(props.account.id)
     localMessage.value = result.message
+    syncMessageHasWarnings.value = Boolean(result.warnings?.length)
     messageSyncAt.value = props.account?.lastSyncedAt ?? null
   } catch {
     // The account store renders the sanitized error at page level.
@@ -383,7 +388,7 @@ async function purgeAccount(): Promise<void> {
           <p v-else-if="account.ownershipStatus !== 'plugin_verified'" class="muted">请先登录账号，再到“浏览器”页签核验当前账号。</p>
           <p v-else-if="!account.syncEnabled" class="muted">请在“设置与备注”中启用数据同步。</p>
           <p v-else class="muted">将自动使用该账号的登录会话；需要重新登录时会打开账号浏览器。</p>
-          <p v-if="localMessage" class="success-message">{{ localMessage }}</p>
+          <p v-if="localMessage" :class="syncMessageHasWarnings ? 'warning-message' : 'success-message'">{{ localMessage }}</p>
         </section>
       </div>
 
@@ -399,7 +404,7 @@ async function purgeAccount(): Promise<void> {
             <ul><li>可使用前进、后退和刷新</li><li>登录完成后返回这里核验账号</li></ul>
             <div class="browser-actions" role="group" aria-label="账号浏览器操作">
               <button class="button primary large-action browser-open-action" type="button" :disabled="busy" @click="openBrowserWindow">
-                {{ browserState?.windowOpen ? '切换到已打开的窗口' : account.connectionStatus === 'disconnected' ? `重新打开 ${platform?.name}` : `打开 ${platform?.name} 登录页面` }} ↗
+                {{ browserState?.windowOpen ? '切换到已打开的窗口' : account.connectionStatus === 'disconnected' ? `重新打开 ${platform?.name}` : `打开 ${platform?.name} 账号页面` }} ↗
               </button>
               <div v-if="supportsManagedSync" class="browser-followup-actions">
                 <button
@@ -426,7 +431,7 @@ async function purgeAccount(): Promise<void> {
         </section>
         <section v-if="browserState" class="browser-session-status">
           <div><span>窗口</span><strong>{{ browserState.windowOpen ? '已打开' : '已关闭' }}</strong></div>
-          <div class="session-address"><span>最近地址</span><strong>{{ browserState.url || platform?.loginUrl }}</strong></div>
+          <div class="session-address"><span>最后访问页面</span><strong :title="formatBrowserLastVisitedPage(browserState.url)">{{ formatBrowserLastVisitedPage(browserState.url) }}</strong></div>
         </section>
       </div>
 
@@ -452,7 +457,7 @@ async function purgeAccount(): Promise<void> {
         </div>
         <div class="form-actions"><button class="button primary" :disabled="busy" type="submit">保存设置</button><button class="button" :disabled="syncToggleDisabled" :title="syncAuthorizationReason || undefined" type="button" @click="toggleSync">{{ account.syncEnabled ? '暂停数据同步' : '启用数据同步' }}</button></div>
         <p v-if="syncAuthorizationReason" class="muted">{{ syncAuthorizationReason }}</p>
-        <p v-if="localMessage" class="success-message">{{ localMessage }}</p>
+        <p v-if="localMessage" :class="syncMessageHasWarnings ? 'warning-message' : 'success-message'">{{ localMessage }}</p>
         <section class="danger-zone session-zone">
           <div><strong>退出账号浏览器</strong><p>退出该账号的网页登录；账号资料和历史数据会保留。</p></div>
           <button class="button danger" :disabled="busy" type="button" @click="disconnectAccount">退出登录</button>

@@ -162,6 +162,7 @@ export interface SocialVaultApi {
   accounts: {
     list(): Promise<Account[]>
     onChanged(callback: () => void): () => void
+    onIdentityPreview(callback: (result: import('./session-api-contracts').SessionApiIdentityCheckResult) => void): () => void
     create(input: CreateAccountInput): Promise<Account>
     update(input: UpdateAccountInput): Promise<Account>
     bulkUpdate(input: BulkUpdateAccountsInput): Promise<Account[]>

@@ -77,7 +77,7 @@ describe('utility process sandbox manager', () => {
     expect(child.killed).toBe(true)
   })
 
-  it('preserves a bounded result marker while discarding arbitrary child error text', async () => {
+  it('preserves a bounded result marker and exposes credential-redacted plugin diagnostics', async () => {
     const successChild = new FakeUtilityProcess()
     successChild.onPost = (message) => {
       if ((message as Record<string, unknown>).type !== 'invoke') return
@@ -105,7 +105,16 @@ describe('utility process sandbox manager', () => {
         protocolVersion: 1,
         type: 'error',
         invocationId: 'invoke_00000001',
-        error: { code: 'PLUGIN_SANDBOX_FAILED', message: 'sensitive guest text' }
+        error: {
+          code: 'PLUGIN_SANDBOX_FAILED',
+          message: 'sensitive guest text',
+          details: [
+            'Error: UserTweets.timeline.instructions 缺失',
+            '    at parseTimelineResponse (streamfold:streamfold.x/streamfold.x.platform.js:314:9)',
+            'Cookie: auth_token=private-cookie',
+            'authorization: Bearer private-bearer'
+          ].join('\n')
+        }
       })
     }
     const failureManager = new UtilityProcessSandboxManager({
@@ -114,10 +123,110 @@ describe('utility process sandbox manager', () => {
       hostCall: async () => null
     })
     queueMicrotask(() => failureChild.emit('message', { protocolVersion: 1, type: 'ready' }))
-    await expect(failureManager.invoke(request())).rejects.toMatchObject({
+    let failure: unknown
+    try {
+      await failureManager.invoke(request())
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toMatchObject({
       code: 'PLUGIN_SANDBOX_FAILED',
       message: '插件执行失败'
     })
+    const diagnostic = String((failure as Error & { cause?: Error }).cause?.message ?? '')
+    expect(diagnostic).toContain('parseTimelineResponse')
+    expect(diagnostic).toContain('streamfold.x.platform.js:314:9')
+    expect(diagnostic).not.toContain('private-cookie')
+    expect(diagnostic).not.toContain('private-bearer')
+  })
+
+  it.each([
+    'PLUGIN_SANDBOX_PROTOCOL_INVALID',
+    'PLUGIN_SANDBOX_PERMISSION_DENIED',
+    'PLUGIN_SANDBOX_RESOURCE_LIMIT',
+    'PLUGIN_SANDBOX_CRASHED',
+    'PLUGIN_SANDBOX_FAILED'
+  ] as const)('preserves the child sandbox code %s', async (code) => {
+    const child = new FakeUtilityProcess()
+    child.onPost = (message) => {
+      if ((message as Record<string, unknown>).type !== 'invoke') return
+      child.emit('message', {
+        protocolVersion: 1,
+        type: 'error',
+        invocationId: 'invoke_00000001',
+        error: { code, message: 'safe child message' }
+      })
+    }
+    const manager = new UtilityProcessSandboxManager({
+      runnerPath: 'runner.js',
+      fork: () => child,
+      hostCall: async () => null
+    })
+    queueMicrotask(() => child.emit('message', { protocolVersion: 1, type: 'ready' }))
+
+    await expect(manager.invoke(request())).rejects.toMatchObject({ code })
+  })
+
+  it('associates an out-of-order concurrent host rejection by call ID', async () => {
+    const child = new FakeUtilityProcess()
+    const firstFailure = new Error('first host failure')
+    const secondFailure = new Error('second host failure')
+    const returnedFailures = new Set<string>()
+    child.onPost = (message) => {
+      const record = message as Record<string, unknown>
+      if (record.type === 'invoke') {
+        child.emit('message', {
+          protocolVersion: 1,
+          type: 'host-call',
+          invocationId: 'invoke_00000001',
+          callId: 'call_00000001',
+          operation: 'platform.getJson',
+          payload: { endpointId: 'first.read', params: {} }
+        })
+        child.emit('message', {
+          protocolVersion: 1,
+          type: 'host-call',
+          invocationId: 'invoke_00000001',
+          callId: 'call_00000002',
+          operation: 'platform.getJson',
+          payload: { endpointId: 'second.read', params: {} }
+        })
+        return
+      }
+      if (record.type !== 'host-result' || record.ok !== false || typeof record.callId !== 'string') return
+      returnedFailures.add(record.callId)
+      if (returnedFailures.size === 2) {
+        queueMicrotask(() => child.emit('message', {
+          protocolVersion: 1,
+          type: 'error',
+          invocationId: 'invoke_00000001',
+          error: {
+            code: 'PLUGIN_SANDBOX_FAILED',
+            message: '插件执行失败',
+            originCallId: 'call_00000001'
+          }
+        }))
+      }
+    }
+    const manager = new UtilityProcessSandboxManager({
+      runnerPath: 'runner.js',
+      fork: () => child,
+      hostCall: async (call) => {
+        if (call.payload.endpointId === 'first.read') throw firstFailure
+        throw secondFailure
+      }
+    })
+    queueMicrotask(() => child.emit('message', { protocolVersion: 1, type: 'ready' }))
+
+    let failure: unknown
+    try {
+      await manager.invoke(request())
+    } catch (error) {
+      failure = error
+    }
+
+    expect(failure).toMatchObject({ code: 'PLUGIN_SANDBOX_FAILED', cause: firstFailure })
+    expect((failure as Error & { cause?: unknown }).cause).not.toBe(secondFailure)
   })
 
   it('terminates every active invocation belonging to a disabled plugin', async () => {
