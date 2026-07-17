@@ -273,6 +273,17 @@ export class XiaohongshuApiService {
             }
           } catch {}
           if (job && (job.status === 'validating' || job.status === 'committing')) {
+            const failedFromStage = job.stage
+            markErrorReported(error, {
+              scope: 'sync',
+              context: {
+                jobId: job.id,
+                accountId,
+                pluginId: XIAOHONGSHU_API_PLUGIN_ID,
+                stage: failedFromStage,
+                attempt: job.attempt
+              }
+            })
             try {
               job = await this.options.jobs.transition(job, 'failed', {
                 progress: 100,
@@ -281,7 +292,6 @@ export class XiaohongshuApiService {
                 errorMessage: messageOf(error),
                 finishedAt: failedAt
               })
-              markErrorReported(error)
             } catch {}
           }
           try {
@@ -291,6 +301,16 @@ export class XiaohongshuApiService {
               messageOf(error)
             )
           } catch {}
+        } else {
+          markErrorReported(error, {
+            scope: 'sync',
+            context: {
+              completedJobId: job?.id ?? null,
+              accountId,
+              pluginId: XIAOHONGSHU_API_PLUGIN_ID,
+              stage: '提交后清理'
+            }
+          })
         }
         throw error
       } finally {

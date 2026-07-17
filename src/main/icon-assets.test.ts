@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 const main = readFileSync(new URL('./index.ts', import.meta.url), 'utf8')
 const browserManager = readFileSync(new URL('./browser-manager.ts', import.meta.url), 'utf8')
 const iconLoader = readFileSync(new URL('./icon-assets.ts', import.meta.url), 'utf8')
+const appIconSvg = readFileSync(new URL('../../resources/icons/app-icon.svg', import.meta.url), 'utf8')
 
 describe('desktop and tray icon assets', () => {
   it('ships the app icon and scale-aware tray PNGs at their intended dimensions', () => {
@@ -24,6 +25,14 @@ describe('desktop and tray icon assets', () => {
     expect(icoImageCount('../../build/tray.ico')).toBe(4)
     expect(readFileSync(new URL('../../build/icon.icns', import.meta.url)).subarray(0, 4).toString('ascii'))
       .toBe('icns')
+  })
+
+  it('uses the blue icon master and keeps runtime and packaging PNGs identical', () => {
+    expect(appIconSvg).toContain('#38BDF8')
+    expect(appIconSvg).toContain('#1688F8')
+    expect(appIconSvg).toContain('#075DCE')
+    expect(readFileSync(new URL('../../resources/icons/app-icon.png', import.meta.url))
+      .equals(readFileSync(new URL('../../build/icon.png', import.meta.url)))).toBe(true)
   })
 
   it('connects the icon family to both windows and the native tray lifecycle', () => {

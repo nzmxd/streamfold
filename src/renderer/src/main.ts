@@ -37,6 +37,5 @@ window.addEventListener('unhandledrejection', (event) => {
 const application = createApp(App)
 application.config.errorHandler = (error, _instance, info) => {
   reportRendererError(error, 'vue', { componentInfo: info })
-  console.error(error)
 }
 application.mount('#app')

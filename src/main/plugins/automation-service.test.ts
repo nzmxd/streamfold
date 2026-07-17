@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Account } from '../../shared/contracts'
 import type {
   PluginContributionState,
@@ -9,6 +9,7 @@ import type {
   PluginSchedule
 } from '../../shared/plugin-host-contracts'
 import { AccountExecutionCoordinator } from '../services/account-execution-coordinator'
+import { setErrorReporter } from '../error-reporting'
 import {
   PluginAutomationService,
   RetryablePluginError,
@@ -19,6 +20,8 @@ import {
 const initialTime = '2026-07-14T08:00:00.000Z'
 
 describe('PluginAutomationService', () => {
+  afterEach(() => setErrorReporter(null))
+
   it('materializes an authorized event once and filters its fields before delivery', async () => {
     const account = createAccount('account-1', ['team-a'])
     const grant = createGrant({ dataScopes: ['content'], groupIds: ['team-a'] })
@@ -46,6 +49,8 @@ describe('PluginAutomationService', () => {
   })
 
   it('honors Retry-After for retryable delivery failures and permanently fails ordinary errors', async () => {
+    const reporter = vi.fn()
+    setErrorReporter(reporter)
     const account = createAccount('account-1')
     const grant = createGrant({ accountIds: [account.id], dataScopes: ['account', 'profile', 'content', 'metrics'] })
     const retryRepository = new FakeAutomationRepository([account], grant)
@@ -77,6 +82,16 @@ describe('PluginAutomationService', () => {
       nextAttemptAt: null,
       errorCode: 'PLUGIN_EXECUTION_FAILED',
       errorMessage: 'Webhook 返回 HTTP 400'
+    })
+    expect(reporter).toHaveBeenCalledTimes(2)
+    expect(reporter.mock.calls[1]?.[1]).toMatchObject({
+      scope: 'plugin',
+      context: {
+        pluginId: 'example.plugin',
+        contributionId: 'example.events',
+        accountId: account.id,
+        trigger: 'event'
+      }
     })
   })
 

@@ -15,6 +15,7 @@ import type { ManagedSyncCommitMetadata, ManagedSyncCommitResult } from '../data
 import { isOfficialContentUrl } from '../platforms'
 import type { SessionApiPlatformService } from '../platform-sync-service'
 import type { JobService } from '../services/job-service'
+import { markErrorReported } from '../error-reporting'
 import type {
   StandardAccountMetricSnapshot,
   StandardDataset,
@@ -221,6 +222,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
       } catch (error) {
         if (!committed) {
           const message = safeMessage(error)
+          const failedFromStage = job?.stage ?? '启动同步'
           try {
             if (error instanceof PluginPlatformSessionError) {
               this.repository.applyManagedProbeStatus(
@@ -233,6 +235,17 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
               this.repository.markManagedSyncFailed(accountId, message, this.now())
             }
           } catch {}
+          markErrorReported(error, {
+            scope: 'sync',
+            context: {
+              jobId: job?.id ?? null,
+              accountId,
+              pluginId: this.pluginId,
+              contributionId: this.contributionId,
+              stage: failedFromStage,
+              attempt: job?.attempt ?? null
+            }
+          })
           if (job && (job.status === 'validating' || job.status === 'committing')) {
             try {
               await this.jobs.transition(job, 'failed', {
@@ -244,6 +257,17 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
               })
             } catch {}
           }
+        } else {
+          markErrorReported(error, {
+            scope: 'sync',
+            context: {
+              completedJobId: job?.id ?? null,
+              accountId,
+              pluginId: this.pluginId,
+              contributionId: this.contributionId,
+              stage: '提交后清理'
+            }
+          })
         }
         throw error
       } finally {

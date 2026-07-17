@@ -4,10 +4,17 @@ import {
   parseDensityPreference,
   parseFontSizePreference,
   parseThemeColor,
-  themeColorPalette
+  themeColorPalette,
+  themeColorPresets
 } from './theme'
 
 describe('renderer appearance preferences', () => {
+  it('uses a unique blue default theme preset', () => {
+    expect(DEFAULT_THEME_COLOR).toBe('#2563eb')
+    expect(themeColorPresets[0]).toEqual({ value: DEFAULT_THEME_COLOR, label: '海蓝' })
+    expect(new Set(themeColorPresets.map((preset) => preset.value)).size).toBe(themeColorPresets.length)
+  })
+
   it('restores supported font sizes and falls back to the standard scale', () => {
     expect(parseFontSizePreference('small')).toBe('small')
     expect(parseFontSizePreference('standard')).toBe('standard')

@@ -323,6 +323,18 @@ export class PluginAutomationService {
     this.emitChanged()
     if (request.accountId && this.activeAccounts.has(request.accountId)) {
       const failure = new RetryablePluginError('ACCOUNT_BUSY', '该账号已有插件任务正在运行')
+      markErrorReported(failure, {
+        scope: 'plugin',
+        context: {
+          runId: run.id,
+          pluginId: request.pluginId,
+          contributionId: request.contributionId,
+          accountId: request.accountId,
+          trigger: request.trigger,
+          deliveryId: request.deliveryId,
+          attempt
+        }
+      })
       this.repository.updateExtensionRun(run.id, {
         status: 'failed',
         finishedAt: this.now(),
@@ -330,7 +342,6 @@ export class PluginAutomationService {
         errorMessage: '该账号已有插件任务正在运行'
       })
       this.emitChanged()
-      markErrorReported(failure)
       throw failure
     }
     if (request.accountId) this.activeAccounts.add(request.accountId)
@@ -356,6 +367,18 @@ export class PluginAutomationService {
             error.message
           )
         : error
+      markErrorReported(failure, {
+        scope: 'plugin',
+        context: {
+          runId: run.id,
+          pluginId: request.pluginId,
+          contributionId: request.contributionId,
+          accountId: request.accountId,
+          trigger: request.trigger,
+          deliveryId: request.deliveryId,
+          attempt
+        }
+      })
       this.repository.updateExtensionRun(run.id, {
         status: 'failed',
         finishedAt: this.now(),
@@ -363,7 +386,6 @@ export class PluginAutomationService {
         errorMessage: safeErrorMessage(failure)
       })
       this.emitChanged()
-      markErrorReported(failure)
       throw failure
     } finally {
       if (request.accountId) this.activeAccounts.delete(request.accountId)

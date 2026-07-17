@@ -52,6 +52,7 @@ import { ZhihuApiService } from './zhihu-api-service'
 import { isTrustedShellUrl } from './shell-security'
 import { ElectronUpdateClient } from './electron-update-client'
 import { UpdateService } from './update-service'
+import { consumeErrorReportContext, setErrorReporter } from './error-reporting'
 
 declare const __STREAMFOLD_AUTO_UPDATE_ENABLED__: boolean
 
@@ -68,11 +69,17 @@ if (smokeMode || reviewMode) {
   // Chromium partitions, backups metadata, or historical statistics.
   app.setPath('userData', join(app.getPath('appData'), 'social-vault'))
 }
-const appLogger = new AppLogService(join(app.getPath('userData'), 'logs'))
-appLogger.info('app', '应用进程启动', {
-  context: { version: app.getVersion(), platform: process.platform, pid: process.pid }
-})
 const gotSingleInstanceLock = app.requestSingleInstanceLock()
+const appLogger = new AppLogService(join(app.getPath('userData'), 'logs'))
+setErrorReporter((error, metadata) => {
+  appLogger.captureError(metadata.scope, error, metadata.context)
+})
+if (gotSingleInstanceLock) {
+  appLogger.sanitizeStoredLogs()
+  appLogger.info('app', '应用进程启动', {
+    context: { version: app.getVersion(), platform: process.platform, pid: process.pid }
+  })
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -174,8 +181,8 @@ void app.whenReady().then(async () => {
     showMainWindow()
   })
 }).catch((error: unknown) => {
-  appLogger.captureError('bootstrap', error)
-  console.error('STREAMFOLD_BOOTSTRAP_FAILED', error)
+  const entry = appLogger.captureError('bootstrap', error)
+  console.error(`STREAMFOLD_BOOTSTRAP_FAILED ${entry.id}`)
   if (!smokeMode) {
     dialog.showErrorBox('归页无法启动', '应用资源校验失败，请重新安装可信来源的最新版本。')
   }
@@ -438,7 +445,9 @@ function createWindow(): void {
       }
     }
     if (job.status === 'failed' || job.status === 'interrupted') {
-      appLogger.error('sync', job.errorMessage || job.stage || '同步任务失败', metadata)
+      if (!consumeErrorReportContext('jobId', job.id)) {
+        appLogger.error('sync', job.errorMessage || job.stage || '同步任务失败', metadata)
+      }
     } else {
       appLogger.info('sync', job.stage || `同步任务${job.status === 'succeeded' ? '完成' : '取消'}`, metadata)
     }
@@ -548,7 +557,9 @@ function createWindow(): void {
         }
       }
       if (run.status === 'failed' || run.status === 'interrupted') {
-        appLogger.error('plugin', run.errorMessage || '插件运行失败', metadata)
+        if (!consumeErrorReportContext('runId', run.id)) {
+          appLogger.error('plugin', run.errorMessage || '插件运行失败', metadata)
+        }
       } else {
         appLogger.info('plugin', `插件运行${run.status === 'succeeded' ? '完成' : '取消'}`, metadata)
       }

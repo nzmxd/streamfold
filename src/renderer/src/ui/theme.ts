@@ -16,8 +16,8 @@ export type FontSizePreference = 'small' | 'standard' | 'large'
 export type DensityPreference = 'compact' | 'comfortable'
 
 export const themeColorPresets = Object.freeze([
-  { value: '#2563eb', label: '海蓝' },
-  { value: DEFAULT_THEME_COLOR, label: '靛紫' },
+  { value: DEFAULT_THEME_COLOR, label: '海蓝' },
+  { value: '#5859de', label: '靛紫' },
   { value: '#0f8a80', label: '青绿' },
   { value: '#c2416c', label: '玫红' },
   { value: '#b65f0b', label: '琥珀' }

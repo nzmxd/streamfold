@@ -184,7 +184,7 @@ onBeforeUnmount(() => {
             <div><dt>记录 ID</dt><dd>{{ selected.id }}</dd></div>
           </dl>
           <section v-if="contextEntries(selected).length" class="log-context"><h3>关联信息</h3><dl><div v-for="[key, value] in contextEntries(selected)" :key="key"><dt>{{ key }}</dt><dd>{{ value ?? '—' }}</dd></div></dl></section>
-          <section v-if="selected.details" class="log-stack"><h3>调用栈</h3><pre>{{ selected.details }}</pre></section>
+          <section v-if="selected.details" class="log-stack"><h3>错误详情</h3><pre>{{ selected.details }}</pre></section>
         </template>
         <div v-else class="compact-empty"><span>选择一条日志查看详情</span></div>
       </aside>

@@ -132,7 +132,7 @@ export interface BrowserState {
 
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
-export const DEFAULT_THEME_COLOR = '#5859de'
+export const DEFAULT_THEME_COLOR = '#2563eb'
 export type RuntimePlatform = 'win32' | 'darwin' | 'linux'
 export type AppNavigationTarget = 'dashboard' | 'accounts' | 'content' | 'analytics' | 'tasks' | 'plugins' | 'logs' | 'settings'
 

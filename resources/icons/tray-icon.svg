@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 32 32" fill="none">
   <title>归页 Streamfold 托盘图标</title>
   <desc>为 16 至 32 像素显示重新绘制的单色折流成页标记。</desc>
-  <g stroke="#5859DE" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.8">
+  <g stroke="#2563EB" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.8">
     <path d="M6 9h11.2a7 7 0 0 1 7 7v9H13a7 7 0 0 1-7-7Z" />
     <path d="M10 4h9.2a7 7 0 0 1 7 7v8h-9.2a7 7 0 0 1-7-7Z" />
     <path d="m7 14 9 6 9-6" />

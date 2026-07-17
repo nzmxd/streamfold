@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SocialDatabase } from './database'
 import { TestSessionApiPluginGate } from './plugins/session-api-plugin-gate.test-fixture'
 import { JobService } from './services/job-service'
+import { setErrorReporter } from './error-reporting'
 import {
   XiaohongshuApiService,
   XIAOHONGSHU_API_PLUGIN_ID,
@@ -33,7 +34,10 @@ describe('XiaohongshuApiService', () => {
     jobSequence = 0
   })
 
-  afterEach(() => database.close())
+  afterEach(() => {
+    setErrorReporter(null)
+    database.close()
+  })
 
   it('declares cumulative, gauge and cross-platform semantics for every content metric', () => {
     expect(XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS.every((definition) => (
@@ -271,6 +275,8 @@ describe('XiaohongshuApiService', () => {
     enablePlugin()
     const account = createSyncableAccount('recent_20')
     const transport = createTransport({ analyzeTotal: 2, notes: [note()] })
+    const reporter = vi.fn()
+    setErrorReporter(reporter)
 
     await expect(createService(() => transport).sync(account.id)).rejects.toMatchObject({
       code: 'INCOMPLETE_CAPTURE'
@@ -279,6 +285,12 @@ describe('XiaohongshuApiService', () => {
     expect(database.listContents({ accountId: account.id })).toEqual([])
     expect(database.listAccountSnapshots(account.id)).toEqual([])
     expect(database.listJobs()[0]).toMatchObject({ status: 'failed', errorCode: 'INCOMPLETE_CAPTURE' })
+    expect(reporter).toHaveBeenCalledOnce()
+    expect(reporter.mock.calls[0]?.[0]).toMatchObject({ code: 'INCOMPLETE_CAPTURE' })
+    expect(reporter.mock.calls[0]?.[1]).toMatchObject({
+      scope: 'sync',
+      context: { accountId: account.id, pluginId: XIAOHONGSHU_API_PLUGIN_ID }
+    })
   })
 
   it('does not request an existing excerpt again and preserves it on later syncs', async () => {

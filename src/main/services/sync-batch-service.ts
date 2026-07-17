@@ -21,6 +21,7 @@ import {
 } from '../platform-sync-service'
 import { SafeJobError } from '../plugins/errors'
 import { AccountExecutionBusyError } from './account-execution-coordinator'
+import { markErrorReported } from '../error-reporting'
 import type { JobService } from './job-service'
 
 type MaybePromise<T> = T | Promise<T>
@@ -306,7 +307,11 @@ export class SyncBatchService {
     if (this.stopped || this.draining || this.wakeTimer) return
     this.wakeTimer = setTimeout(() => {
       this.wakeTimer = null
-      void this.drain().catch(() => {
+      void this.drain().catch((error: unknown) => {
+        markErrorReported(error, {
+          scope: 'sync',
+          context: { stage: 'queue-drain' }
+        })
         if (!this.stopped) this.wake(1_000)
       })
     }, delay)
@@ -359,6 +364,17 @@ export class SyncBatchService {
         error instanceof AccountExecutionBusyError || error instanceof PlatformSyncBusyError
       )) return 'deferred'
       if (current?.status === 'queued') {
+        markErrorReported(error, {
+          scope: 'sync',
+          context: {
+            jobId: job.id,
+            accountId: job.accountId,
+            pluginId: job.pluginId,
+            contributionId: job.contributionId,
+            stage: '启动同步',
+            attempt: job.attempt
+          }
+        })
         await this.jobs.failQueued(
           job.id,
           error instanceof SafeJobError ? error.code : 'SYNC_START_FAILED',
