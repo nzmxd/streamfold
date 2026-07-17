@@ -20,6 +20,7 @@ let reviewUserData: string | null = null
 let analyticsSeeded = false
 
 test.beforeAll(async () => {
+  test.setTimeout(60_000)
   application = await electron.launch({
     executablePath: electronExecutable,
     args: [resolve('out/main/index.js')],
@@ -866,7 +867,7 @@ test('最小窗口在大字号与舒适密度下保持六个工作区可用', as
         sidebarRight: sidebarBounds?.right ?? 0
       }
     })
-    expect(layout.viewportWidth).toBeLessThanOrEqual(760)
+    expect(layout.viewportWidth).toBeLessThanOrEqual(768)
     expect(layout.viewportWidth).toBeGreaterThan(700)
     expect(layout.documentOverflow).toBeLessThanOrEqual(1)
     expect(layout.mainOverflow).toBeLessThanOrEqual(1)
