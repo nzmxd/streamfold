@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import {
   app,
   BrowserWindow,
@@ -2152,6 +2153,7 @@ async function captureDeclaredPlatformJson(
   if (browserDebugger.isAttached()) throw new Error('账号浏览器调试通道正在使用')
   const expected = new URL(expectedUrl)
   const values: unknown[] = []
+  const responseDigests = new Set<string>()
   const pending = new Map<string, { status: number; contentType: string }>()
   const harvestTasks = new Set<Promise<void>>()
   const candidateLimit = Math.min(20, Math.max(limit, limit * 2))
@@ -2228,16 +2230,19 @@ async function captureDeclaredPlatformJson(
           rejectedFailure = pluginNetworkResponseError('平台捕获端点返回 API 错误', diagnosticInput)
           return
         }
+        // A valid replay proves recovery from an earlier rejected candidate,
+        // but must not consume the bounded quota reserved for unique pages.
+        rejectedFailure = null
+        lastActivity = Date.now()
+        const responseDigest = createHash('sha256').update(bytes).digest('hex')
+        if (responseDigests.has(responseDigest)) return
         if (totalBytes + bytes.byteLength > maximumTotalBytes) {
           throw pluginNetworkResponseError('平台捕获响应超过清单限制', diagnosticInput)
         }
         if (values.length >= limit) return
+        responseDigests.add(responseDigest)
         totalBytes += bytes.byteLength
-        // A valid response that arrives after a rejected candidate proves the
-        // page recovered. A later rejected response remains actionable.
-        rejectedFailure = null
         values.push(value)
-        lastActivity = Date.now()
       } finally {
         bytes.fill(0)
       }

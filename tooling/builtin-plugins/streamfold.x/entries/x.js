@@ -426,28 +426,37 @@ async function collect(_context, rawInput) {
 
   const contentsById = new Map();
   const seenBottomCursors = new Set();
+  let repeatedBottomCursorCount = 0;
   let ignoredInstruction = false;
   let lastPage = null;
   for (const rawResponse of responses) {
     const page = parseTimelineResponse(object(rawResponse, 'UserTweets 响应体'), input.boundRemoteId);
     ignoredInstruction = ignoredInstruction || page.ignoredInstruction;
     if (page.bottomCursor !== null) {
-      if (seenBottomCursors.has(page.bottomCursor)) fail('分页游标未推进');
-      seenBottomCursors.add(page.bottomCursor);
+      if (seenBottomCursors.has(page.bottomCursor)) repeatedBottomCursorCount += 1;
+      else seenBottomCursors.add(page.bottomCursor);
     }
+    const pageContentsById = new Map();
     for (const rawTweet of page.tweetResults) {
       const content = normalizeTweet(rawTweet, input.boundRemoteId, capturedAt);
       if (!content) continue;
-      const previous = contentsById.get(content.remoteId);
+      const previous = pageContentsById.get(content.remoteId);
       if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(content)) fail('重复 tweet 数据冲突');
-      if (previous === undefined) contentsById.set(content.remoteId, content);
+      if (previous === undefined) pageContentsById.set(content.remoteId, content);
     }
+    for (const [remoteId, content] of pageContentsById) contentsById.set(remoteId, content);
     lastPage = page;
   }
 
   const contents = Array.from(contentsById.values());
   const warnings = [];
   if (ignoredInstruction) warnings.push('已忽略 X 时间线中的非内容指令。');
+  if (repeatedBottomCursorCount > 0) {
+    warnings.push(
+      'X 时间线捕获到 ' + repeatedBottomCursorCount +
+      ' 个重复分页游标；已合并重复响应并继续保存可验证内容。'
+    );
+  }
   if (contents.length < target && lastPage && lastPage.bottomCursor !== null && !lastPage.terminatedBottom) {
     warnings.push(
       'X 时间线在完整捕获窗口内读取 ' + responses.length + '/' + responseLimit +

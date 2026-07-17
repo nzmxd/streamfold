@@ -607,6 +607,61 @@ describe('declarative platform Fetch/XHR capture', () => {
     }
   })
 
+  it('deduplicates identical page-down bodies without consuming the unique response limit', async () => {
+    vi.useFakeTimers()
+    try {
+      const declaration: PlatformCaptureDeclaration = {
+        id: 'contents.capture',
+        route: 'https://example.com/home',
+        responseOrigin: 'https://api.example.com',
+        responsePath: '/v1/contents',
+        resourceTypes: ['XHR'],
+        method: 'GET',
+        pagination: 'page-down',
+        maximumResponses: 2,
+        maximumResponseBytes: 1_024,
+        maximumTotalBytes: 2_048
+      }
+      const expected = 'https://api.example.com/v1/contents'
+      const browserDebugger = new FakeDebugger()
+      let nextPageScheduled = false
+      const sendInputEvent = vi.fn((event: Electron.InputEvent) => {
+        if (event.type !== 'keyUp' || nextPageScheduled) return
+        nextPageScheduled = true
+        setTimeout(() => {
+          emitCapture(browserDebugger, 'second', expected, 'GET', 'XHR', { page: 2 })
+        }, 1_500)
+      })
+      const contents = {
+        debugger: browserDebugger,
+        isDestroyed: () => false,
+        loadURL: vi.fn(async () => {
+          emitCapture(browserDebugger, 'first', expected, 'GET', 'XHR', { page: 1 })
+          emitCapture(browserDebugger, 'replay', expected, 'GET', 'XHR', { page: 1 })
+        }),
+        sendInputEvent
+      } as unknown as Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+
+      const capture = __pluginPlatformJsonTest.captureDeclaredPlatformJson(
+        contents,
+        declaration,
+        expected,
+        2
+      )
+      const assertion = expect(capture).resolves.toEqual([{ page: 1 }, { page: 2 }])
+      await vi.advanceTimersByTimeAsync(2_500)
+      await assertion
+      expect(browserDebugger.commands.filter((item) => item.method === 'Network.getResponseBody'))
+        .toEqual([
+          { method: 'Network.getResponseBody', params: { requestId: 'first' } },
+          { method: 'Network.getResponseBody', params: { requestId: 'replay' } },
+          { method: 'Network.getResponseBody', params: { requestId: 'second' } }
+        ])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('fails when a rejected pagination response follows valid data', async () => {
     vi.useFakeTimers()
     try {

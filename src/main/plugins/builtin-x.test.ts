@@ -16,7 +16,7 @@ const OTHER_ID = '900719925474099312345678902'
 describe('built-in X platform adapter', () => {
   it('declares only the bounded signed-in web-session surface', () => {
     expect(xPluginManifest.id).toBe(X_PLUGIN_ID)
-    expect(xPluginManifest).toMatchObject({ version: '1.1.4', minimumAppVersion: '0.7.9' })
+    expect(xPluginManifest).toMatchObject({ version: '1.1.5', minimumAppVersion: '0.7.9' })
     const contribution = xPluginManifest.contributions[0]
     expect(contribution).toMatchObject({
       id: X_PLATFORM_CONTRIBUTION_ID,
@@ -426,15 +426,29 @@ describe('built-in X platform adapter', () => {
     ])
   })
 
-  it('fails closed when pagination stalls or contains conflicting duplicates', async () => {
-    const stalled = hostWith({
+  it('merges replayed pagination while rejecting conflicting duplicates within one response', async () => {
+    const replayedId = '700000000000000000001'
+    const replayed = hostWith({
       'x.contents.tweets.bound': [
-        timelineResponse([], { cursor: 'same' }),
-        timelineResponse([], { cursor: 'same' })
+        timelineResponse([tweetEntry(tweet({ remoteId: replayedId, text: 'replayed post' }))], { cursor: 'same' }),
+        timelineResponse([tweetEntry(tweet({
+          remoteId: replayedId,
+          text: 'replayed post',
+          favoriteCount: 13
+        }))], { cursor: 'same' })
       ]
     })
-    await expect(invoke(stalled, 'collect', { scope: 'recent_20', boundRemoteId: OWNER_ID }))
-      .rejects.toThrow('分页游标未推进')
+    const output = asRecord(await invoke(replayed, 'collect', {
+      scope: 'recent_20',
+      boundRemoteId: OWNER_ID
+    }))
+    expect(output.contents).toHaveLength(1)
+    expect((((output.contents as JsonValue[])[0] as Record<string, JsonValue>)
+      .snapshots as Array<Record<string, JsonValue>>)[0]?.likes).toBe(13)
+    expect(output.warnings).toEqual([
+      'X 时间线捕获到 1 个重复分页游标；已合并重复响应并继续保存可验证内容。',
+      'X 时间线在完整捕获窗口内读取 2/5 个响应后仍有更多内容；本次已保存 1 条已验证本人内容，少于请求的 20 条。'
+    ])
 
     const duplicateId = '700000000000000000002'
     const conflict = hostWith({
@@ -542,13 +556,14 @@ interface TweetOptions {
   retweet?: boolean
   quote?: boolean
   visibilityWrapper?: boolean
+  favoriteCount?: number
 }
 
 function tweet(options: TweetOptions): Record<string, JsonValue> {
   const legacy: Record<string, JsonValue> = {
     full_text: options.text,
     created_at: 'Wed Oct 10 20:19:24 +0000 2018',
-    favorite_count: 12,
+    favorite_count: options.favoriteCount ?? 12,
     reply_count: 3,
     retweet_count: 4,
     bookmark_count: 5,

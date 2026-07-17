@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "streamfold.x",
   "name": "X",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "从已登录的 X 网页会话中读取本人公开资料和帖子数据。",
   "license": "Apache-2.0",
   "publisher": {
