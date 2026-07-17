@@ -77,6 +77,49 @@ describe('utility process sandbox manager', () => {
     expect(child.killed).toBe(true)
   })
 
+  it('preserves a bounded result marker while discarding arbitrary child error text', async () => {
+    const successChild = new FakeUtilityProcess()
+    successChild.onPost = (message) => {
+      if ((message as Record<string, unknown>).type !== 'invoke') return
+      successChild.emit('message', {
+        protocolVersion: 1,
+        type: 'result',
+        invocationId: 'invoke_00000001',
+        value: { __streamfoldFailure: 'X_IDENTITY_SETTINGS_EMPTY' }
+      })
+    }
+    const successManager = new UtilityProcessSandboxManager({
+      runnerPath: 'runner.js',
+      fork: () => successChild,
+      hostCall: async () => null
+    })
+    queueMicrotask(() => successChild.emit('message', { protocolVersion: 1, type: 'ready' }))
+    await expect(successManager.invoke(request())).resolves.toEqual({
+      __streamfoldFailure: 'X_IDENTITY_SETTINGS_EMPTY'
+    })
+
+    const failureChild = new FakeUtilityProcess()
+    failureChild.onPost = (message) => {
+      if ((message as Record<string, unknown>).type !== 'invoke') return
+      failureChild.emit('message', {
+        protocolVersion: 1,
+        type: 'error',
+        invocationId: 'invoke_00000001',
+        error: { code: 'PLUGIN_SANDBOX_FAILED', message: 'sensitive guest text' }
+      })
+    }
+    const failureManager = new UtilityProcessSandboxManager({
+      runnerPath: 'runner.js',
+      fork: () => failureChild,
+      hostCall: async () => null
+    })
+    queueMicrotask(() => failureChild.emit('message', { protocolVersion: 1, type: 'ready' }))
+    await expect(failureManager.invoke(request())).rejects.toMatchObject({
+      code: 'PLUGIN_SANDBOX_FAILED',
+      message: '插件执行失败'
+    })
+  })
+
   it('terminates every active invocation belonging to a disabled plugin', async () => {
     const first = new FakeUtilityProcess()
     const second = new FakeUtilityProcess()

@@ -212,6 +212,96 @@ describe('declarative platform Fetch/XHR capture', () => {
     }
   })
 
+  it('waits beyond the quiet window for the first matching response', async () => {
+    vi.useFakeTimers()
+    try {
+      const declaration: PlatformCaptureDeclaration = {
+        id: 'identity.capture',
+        route: 'https://example.com/home',
+        responseOrigin: 'https://api.example.com',
+        responsePath: '/v1/account/settings.json',
+        resourceTypes: ['XHR'],
+        method: 'GET',
+        pagination: 'none',
+        maximumResponses: 1,
+        maximumResponseBytes: 1_024,
+        maximumTotalBytes: 2_048
+      }
+      const expected = 'https://api.example.com/v1/account/settings.json'
+      const browserDebugger = new FakeDebugger()
+      const contents = {
+        debugger: browserDebugger,
+        isDestroyed: () => false,
+        loadURL: vi.fn(async () => {
+          setTimeout(() => {
+            emitCapture(browserDebugger, 'delayed', expected, 'GET', 'XHR', { screen_name: 'owner' })
+          }, 1_500)
+        }),
+        sendInputEvent: vi.fn()
+      } as unknown as Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+
+      let settled = false
+      const capture = __pluginPlatformJsonTest.captureDeclaredPlatformJson(
+        contents,
+        declaration,
+        expected,
+        1
+      ).finally(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(1_100)
+      expect(settled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(capture).resolves.toEqual([{ screen_name: 'owner' }])
+      expect(browserDebugger.attached).toBe(false)
+      expect(browserDebugger.listenerCount('message')).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('waits until the capture deadline when no matching response arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      const declaration: PlatformCaptureDeclaration = {
+        id: 'identity.capture',
+        route: 'https://example.com/home',
+        responseOrigin: 'https://api.example.com',
+        responsePath: '/v1/account/settings.json',
+        resourceTypes: ['XHR'],
+        method: 'GET',
+        pagination: 'none',
+        maximumResponses: 1,
+        maximumResponseBytes: 1_024,
+        maximumTotalBytes: 2_048
+      }
+      const expected = 'https://api.example.com/v1/account/settings.json'
+      const browserDebugger = new FakeDebugger()
+      const contents = {
+        debugger: browserDebugger,
+        isDestroyed: () => false,
+        loadURL: vi.fn(async () => undefined),
+        sendInputEvent: vi.fn()
+      } as unknown as Pick<WebContents, 'debugger' | 'isDestroyed' | 'loadURL' | 'sendInputEvent'>
+
+      let settled = false
+      const capture = __pluginPlatformJsonTest.captureDeclaredPlatformJson(
+        contents,
+        declaration,
+        expected,
+        1
+      ).finally(() => { settled = true })
+      await vi.advanceTimersByTimeAsync(1_100)
+      expect(settled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(20_000)
+      await expect(capture).resolves.toEqual([])
+      expect(browserDebugger.attached).toBe(false)
+      expect(browserDebugger.listenerCount('message')).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('times out a stalled response body and releases the debugger channel', async () => {
     vi.useFakeTimers()
     try {

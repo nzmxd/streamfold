@@ -15,6 +15,10 @@ export type PluginSupplyChainErrorCode =
   | 'PLUGIN_SANDBOX_CRASHED'
   | 'PLUGIN_SANDBOX_FAILED'
   | 'PLUGIN_ADAPTER_IDENTITY_FAILED'
+  | 'PLUGIN_ADAPTER_IDENTITY_SETTINGS_EMPTY'
+  | 'PLUGIN_ADAPTER_IDENTITY_PROFILE_EMPTY'
+  | 'PLUGIN_ADAPTER_IDENTITY_RESPONSE_INVALID'
+  | 'PLUGIN_ADAPTER_IDENTITY_STABLE_ID_FAILED'
 
 /** Error whose code and message are safe to persist in plugin run history. */
 export class PluginSupplyChainError extends Error {

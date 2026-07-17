@@ -2180,7 +2180,8 @@ async function captureDeclaredPlatformJson(
         pageMoves += 1
       }
       await new Promise((resolve) => setTimeout(resolve, 350))
-      if (pending.size === 0 && harvestTasks.size === 0 && Date.now() - lastActivity >= 800 &&
+      if (values.length > 0 && pending.size === 0 && harvestTasks.size === 0 &&
+        Date.now() - lastActivity >= 800 &&
         (declaration.pagination !== 'page-down' || pageMoves >= 3)) break
     }
     accepting = false

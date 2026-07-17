@@ -22,7 +22,11 @@ import type {
 } from './types'
 import type { PluginHostService } from './plugin-host-service'
 import { PluginPlatformSessionError, type PluginRuntimeExecutor } from './plugin-runtime-executor'
-import { PluginSupplyChainError, isPluginSupplyChainError } from './supply-chain-errors'
+import {
+  PluginSupplyChainError,
+  isPluginSupplyChainError,
+  type PluginSupplyChainErrorCode
+} from './supply-chain-errors'
 
 interface SandboxAdapterRepository {
   getAccount(id: string): Account | null
@@ -57,6 +61,32 @@ export interface SandboxAvatarCache {
 }
 
 const PREVIEW_TTL_MS = 5 * 60_000
+const OFFICIAL_X_PLUGIN_ID = 'streamfold.x'
+const OFFICIAL_X_CONTRIBUTION_ID = 'streamfold.x.platform'
+const OFFICIAL_IDENTITY_FAILURE_KEY = '__streamfoldFailure'
+const INVALID_IDENTITY_FAILURE_MESSAGE =
+  '平台身份核验未完成，请确认已经登录并等待页面加载完成；若持续失败，请停止重试并更新归页。'
+const X_IDENTITY_FAILURES: ReadonlyMap<string, {
+  code: PluginSupplyChainErrorCode
+  message: string
+}> = new Map([
+  ['X_IDENTITY_SETTINGS_EMPTY', {
+    code: 'PLUGIN_ADAPTER_IDENTITY_SETTINGS_EMPTY',
+    message: '未捕获到 X 当前登录账号设置，请确认已经登录并等待 X 首页加载完成后重试。'
+  }],
+  ['X_IDENTITY_CURRENT_PROFILE_EMPTY', {
+    code: 'PLUGIN_ADAPTER_IDENTITY_PROFILE_EMPTY',
+    message: '已识别 X 登录账号，但未捕获到当前账号资料，请在 X 首页停留片刻后重试。'
+  }],
+  ['X_IDENTITY_RESPONSE_INVALID', {
+    code: 'PLUGIN_ADAPTER_IDENTITY_RESPONSE_INVALID',
+    message: 'X 返回的身份资料结构暂不受支持，请停止重试并更新归页。'
+  }],
+  ['X_IDENTITY_STABLE_ID_VERIFY_FAILED', {
+    code: 'PLUGIN_ADAPTER_IDENTITY_STABLE_ID_FAILED',
+    message: '当前 X 账号资料已读取，但稳定账号 ID 复核失败；为避免账号串绑，本次核验已终止，请更新归页。'
+  }]
+])
 
 /** Host orchestration shared by every untrusted platform.adapter contribution. */
 export class SandboxPlatformAdapter implements SessionApiPlatformService {
@@ -110,15 +140,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
         item.pluginId === this.pluginId && item.contribution.id === this.contributionId
       ))
       if (!state?.enabled || !state.granted || state.suspendedReason) throw new Error('候选适配器未启用或尚未授权')
-      const value = await this.runtime.invoke(
-        this.pluginId,
-        this.contributionId,
-        'readIdentity',
-        accountId,
-        { expectedRemoteId: account.remoteId },
-        true
-      )
-      const identity = parseIdentity(value)
+      const identity = await this.readIdentity(accountId, account.remoteId, true)
       return { remoteId: identity.remoteId, remoteName: identity.remoteName }
     })
   }
@@ -239,21 +261,36 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
     this.previews.clear()
   }
 
-  private async readIdentity(accountId: string, expectedRemoteId: string | null): Promise<Identity> {
+  private async readIdentity(
+    accountId: string,
+    expectedRemoteId: string | null,
+    allowUnboundAdapter = false
+  ): Promise<Identity> {
     try {
-      const value = await this.runtime.invoke(
-        this.pluginId,
-        this.contributionId,
-        'readIdentity',
-        accountId,
-        { expectedRemoteId }
-      )
+      const value = allowUnboundAdapter
+        ? await this.runtime.invoke(
+            this.pluginId,
+            this.contributionId,
+            'readIdentity',
+            accountId,
+            { expectedRemoteId },
+            true
+          )
+        : await this.runtime.invoke(
+            this.pluginId,
+            this.contributionId,
+            'readIdentity',
+            accountId,
+            { expectedRemoteId }
+          )
+      const reportedFailure = officialXIdentityFailure(this.pluginId, this.contributionId, value)
+      if (reportedFailure) throw reportedFailure
       return parseIdentity(value)
     } catch (error) {
       if (isPluginSupplyChainError(error) && error.code === 'PLUGIN_SANDBOX_FAILED') {
         throw new PluginSupplyChainError(
           'PLUGIN_ADAPTER_IDENTITY_FAILED',
-          '平台身份核验未完成，请确认已经登录并等待页面加载完成；若持续失败，请停止重试并更新归页。',
+          INVALID_IDENTITY_FAILURE_MESSAGE,
           { cause: error }
         )
       }
@@ -340,6 +377,26 @@ interface Identity {
   contentCount: number | null
   viewsTotal: number | null
   likesAndFavoritesTotal: number | null
+}
+
+function officialXIdentityFailure(
+  pluginId: string,
+  contributionId: string,
+  value: Record<string, unknown>
+): PluginSupplyChainError | null {
+  if (pluginId !== OFFICIAL_X_PLUGIN_ID || contributionId !== OFFICIAL_X_CONTRIBUTION_ID ||
+      !Object.prototype.hasOwnProperty.call(value, OFFICIAL_IDENTITY_FAILURE_KEY)) return null
+  const keys = Reflect.ownKeys(value)
+  const descriptor = Object.getOwnPropertyDescriptor(value, OFFICIAL_IDENTITY_FAILURE_KEY)
+  const prototype = Object.getPrototypeOf(value)
+  if ((prototype !== Object.prototype && prototype !== null) ||
+      keys.length !== 1 || keys[0] !== OFFICIAL_IDENTITY_FAILURE_KEY || !descriptor?.enumerable ||
+      !('value' in descriptor) || typeof descriptor.value !== 'string') {
+    return new PluginSupplyChainError('PLUGIN_ADAPTER_IDENTITY_FAILED', INVALID_IDENTITY_FAILURE_MESSAGE)
+  }
+  const failure = X_IDENTITY_FAILURES.get(descriptor.value)
+  if (!failure) return new PluginSupplyChainError('PLUGIN_ADAPTER_IDENTITY_FAILED', INVALID_IDENTITY_FAILURE_MESSAGE)
+  return new PluginSupplyChainError(failure.code, failure.message)
 }
 
 function parseIdentity(value: Record<string, unknown>): Identity {

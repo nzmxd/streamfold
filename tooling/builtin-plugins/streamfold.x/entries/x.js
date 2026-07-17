@@ -11,6 +11,14 @@ const CONTENT_METRIC_DEFINITIONS = Object.freeze([{
   standardMetricId: null
 }]);
 
+const IDENTITY_FAILURE_KEY = '__streamfoldFailure';
+const IDENTITY_FAILURES = Object.freeze({
+  settingsEmpty: 'X_IDENTITY_SETTINGS_EMPTY',
+  currentProfileEmpty: 'X_IDENTITY_CURRENT_PROFILE_EMPTY',
+  responseInvalid: 'X_IDENTITY_RESPONSE_INVALID',
+  stableIdVerifyFailed: 'X_IDENTITY_STABLE_ID_VERIFY_FAILED'
+});
+
 function fail(message) {
   throw new Error('X 数据无效：' + message);
 }
@@ -83,12 +91,6 @@ function assertNoApiErrors(value, label) {
   fail(label + '返回错误');
 }
 
-async function captureOne(captureId, params) {
-  const responses = array(await streamfold.platform.captureJson(captureId, params, 1), captureId + ' 响应');
-  if (responses.length !== 1) fail(captureId + '必须恰好捕获一个响应');
-  return object(responses[0], captureId + ' 响应体');
-}
-
 function readIdentityInput(value) {
   const input = object(value, 'readIdentity 输入');
   exactKeys(input, ['expectedRemoteId'], 'readIdentity 输入');
@@ -106,6 +108,10 @@ function collectInput(value) {
 function settingsHandle(value) {
   assertNoApiErrors(value, 'account/settings');
   return handle(value.screen_name, 'account/settings.screen_name');
+}
+
+function identityFailure(code) {
+  return { [IDENTITY_FAILURE_KEY]: code };
 }
 
 function unwrapUserResult(value, label) {
@@ -368,15 +374,56 @@ function parseTimelineResponse(value, boundRemoteId) {
 
 async function readIdentity(_context, rawInput) {
   const expectedRemoteId = readIdentityInput(rawInput);
-  const settings = await captureOne('x.identity.settings', {});
-  const authenticatedHandle = settingsHandle(settings);
-  const currentResponse = await captureOne('x.identity.profile.initial', { handle: authenticatedHandle });
-  const current = parseProfileResponse(currentResponse, 'UserByScreenName');
-  if (current.screenName.toLowerCase() !== authenticatedHandle.toLowerCase()) fail('settings 与资料账号不一致');
+  const settingsResponses = await streamfold.platform.captureJson('x.identity.settings', {}, 1);
+  if (!Array.isArray(settingsResponses)) return identityFailure(IDENTITY_FAILURES.responseInvalid);
+  if (settingsResponses.length === 0) return identityFailure(IDENTITY_FAILURES.settingsEmpty);
+  if (settingsResponses.length !== 1 || !isObject(settingsResponses[0])) {
+    return identityFailure(IDENTITY_FAILURES.responseInvalid);
+  }
+  let authenticatedHandle;
+  try {
+    authenticatedHandle = settingsHandle(settingsResponses[0]);
+  } catch {
+    return identityFailure(IDENTITY_FAILURES.responseInvalid);
+  }
+
+  const currentResponses = await streamfold.platform.captureJson(
+    'x.identity.profile.initial',
+    { handle: authenticatedHandle },
+    1
+  );
+  if (!Array.isArray(currentResponses)) return identityFailure(IDENTITY_FAILURES.responseInvalid);
+  if (currentResponses.length === 0) return identityFailure(IDENTITY_FAILURES.currentProfileEmpty);
+  if (currentResponses.length !== 1 || !isObject(currentResponses[0])) {
+    return identityFailure(IDENTITY_FAILURES.responseInvalid);
+  }
+  let current;
+  try {
+    current = parseProfileResponse(currentResponses[0], 'UserByScreenName');
+  } catch {
+    return identityFailure(IDENTITY_FAILURES.responseInvalid);
+  }
+  if (current.screenName.toLowerCase() !== authenticatedHandle.toLowerCase()) {
+    return identityFailure(IDENTITY_FAILURES.responseInvalid);
+  }
   if (expectedRemoteId !== null && current.remoteId === expectedRemoteId) {
-    const boundResponse = await captureOne('x.identity.profile.bound', { remoteId: expectedRemoteId });
-    const bound = parseProfileResponse(boundResponse, 'UserByRestId');
-    if (bound.remoteId !== expectedRemoteId) fail('稳定账号资料与已绑定账号不一致');
+    const boundResponses = await streamfold.platform.captureJson(
+      'x.identity.profile.bound',
+      { remoteId: expectedRemoteId },
+      1
+    );
+    if (!Array.isArray(boundResponses) || boundResponses.length !== 1 || !isObject(boundResponses[0])) {
+      return identityFailure(IDENTITY_FAILURES.stableIdVerifyFailed);
+    }
+    let bound;
+    try {
+      bound = parseProfileResponse(boundResponses[0], 'UserByRestId');
+    } catch {
+      return identityFailure(IDENTITY_FAILURES.stableIdVerifyFailed);
+    }
+    if (bound.remoteId !== expectedRemoteId) {
+      return identityFailure(IDENTITY_FAILURES.stableIdVerifyFailed);
+    }
   }
   return { remoteId: current.remoteId, remoteName: current.remoteName, profile: current.profile };
 }

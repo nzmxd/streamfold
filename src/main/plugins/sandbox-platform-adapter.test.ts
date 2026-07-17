@@ -44,6 +44,112 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
     })
   })
 
+  it('maps only official X identity stage envelopes to fixed host-owned errors', async () => {
+    const cases = [
+      ['X_IDENTITY_SETTINGS_EMPTY', 'PLUGIN_ADAPTER_IDENTITY_SETTINGS_EMPTY', '未捕获到 X 当前登录账号设置'],
+      ['X_IDENTITY_CURRENT_PROFILE_EMPTY', 'PLUGIN_ADAPTER_IDENTITY_PROFILE_EMPTY', '未捕获到当前账号资料'],
+      ['X_IDENTITY_RESPONSE_INVALID', 'PLUGIN_ADAPTER_IDENTITY_RESPONSE_INVALID', '身份资料结构暂不受支持'],
+      ['X_IDENTITY_STABLE_ID_VERIFY_FAILED', 'PLUGIN_ADAPTER_IDENTITY_STABLE_ID_FAILED', '稳定账号 ID 复核失败']
+    ] as const
+
+    for (const [guestCode, hostCode, message] of cases) {
+      const repository = repositoryFixture()
+      const adapter = createAdapter(
+        repository,
+        runtimeSequence([{ __streamfoldFailure: guestCode }]),
+        jobsFixture(),
+        undefined,
+        60,
+        { pluginId: 'streamfold.x', contributionId: 'streamfold.x.platform' }
+      )
+
+      await expect(adapter.verifyIdentity('account-1')).rejects.toMatchObject({
+        code: hostCode,
+        message: expect.stringContaining(message)
+      })
+      expect(repository.applyManagedIdentity).not.toHaveBeenCalled()
+    }
+  })
+
+  it('rejects malformed or unknown official X envelopes without leaking guest text', async () => {
+    const guestText = 'sensitive guest or upstream response body'
+    const values = [
+      { __streamfoldFailure: 'X_IDENTITY_SETTINGS_EMPTY', raw: guestText },
+      { __streamfoldFailure: guestText }
+    ]
+
+    for (const value of values) {
+      const adapter = createAdapter(
+        repositoryFixture(),
+        runtimeSequence([value]),
+        jobsFixture(),
+        undefined,
+        60,
+        { pluginId: 'streamfold.x', contributionId: 'streamfold.x.platform' }
+      )
+      let failure: unknown
+      try {
+        await adapter.verifyIdentity('account-1')
+      } catch (error) {
+        failure = error
+      }
+      expect(failure).toMatchObject({ code: 'PLUGIN_ADAPTER_IDENTITY_FAILED' })
+      expect(failure).toBeInstanceOf(Error)
+      expect((failure as Error).message).not.toContain(guestText)
+    }
+  })
+
+  it('uses the same official X stage mapping for unbound adapter probes', async () => {
+    const runtime = runtimeSequence([{ __streamfoldFailure: 'X_IDENTITY_CURRENT_PROFILE_EMPTY' }])
+    const adapter = createAdapter(
+      repositoryFixture(),
+      runtime,
+      jobsFixture(),
+      undefined,
+      60,
+      { pluginId: 'streamfold.x', contributionId: 'streamfold.x.platform' }
+    )
+
+    await expect(adapter.probeIdentity('account-1')).rejects.toMatchObject({
+      code: 'PLUGIN_ADAPTER_IDENTITY_PROFILE_EMPTY'
+    })
+    expect(runtime.invoke).toHaveBeenCalledWith(
+      'streamfold.x',
+      'streamfold.x.platform',
+      'readIdentity',
+      'account-1',
+      { expectedRemoteId: 'stable-owner' },
+      true
+    )
+  })
+
+  it('does not trust an X stage envelope outside the exact official contribution pair', async () => {
+    const identities = [
+      { pluginId: 'example.plugin', contributionId: 'example.adapter' },
+      { pluginId: 'streamfold.x', contributionId: 'example.adapter' },
+      { pluginId: 'example.plugin', contributionId: 'streamfold.x.platform' }
+    ]
+    for (const identity of identities) {
+      const adapter = createAdapter(
+        repositoryFixture(),
+        runtimeSequence([{ __streamfoldFailure: 'X_IDENTITY_SETTINGS_EMPTY' }]),
+        jobsFixture(),
+        undefined,
+        60,
+        identity
+      )
+      let failure: unknown
+      try {
+        await adapter.verifyIdentity('account-1')
+      } catch (error) {
+        failure = error
+      }
+
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure).not.toMatchObject({ code: 'PLUGIN_ADAPTER_IDENTITY_SETTINGS_EMPTY' })
+    }
+  })
+
   it('marks a bound account mismatch from the adapter observed login identity', async () => {
     const repository = repositoryFixture()
     repository.applyManagedIdentity.mockReturnValue({
@@ -338,15 +444,28 @@ function createAdapter(
   runtime: { invoke: ReturnType<typeof vi.fn> },
   jobs: ReturnType<typeof jobsFixture>,
   avatars?: { cacheAvatar(accountId: string, sourceUrl: string): Promise<{ cacheKey: string; mime: string } | null> },
-  collectionIntervalSeconds = 60
+  collectionIntervalSeconds = 60,
+  identity: { pluginId: string; contributionId: string } = {
+    pluginId: 'example.plugin',
+    contributionId: 'example.adapter'
+  }
 ): SandboxPlatformAdapter {
+  const state = adapterState()
+  state.pluginId = identity.pluginId
+  state.contribution.id = identity.contributionId
+  if (identity.contributionId !== 'example.adapter') {
+    const account = repository.getAccount('account-1')
+    repository.getAccount.mockImplementation((id: string) => (
+      account && id === account.id ? { ...account, adapterContributionId: identity.contributionId } : null
+    ))
+  }
   return new SandboxPlatformAdapter(
-    'example.plugin',
-    'example.adapter',
+    identity.pluginId,
+    identity.contributionId,
     'example-platform',
     repository,
     {
-      listContributions: () => [adapterState()],
+      listContributions: () => [state],
       platformCollectionIntervalSeconds: () => collectionIntervalSeconds
     } as unknown as PluginHostService,
     { invoke: runtime.invoke } as unknown as PluginRuntimeExecutor,

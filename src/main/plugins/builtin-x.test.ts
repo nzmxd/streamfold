@@ -16,7 +16,7 @@ const OTHER_ID = '900719925474099312345678902'
 describe('built-in X platform adapter', () => {
   it('declares only the bounded signed-in web-session surface', () => {
     expect(xPluginManifest.id).toBe(X_PLUGIN_ID)
-    expect(xPluginManifest).toMatchObject({ version: '1.1.1', minimumAppVersion: '0.7.6' })
+    expect(xPluginManifest).toMatchObject({ version: '1.1.2', minimumAppVersion: '0.7.7' })
     const contribution = xPluginManifest.contributions[0]
     expect(contribution).toMatchObject({
       id: X_PLATFORM_CONTRIBUTION_ID,
@@ -158,7 +158,22 @@ describe('built-in X platform adapter', () => {
     ])
   })
 
-  it('rejects identity disagreement and uses a fixed GraphQL error message', async () => {
+  it('reports empty settings and current-profile captures with bounded stage envelopes', async () => {
+    await expect(invoke(hostWith({
+      'x.identity.settings': []
+    }), 'readIdentity', { expectedRemoteId: null })).resolves.toEqual({
+      __streamfoldFailure: 'X_IDENTITY_SETTINGS_EMPTY'
+    })
+
+    await expect(invoke(hostWith({
+      'x.identity.settings': [{ screen_name: 'authenticated' }],
+      'x.identity.profile.initial': []
+    }), 'readIdentity', { expectedRemoteId: null })).resolves.toEqual({
+      __streamfoldFailure: 'X_IDENTITY_CURRENT_PROFILE_EMPTY'
+    })
+  })
+
+  it('reports unsupported identity response structures without returning upstream text', async () => {
     const mismatched = hostWith({
       'x.identity.settings': [{ screen_name: 'authenticated' }],
       'x.identity.profile.initial': [profileResponse({
@@ -169,21 +184,78 @@ describe('built-in X platform adapter', () => {
       })]
     })
     await expect(invoke(mismatched, 'readIdentity', { expectedRemoteId: null }))
-      .rejects.toThrow('settings 与资料账号不一致')
+      .resolves.toEqual({ __streamfoldFailure: 'X_IDENTITY_RESPONSE_INVALID' })
 
     const graphqlError = hostWith({
       'x.identity.settings': [{ screen_name: 'authenticated' }],
       'x.identity.profile.initial': [{ errors: [{ message: 'sensitive upstream response body' }] }]
     })
-    let message = ''
-    try {
-      await invoke(graphqlError, 'readIdentity', { expectedRemoteId: null })
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error)
-    }
-    expect(message).toContain('UserByScreenName返回错误')
-    expect(message).not.toContain('sensitive upstream response body')
+    const result = await invoke(graphqlError, 'readIdentity', { expectedRemoteId: null })
+    expect(result).toEqual({ __streamfoldFailure: 'X_IDENTITY_RESPONSE_INVALID' })
+    expect(JSON.stringify(result)).not.toContain('sensitive upstream response body')
   })
+
+  it('reports a failed stable-ID cross-check without returning bound-profile details', async () => {
+    const shared = {
+      'x.identity.settings': [{ screen_name: 'authenticated' }],
+      'x.identity.profile.initial': [profileResponse({
+        remoteId: OWNER_ID,
+        handle: 'authenticated',
+        name: 'Authenticated owner',
+        currentShape: true
+      })]
+    }
+    await expect(invoke(hostWith({
+      ...shared,
+      'x.identity.profile.bound': []
+    }), 'readIdentity', { expectedRemoteId: OWNER_ID })).resolves.toEqual({
+      __streamfoldFailure: 'X_IDENTITY_STABLE_ID_VERIFY_FAILED'
+    })
+
+    const mismatchedBound = await invoke(hostWith({
+      ...shared,
+      'x.identity.profile.bound': [profileResponse({
+        remoteId: OTHER_ID,
+        handle: 'authenticated',
+        name: 'Unexpected owner',
+        currentShape: true,
+        root: 'rest-id'
+      })]
+    }), 'readIdentity', { expectedRemoteId: OWNER_ID })
+    expect(mismatchedBound).toEqual({ __streamfoldFailure: 'X_IDENTITY_STABLE_ID_VERIFY_FAILED' })
+    expect(JSON.stringify(mismatchedBound)).not.toContain('Unexpected owner')
+  })
+
+  it('does not convert capture host rejections into guest stage envelopes', async () => {
+    const hostFailure = new Error('host capture rejection')
+    const host = createTestHost({
+      hostCall: async () => { throw hostFailure }
+    })
+
+    await expect(invoke(host, 'readIdentity', { expectedRemoteId: null })).rejects.toBe(hostFailure)
+  })
+
+  it('returns a bounded identity stage envelope through the actual QuickJS sandbox', async () => {
+    const output = await executeQuickJsContribution({
+      protocolVersion: 1,
+      type: 'invoke',
+      invocationId: 'xidentity_test_0001',
+      pluginId: X_PLUGIN_ID,
+      contributionId: X_PLATFORM_CONTRIBUTION_ID,
+      entrySource: xEntrySource,
+      method: 'readIdentity',
+      input: { expectedRemoteId: null },
+      context: { pluginId: X_PLUGIN_ID, contributionId: X_PLATFORM_CONTRIBUTION_ID },
+      allowedOperations: ['platform.captureJson'],
+      limits: { ...DEFAULT_SANDBOX_LIMITS }
+    }, async (operation, payload) => {
+      expect(operation).toBe('platform.captureJson')
+      expect(payload).toEqual({ captureId: 'x.identity.settings', params: {}, limit: 1 })
+      return []
+    })
+
+    expect(output).toEqual({ __streamfoldFailure: 'X_IDENTITY_SETTINGS_EMPTY' })
+  }, 20_000)
 
   it('maps own original and quote posts while filtering replies, retweets and other authors', async () => {
     const longText = `${'长'.repeat(82)}\nwith   whitespace`
