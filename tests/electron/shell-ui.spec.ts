@@ -463,6 +463,15 @@ test('知乎账号详情在最小窗口下完整展示周期指标入口', async
 
   const panel = page.locator('.account-metrics-panel')
   await expect(panel).toBeVisible()
+  const summaryDisclosure = panel.locator('.account-metrics-head .account-metric-disclosure')
+  const trendDisclosure = panel.locator('.account-metric-trend-head .account-metric-disclosure')
+  await expect(summaryDisclosure).toHaveAttribute('aria-expanded', 'false')
+  await expect(summaryDisclosure).toHaveAttribute('aria-label', '展开知乎创作数据')
+  await expect(trendDisclosure).toHaveAttribute('aria-expanded', 'false')
+  await expect(trendDisclosure).toHaveAttribute('aria-label', '展开最近 30 天趋势')
+
+  await summaryDisclosure.click()
+  await expect(summaryDisclosure).toHaveAttribute('aria-expanded', 'true')
   await expect(panel.getByText('暂无创作指标')).toBeVisible()
   const periods = panel.getByRole('group', { name: '创作指标周期' })
   await expect(periods.getByRole('button')).toHaveCount(4)
