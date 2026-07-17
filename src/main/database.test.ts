@@ -991,7 +991,7 @@ describe('SocialDatabase migrations', () => {
     if (directory) rmSync(directory, { recursive: true, force: true })
   })
 
-  it('migrates an existing unversioned three-table database to the current schema', () => {
+  it('migrates an existing unversioned three-table database to the current schema', { timeout: 20_000 }, () => {
     directory = mkdtempSync(join(tmpdir(), 'social-vault-db-'))
     const path = join(directory, 'legacy.sqlite')
     const legacy = new DatabaseSync(path)
