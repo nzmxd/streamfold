@@ -143,6 +143,22 @@ describe('IPC trust and maintenance boundary', () => {
     expect(electronMock.handlers.size).toBe(0)
   })
 
+  it('unregisters safely after Electron destroys the main window object', () => {
+    const fixture = ipcFixture()
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+    fixture.webContents.isDestroyed.mockReturnValue(true)
+    Object.defineProperty(fixture.window, 'webContents', {
+      configurable: true,
+      get: () => { throw new TypeError('Object has been destroyed') }
+    })
+
+    expect(() => unregisterIpc()).not.toThrow()
+    expect(() => unregisterIpc()).not.toThrow()
+    expect(fixture.webContents.off).not.toHaveBeenCalled()
+    expect(fixture.removeCaptureActivityListener).toHaveBeenCalledOnce()
+    expect(electronMock.handlers.size).toBe(0)
+  })
+
   it('restores, persists and broadcasts only valid custom theme colors', async () => {
     const fixture = ipcFixture()
     fixture.settings.set('appearance.themeColor', '#C2416C')
@@ -323,6 +339,7 @@ describe('IPC trust and maintenance boundary', () => {
 
 function ipcFixture() {
   let captureListener: ((activity: PluginCaptureActivity) => void) | null = null
+  const removeCaptureActivityListener = vi.fn(() => { captureListener = null })
   const webContentsListeners = new Map<string, Set<() => void>>()
   const mainFrame = { url: 'app://shell/index.html' }
   const webContents = {
@@ -452,6 +469,7 @@ function ipcFixture() {
   return {
     mainFrame,
     window,
+    webContents,
     pluginHost,
     pluginLifecycle,
     pluginAutomation,
@@ -465,12 +483,13 @@ function ipcFixture() {
       applyAppearance: vi.fn(),
       onPluginCaptureActivity: vi.fn((listener: (activity: PluginCaptureActivity) => void) => {
         captureListener = listener
-        return () => { captureListener = null }
+        return removeCaptureActivityListener
       }),
       stopPluginCapture: vi.fn(),
       stopAllPluginCaptures: vi.fn(),
       bootstrapPluginCapture: vi.fn()
     } as unknown as Parameters<typeof registerIpc>[2],
+    removeCaptureActivityListener,
     emitWebContents: (event: string) => {
       for (const listener of webContentsListeners.get(event) ?? []) listener()
     },

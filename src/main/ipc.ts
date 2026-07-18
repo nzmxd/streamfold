@@ -82,6 +82,7 @@ export function registerIpc(
   browser: BrowserManager,
   services: IpcServices
 ): void {
+  const shellWebContents = window.webContents
   const disconnectingAccounts = new Set<string>()
   let maintenance = false
   let maintenanceMessage = '本地数据库正在恢复，请稍候'
@@ -410,10 +411,10 @@ export function registerIpc(
     }
   }
   const bootstrapBackgroundCaptureAccounts = (): void => reconcileBackgroundCaptureAccounts()
-  window.webContents.on('did-finish-load', bootstrapBackgroundCaptureAccounts)
+  shellWebContents.on('did-finish-load', bootstrapBackgroundCaptureAccounts)
   removeBackgroundBootstrapListener = () => {
-    if (!window.webContents.isDestroyed()) {
-      window.webContents.off('did-finish-load', bootstrapBackgroundCaptureAccounts)
+    if (!shellWebContents.isDestroyed()) {
+      shellWebContents.off('did-finish-load', bootstrapBackgroundCaptureAccounts)
     }
   }
   const registerIpcHandler = ipcMain.handle.bind(ipcMain)
