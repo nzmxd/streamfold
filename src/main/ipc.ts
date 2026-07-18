@@ -46,6 +46,7 @@ import {
   parsePluginConfig,
   parsePluginGrant,
   parseRestoreEncryptedBackup,
+  parseSaveContentFilterView,
   parseTaskQuery,
   parseUpdateContent,
   parseUpdateSettings,
@@ -633,6 +634,13 @@ export function registerIpc(
   handleIpc('content:search', trusted((_event, value) => (
     database.searchContents(parseContentSearchQuery(value))
   )))
+  handleIpc('content:list-filter-views', trusted(() => database.listContentFilterViews()))
+  handleIpc('content:save-filter-view', trusted((_event, value) => (
+    database.saveContentFilterView(parseSaveContentFilterView(value))
+  )))
+  handleIpc('content:delete-filter-view', trusted((_event, value) => {
+    database.deleteContentFilterView(parseId(value))
+  }))
   handleIpc('content:bulk-update', trusted((_event, value) => {
     const result = database.bulkUpdateContents(parseBulkUpdateContents(value))
     notifyContentChanged()
@@ -1036,6 +1044,9 @@ export function unregisterIpc(): void {
     'browser:open',
     'content:list',
     'content:search',
+    'content:list-filter-views',
+    'content:save-filter-view',
+    'content:delete-filter-view',
     'content:bulk-update',
     'content:list-tags',
     'content:export-filtered',

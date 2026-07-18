@@ -183,10 +183,44 @@ export interface ContentSearchQuery {
   publishedTo?: string
   capturedFrom?: string
   capturedTo?: string
+  syncWarningOnly?: boolean
   sort?: ContentSearchSort
   order?: ContentSearchOrder
   limit?: number
   offset?: number
+}
+
+export interface ContentFilterViewState {
+  keyword: string
+  accountId: string
+  platformId: '' | PlatformId
+  groupId: string
+  type: '' | ContentType
+  tags: string[]
+  tagMatch: ContentTagMatch
+  bookmark: 'all' | 'bookmarked' | 'unbookmarked'
+  syncWarningOnly: boolean
+  publishedFrom: string
+  publishedTo: string
+  capturedFrom: string
+  capturedTo: string
+  sort: ContentSearchSort
+  order: ContentSearchOrder
+  pageSize: number
+}
+
+export interface ContentFilterView {
+  id: string
+  name: string
+  state: ContentFilterViewState
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SaveContentFilterViewInput {
+  id?: string
+  name: string
+  state: ContentFilterViewState
 }
 
 export interface ContentSearchPage {

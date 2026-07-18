@@ -1,31 +1,18 @@
 import type {
+  ContentFilterViewState,
   ContentSearchQuery,
   ContentSearchOrder,
   ContentSearchSort,
   ContentTagFacetQuery,
-  ContentTagMatch,
-  ContentType,
   PlatformId
 } from '../../../../shared/contracts'
 
-export type BookmarkFilter = 'all' | 'bookmarked' | 'unbookmarked'
+export type ContentSearchFilters = ContentFilterViewState
 
-export interface ContentSearchFilters {
-  keyword: string
-  accountId: string
-  platformId: '' | PlatformId
-  groupId: string
-  type: '' | ContentType
-  tags: string[]
-  tagMatch: ContentTagMatch
-  bookmark: BookmarkFilter
-  publishedFrom: string
-  publishedTo: string
-  capturedFrom: string
-  capturedTo: string
-  sort: ContentSearchSort
-  order: ContentSearchOrder
-  pageSize: number
+export interface ContentFilterViewReferences {
+  accountIds: readonly string[]
+  platformIds: readonly PlatformId[]
+  groupIds: readonly string[]
 }
 
 export interface PaginationRange {
@@ -49,6 +36,7 @@ export function createDefaultContentSearchFilters(): ContentSearchFilters {
     publishedTo: '',
     capturedFrom: '',
     capturedTo: '',
+    syncWarningOnly: false,
     sort: 'published',
     order: 'desc',
     pageSize: 50
@@ -81,7 +69,52 @@ export function contentSearchQueryFromFilters(
   if (isDateInput(filters.publishedTo)) query.publishedTo = endOfDay(filters.publishedTo)
   if (isDateInput(filters.capturedFrom)) query.capturedFrom = startOfDay(filters.capturedFrom)
   if (isDateInput(filters.capturedTo)) query.capturedTo = endOfDay(filters.capturedTo)
+  if (filters.syncWarningOnly) query.syncWarningOnly = true
   return query
+}
+
+export function contentFilterViewStateFromFilters(
+  filters: ContentSearchFilters
+): ContentFilterViewState {
+  const sort = filters.sort
+  return {
+    keyword: filters.keyword.trim(),
+    accountId: filters.accountId.trim(),
+    platformId: filters.platformId,
+    groupId: filters.groupId.trim(),
+    type: filters.type,
+    tags: normalizeTags(filters.tags),
+    tagMatch: filters.tagMatch,
+    bookmark: filters.bookmark,
+    syncWarningOnly: filters.syncWarningOnly === true,
+    publishedFrom: normalizeDateInput(filters.publishedFrom),
+    publishedTo: normalizeDateInput(filters.publishedTo),
+    capturedFrom: normalizeDateInput(filters.capturedFrom),
+    capturedTo: normalizeDateInput(filters.capturedTo),
+    sort,
+    order: sort === 'relevance' ? 'asc' : filters.order,
+    pageSize: normalizeFilterPageSize(filters.pageSize)
+  }
+}
+
+export function contentSearchFiltersFromViewState(
+  state: ContentFilterViewState
+): ContentSearchFilters {
+  return contentFilterViewStateFromFilters(state)
+}
+
+export function reconcileContentFilterViewStateReferences(
+  state: ContentFilterViewState,
+  references: ContentFilterViewReferences
+): ContentFilterViewState {
+  const normalized = contentFilterViewStateFromFilters(contentSearchFiltersFromViewState(state))
+  const accountIds = new Set(references.accountIds)
+  const platformIds = new Set<PlatformId>(references.platformIds)
+  const groupIds = new Set(references.groupIds)
+  if (normalized.accountId && !accountIds.has(normalized.accountId)) normalized.accountId = ''
+  if (normalized.platformId && !platformIds.has(normalized.platformId)) normalized.platformId = ''
+  if (normalized.groupId && !groupIds.has(normalized.groupId)) normalized.groupId = ''
+  return normalized
 }
 
 export function contentTagFacetQueryFromFilters(
@@ -150,6 +183,22 @@ export function reconcilePageSelection<T extends { id: string }>(
   return [...new Set(selectedIds)].filter((id) => visibleIds.has(id))
 }
 
+export function selectedContentOriginalUrls<T extends { id: string; url: string }>(
+  items: readonly T[],
+  selectedIds: readonly string[]
+): string[] {
+  const selected = new Set(selectedIds)
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of items) {
+    const url = item.url.trim()
+    if (!selected.has(item.id) || !url || seen.has(url)) continue
+    seen.add(url)
+    result.push(url)
+  }
+  return result
+}
+
 function normalizeTags(tags: readonly string[]): string[] {
   const result: string[] = []
   const seen = new Set<string>()
@@ -168,8 +217,16 @@ function normalizePageSize(value: number): number {
   return Math.min(100, Math.max(1, Math.trunc(value)))
 }
 
+function normalizeFilterPageSize(value: number): number {
+  return value === 25 || value === 100 ? value : 50
+}
+
 function isDateInput(value: string | undefined): value is string {
   return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value))
+}
+
+function normalizeDateInput(value: string): string {
+  return isDateInput(value) ? value : ''
 }
 
 function startOfDay(value: string): string {

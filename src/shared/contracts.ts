@@ -198,6 +198,9 @@ export interface SocialVaultApi {
     onChanged(callback: () => void): () => void
     list(query?: import('./content-contracts').ContentQuery): Promise<import('./content-contracts').ContentSummary[]>
     search(query?: import('./content-contracts').ContentSearchQuery): Promise<import('./content-contracts').ContentSearchPage>
+    listFilterViews(): Promise<import('./content-contracts').ContentFilterView[]>
+    saveFilterView(input: import('./content-contracts').SaveContentFilterViewInput): Promise<import('./content-contracts').ContentFilterView>
+    deleteFilterView(id: string): Promise<void>
     bulkUpdate(input: import('./content-contracts').BulkUpdateContentsInput): Promise<import('./content-contracts').BulkUpdateContentsResult>
     listTags(query?: import('./content-contracts').ContentTagFacetQuery): Promise<import('./content-contracts').ContentTagFacet[]>
     exportFiltered(input: import('./content-contracts').ExportFilteredContentsInput): Promise<import('./settings-contracts').ExportDataResult>

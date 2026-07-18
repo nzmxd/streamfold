@@ -44,6 +44,7 @@ import type {
   AnalyticsSummaryQuery,
   BulkUpdateContentsInput,
   BulkUpdateContentsResult,
+  ContentFilterView,
   ContentDetail,
   ContentDetailOptions,
   ContentHistorySnapshot,
@@ -65,6 +66,7 @@ import type {
   MetricValues,
   StandardAnalyticsMetricId,
   StandardContentMetricId,
+  SaveContentFilterViewInput,
   UpdateContentInput
 } from '../shared/content-contracts'
 import {
@@ -82,6 +84,7 @@ import {
   prepareContentSearch,
   toEscapedLikeContainsPattern
 } from './search-primitives'
+import { parseSaveContentFilterView } from './validation'
 import type {
   JobBatchRecord,
   JobKind,
@@ -121,6 +124,8 @@ import {
 import { CURRENT_SCHEMA_VERSION, migrateDatabase, readUserVersion } from './storage/migrations'
 
 export const CONTENT_DETAIL_HISTORY_LIMIT = 240
+const CONTENT_FILTER_VIEWS_SETTING_KEY = 'content.filterViews.v1'
+const MAX_CONTENT_FILTER_VIEWS = 30
 
 export interface CreateJobInput {
   id?: string
@@ -1196,6 +1201,18 @@ export class SocialDatabase {
       where.push('COALESCE(c.last_captured_at, c.first_captured_at) <= ?')
       whereParameters.push(query.capturedTo)
     }
+    if (query.syncWarningOnly === true) {
+      where.push(`(
+        SELECT latest_job.status
+        FROM content_observations latest_observation
+        JOIN jobs latest_job ON latest_job.id = latest_observation.job_id
+        WHERE latest_observation.content_id = c.id
+          AND latest_job.kind = 'managed_sync'
+          AND latest_job.status IN ('succeeded', 'succeeded_with_warnings')
+        ORDER BY latest_job.finished_at DESC, latest_job.created_at DESC, latest_job.id DESC
+        LIMIT 1
+      ) = 'succeeded_with_warnings'`)
+    }
     if (tags.length > 0) {
       if ((query.tagMatch ?? 'all') === 'all') {
         where.push(`(
@@ -1297,6 +1314,47 @@ export class SocialDatabase {
             ? 'fts'
             : 'hybrid'
     }
+  }
+
+  listContentFilterViews(): ContentFilterView[] {
+    const stored = this.getSetting<unknown>(CONTENT_FILTER_VIEWS_SETTING_KEY, [])
+    return normalizeStoredContentFilterViews(stored)
+  }
+
+  saveContentFilterView(input: SaveContentFilterViewInput): ContentFilterView {
+    const normalized = parseSaveContentFilterView(input)
+    const views = this.listContentFilterViews()
+    const existingIndex = normalized.id === undefined
+      ? -1
+      : views.findIndex((view) => view.id === normalized.id)
+    if (normalized.id !== undefined && existingIndex < 0) throw new Error('筛选视图不存在')
+    const duplicateName = views.some((view, index) => (
+      index !== existingIndex && contentFilterViewNameKey(view.name) === contentFilterViewNameKey(normalized.name)
+    ))
+    if (duplicateName) throw new Error('筛选视图名称已存在')
+    if (existingIndex < 0 && views.length >= MAX_CONTENT_FILTER_VIEWS) {
+      throw new Error(`筛选视图最多保存 ${MAX_CONTENT_FILTER_VIEWS} 个`)
+    }
+
+    const now = new Date().toISOString()
+    const view: ContentFilterView = {
+      id: existingIndex >= 0 ? views[existingIndex]!.id : randomUUID(),
+      name: normalized.name,
+      state: normalized.state,
+      createdAt: existingIndex >= 0 ? views[existingIndex]!.createdAt : now,
+      updatedAt: now
+    }
+    if (existingIndex >= 0) views.splice(existingIndex, 1, view)
+    else views.push(view)
+    this.setSetting(CONTENT_FILTER_VIEWS_SETTING_KEY, views)
+    return view
+  }
+
+  deleteContentFilterView(id: string): void {
+    const views = this.listContentFilterViews()
+    const next = views.filter((view) => view.id !== id)
+    if (next.length === views.length) throw new Error('筛选视图不存在')
+    this.setSetting(CONTENT_FILTER_VIEWS_SETTING_KEY, next)
   }
 
   listContentTags(query: ContentTagFacetQuery = {}): ContentTagFacet[] {
@@ -4774,6 +4832,49 @@ function validateStandardDataset(payload: StandardDataset): void {
 const CONTENT_SEARCH_SORTS = new Set<NonNullable<ContentSearchQuery['sort']>>([
   'relevance', 'published', 'captured', 'views', 'interactions'
 ])
+
+function normalizeStoredContentFilterViews(value: unknown): ContentFilterView[] {
+  if (!Array.isArray(value)) return []
+  const views: ContentFilterView[] = []
+  const ids = new Set<string>()
+  const names = new Set<string>()
+  for (const item of value) {
+    if (views.length >= MAX_CONTENT_FILTER_VIEWS) break
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const record = item as Record<string, unknown>
+    try {
+      const normalized = parseSaveContentFilterView({
+        id: record.id,
+        name: record.name,
+        state: record.state
+      })
+      if (!normalized.id || typeof record.createdAt !== 'string' || typeof record.updatedAt !== 'string' ||
+        !isIsoDate(record.createdAt) || !isIsoDate(record.updatedAt)) continue
+      const nameKey = contentFilterViewNameKey(normalized.name)
+      if (ids.has(normalized.id) || names.has(nameKey)) continue
+      ids.add(normalized.id)
+      names.add(nameKey)
+      views.push({
+        id: normalized.id,
+        name: normalized.name,
+        state: normalized.state,
+        createdAt: new Date(record.createdAt).toISOString(),
+        updatedAt: new Date(record.updatedAt).toISOString()
+      })
+    } catch {
+      continue
+    }
+  }
+  return views.sort((left, right) => (
+    right.updatedAt.localeCompare(left.updatedAt) ||
+    right.createdAt.localeCompare(left.createdAt) ||
+    left.name.localeCompare(right.name, 'zh-CN')
+  ))
+}
+
+function contentFilterViewNameKey(name: string): string {
+  return name.normalize('NFKC').toLocaleLowerCase('zh-CN')
+}
 
 function normalizeContentIdSelection(values: readonly string[], label: string): string[] {
   if (!Array.isArray(values) || values.length > 500) throw new Error(`${label}选择无效`)

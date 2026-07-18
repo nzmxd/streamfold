@@ -29,6 +29,7 @@ vi.mock('electron', () => ({
 
 import { registerIpc, unregisterIpc, type IpcServices } from './ipc'
 import type { PluginCaptureActivity } from './browser-manager'
+import { socialVaultInvokeChannels } from '../shared/ipc-bridge-contracts'
 
 describe('IPC trust and maintenance boundary', () => {
   beforeEach(() => {
@@ -94,6 +95,52 @@ describe('IPC trust and maintenance boundary', () => {
       accountId: 'account-1',
       period: 'daily'
     })).rejects.toThrow('远程页面')
+  })
+
+  it('guards saved content filter view CRUD at the trusted IPC boundary', async () => {
+    const fixture = ipcFixture()
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+    const state = {
+      keyword: ' 复盘 ', accountId: '', platformId: '', groupId: '', type: '', tags: [],
+      tagMatch: 'all', bookmark: 'all', syncWarningOnly: true,
+      publishedFrom: '', publishedTo: '', capturedFrom: '', capturedTo: '',
+      sort: 'published', order: 'desc', pageSize: 50
+    }
+
+    await expect(requiredHandler('content:list-filter-views')(eventFixture(fixture)))
+      .resolves.toEqual([])
+    await expect(requiredHandler('content:save-filter-view')(
+      eventFixture(fixture), { name: '  每日复盘  ', state }
+    )).resolves.toMatchObject({ id: 'view-1', name: '每日复盘' })
+    expect(fixture.database.saveContentFilterView).toHaveBeenCalledWith({
+      name: '每日复盘',
+      state: { ...state, keyword: '复盘' }
+    })
+    await expect(requiredHandler('content:delete-filter-view')(
+      eventFixture(fixture), 'view-1'
+    )).resolves.toBeUndefined()
+    expect(fixture.database.deleteContentFilterView).toHaveBeenCalledWith('view-1')
+
+    await expect(requiredHandler('content:list-filter-views')(
+      eventFixture(fixture, { senderId: 999 })
+    )).rejects.toThrow('远程页面')
+    await expect(requiredHandler('content:save-filter-view')(
+      eventFixture(fixture), { name: '坏视图', state: { ...state, pageSize: 30 } }
+    )).rejects.toThrow('每页数量无效')
+    await expect(requiredHandler('content:delete-filter-view')(
+      eventFixture(fixture), ''
+    )).rejects.toThrow('ID长度应为')
+  })
+
+  it('registers and unregisters every fixed renderer invoke channel', () => {
+    const fixture = ipcFixture()
+    registerIpc(fixture.window, fixture.database, fixture.browser, fixture.services)
+
+    for (const channel of socialVaultInvokeChannels) {
+      expect(electronMock.handlers.has(channel), `missing IPC handler: ${channel}`).toBe(true)
+    }
+    unregisterIpc()
+    expect(electronMock.handlers.size).toBe(0)
   })
 
   it('restores, persists and broadcasts only valid custom theme colors', async () => {
@@ -378,6 +425,14 @@ function ipcFixture() {
       settings.set(key, value)
       return value
     }),
+    listContentFilterViews: vi.fn(() => []),
+    saveContentFilterView: vi.fn((input: { name: string; state: unknown }) => ({
+      id: 'view-1',
+      ...input,
+      createdAt: '2026-07-18T00:00:00.000Z',
+      updatedAt: '2026-07-18T00:00:00.000Z'
+    })),
+    deleteContentFilterView: vi.fn(),
     getAccountMetricHistory: vi.fn(() => ({
       accountId: 'account-1',
       platformId: 'zhihu',

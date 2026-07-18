@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DatabaseSync } from 'node:sqlite'
-import type { Account, PlatformId } from '../shared/contracts'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { Account, ContentFilterViewState, PlatformId } from '../shared/contracts'
 import { SocialDatabase } from './database'
 
 describe('SocialDatabase v16 content queries', () => {
@@ -108,6 +111,120 @@ describe('SocialDatabase v16 content queries', () => {
       .toEqual(['content-b', 'content-a', 'content-c'])
     expect(database.searchContents({ sort: 'interactions', order: 'desc' }).items.map(({ id }) => id))
       .toEqual(['content-c', 'content-a', 'content-b'])
+  })
+
+  it('filters contents by the latest successful sync warning job', () => {
+    const account = createAccount(database, 'xiaohongshu', '同步账号')
+    seedContent(database, { id: 'content-warning', accountId: account.id, title: '仍有异常' })
+    seedContent(database, { id: 'content-recovered', accountId: account.id, title: '已经恢复' })
+    seedContent(database, { id: 'content-clean', accountId: account.id, title: '一直正常' })
+    const warningJob = database.createJob({
+      id: 'warning-job',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'test.plugin',
+      status: 'succeeded_with_warnings',
+      createdAt: '2026-07-15T08:00:00.000Z',
+      finishedAt: '2026-07-15T08:01:00.000Z'
+    })
+    const cleanJob = database.createJob({
+      id: 'clean-job',
+      kind: 'managed_sync',
+      accountId: account.id,
+      pluginId: 'test.plugin',
+      status: 'succeeded',
+      createdAt: '2026-07-15T08:02:00.000Z',
+      finishedAt: '2026-07-15T08:03:00.000Z'
+    })
+    const db = rawDatabase(database)
+    seedObservation(db, 'warning-observation', 'content-warning', warningJob.id)
+    seedObservation(db, 'recovered-warning-observation', 'content-recovered', warningJob.id)
+    seedObservation(db, 'recovered-clean-observation', 'content-recovered', cleanJob.id)
+    seedObservation(db, 'clean-observation', 'content-clean', cleanJob.id)
+
+    expect(database.searchContents({ syncWarningOnly: true, limit: 1 })).toMatchObject({
+      total: 1,
+      hasMore: false,
+      items: [{ id: 'content-warning' }]
+    })
+    expect(database.searchContents({ syncWarningOnly: false }).total).toBe(3)
+  })
+
+  it('persists bounded named filter views and preserves creation time on updates', () => {
+    const state = defaultFilterViewState()
+    const created = database.saveContentFilterView({ name: 'Daily Review', state })
+
+    expect(created.id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(database.getSetting('content.filterViews.v1')).toEqual([created])
+    expect(() => database.saveContentFilterView({ name: 'daily review', state }))
+      .toThrow('筛选视图名称已存在')
+
+    const updated = database.saveContentFilterView({
+      id: created.id,
+      name: 'DAILY REVIEW',
+      state: { ...state, bookmark: 'bookmarked', pageSize: 100 }
+    })
+    expect(updated).toMatchObject({
+      id: created.id,
+      name: 'DAILY REVIEW',
+      state: { bookmark: 'bookmarked', pageSize: 100 },
+      createdAt: created.createdAt
+    })
+    expect(database.listContentFilterViews()).toEqual([updated])
+    expect(() => database.saveContentFilterView({ id: 'missing-view', name: 'Missing', state }))
+      .toThrow('筛选视图不存在')
+
+    database.deleteContentFilterView(created.id)
+    expect(database.listContentFilterViews()).toEqual([])
+    expect(() => database.deleteContentFilterView(created.id)).toThrow('筛选视图不存在')
+    for (let index = 0; index < 30; index += 1) {
+      database.saveContentFilterView({ name: `视图 ${index}`, state })
+    }
+    expect(database.listContentFilterViews()).toHaveLength(30)
+    expect(() => database.saveContentFilterView({ name: '第 31 个', state }))
+      .toThrow('筛选视图最多保存 30 个')
+  })
+
+  it('reopens saved filter views and safely skips corrupted stored entries', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'streamfold-content-views-'))
+    const path = join(directory, 'content-views.sqlite')
+    let persistent: SocialDatabase | null = new SocialDatabase(path)
+    try {
+      const created = persistent.saveContentFilterView({
+        name: '持久视图',
+        state: { ...defaultFilterViewState(), syncWarningOnly: true }
+      })
+      persistent.close()
+      persistent = null
+      persistent = new SocialDatabase(path)
+      expect(persistent.listContentFilterViews()).toEqual([created])
+
+      const second = {
+        ...created,
+        id: 'view-2',
+        name: '第二视图',
+        createdAt: '2026-07-19T00:00:00.000Z',
+        updatedAt: '2026-07-19T00:00:00.000Z'
+      }
+      persistent.setSetting('content.filterViews.v1', [
+        null,
+        { malformed: true },
+        created,
+        { ...created, name: '重复 ID' },
+        second,
+        { ...second, id: 'view-3', name: created.name }
+      ])
+      expect(new Set(persistent.listContentFilterViews().map((view) => view.id)))
+        .toEqual(new Set([created.id, second.id]))
+
+      rawDatabase(persistent).prepare(`
+        UPDATE app_settings SET value_json = ? WHERE key = 'content.filterViews.v1'
+      `).run('{broken-json')
+      expect(persistent.listContentFilterViews()).toEqual([])
+    } finally {
+      persistent?.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('keeps tag facets, JSON tags and bookmarks consistent across single and bulk updates', () => {
@@ -279,6 +396,40 @@ function seedBaseSnapshot(
       id, content_id, views, likes, comments, shares, favorites, captured_at
     ) VALUES (?, ?, ?, ?, 0, 0, 0, '2026-07-15T08:00:00.000Z')
   `).run(snapshotId, contentId, views, interactions)
+}
+
+function seedObservation(
+  db: DatabaseSync,
+  id: string,
+  contentId: string,
+  jobId: string
+): void {
+  db.prepare(`
+    INSERT INTO content_observations (
+      id, content_id, job_id, snapshot_id, contribution_id, semantics_revision, observed_at
+    ) VALUES (?, ?, ?, NULL, 'test.plugin.platform', 'test-revision', '2026-07-15T08:00:00.000Z')
+  `).run(id, contentId, jobId)
+}
+
+function defaultFilterViewState(): ContentFilterViewState {
+  return {
+    keyword: '',
+    accountId: '',
+    platformId: '',
+    groupId: '',
+    type: '',
+    tags: [],
+    tagMatch: 'all',
+    bookmark: 'all',
+    syncWarningOnly: false,
+    publishedFrom: '',
+    publishedTo: '',
+    capturedFrom: '',
+    capturedTo: '',
+    sort: 'published',
+    order: 'desc',
+    pageSize: 50
+  }
 }
 
 function rawDatabase(database: SocialDatabase): DatabaseSync {

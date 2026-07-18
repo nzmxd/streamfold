@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import type {
   Account,
   ContentDetail,
+  ContentFilterView,
   ContentMetricDefinition,
   ContentSnapshot,
   ContentSummary,
@@ -12,8 +13,13 @@ import type {
   Group,
   PlatformDefinition
 } from '../../../../shared/contracts'
+import { confirmDialog } from '../../ui/dialog'
 import { accountDisplayName } from '../accounts/presentation'
 import { contentTypeLabel, formatDate, formatNumber, messageOf } from '../shared/format'
+import {
+  persistContentSortPreference,
+  readContentSortPreference
+} from './content-preferences'
 import {
   availableContentMetricDefinitions,
   contentMetricDelta,
@@ -25,12 +31,16 @@ import {
   type ContentMetricId
 } from './metrics'
 import {
+  contentFilterViewStateFromFilters,
   contentSearchQueryFromFilters,
+  contentSearchFiltersFromViewState,
   contentTagFacetQueryFromFilters,
   createDefaultContentSearchFilters,
   paginationRange,
+  reconcileContentFilterViewStateReferences,
   reconcileContentSelection,
   reconcilePageSelection,
+  selectedContentOriginalUrls,
   tagsFromInput,
   tagsToInput,
   toggleSelectedTag,
@@ -40,6 +50,8 @@ import {
 const platforms = ref<PlatformDefinition[]>([])
 const accounts = ref<Account[]>([])
 const groups = ref<Group[]>([])
+const filterReferencesLoaded = ref(false)
+const filterViews = ref<ContentFilterView[]>([])
 const tagFacets = ref<ContentTagFacet[]>([])
 const items = ref<ContentSummary[]>([])
 const total = ref(0)
@@ -53,6 +65,7 @@ const loading = ref(true)
 const detailLoading = ref(false)
 const saving = ref(false)
 const batchSaving = ref(false)
+const batchCopying = ref(false)
 const exportBusy = ref(false)
 const openingOriginalId = ref<string | null>(null)
 const copyingOriginalId = ref<string | null>(null)
@@ -61,9 +74,17 @@ const notice = ref('')
 const advancedFiltersOpen = ref(false)
 const filterTagsInput = ref('')
 const batchTagsInput = ref('')
+const selectedFilterViewId = ref('')
+const filterViewBusy = ref(false)
+const filterViewDialogOpen = ref(false)
+const filterViewName = ref('')
+const filterViewDialogError = ref('')
+const filterViewDialog = ref<HTMLElement | null>(null)
+const filterViewNameInput = ref<HTMLInputElement | null>(null)
 const exportFormat = ref<'json' | 'csv'>('csv')
 const exportSnapshots = ref(false)
 const filters = reactive<ContentSearchFilters>(createDefaultContentSearchFilters())
+Object.assign(filters, readContentSortPreference(''))
 const edit = reactive({ note: '', tags: '' })
 const selectedHistoryMetricId = ref<ContentMetricId | null>(null)
 let loadSequence = 0
@@ -71,6 +92,7 @@ let detailSequence = 0
 let tagSequence = 0
 let saveSequence = 0
 let removeContentListener: (() => void) | null = null
+let filterViewPreviouslyFocused: HTMLElement | null = null
 
 const contentTypeOptions: Array<{ value: ContentType; label: string }> = [
   { value: 'article', label: '文章' },
@@ -81,6 +103,9 @@ const contentTypeOptions: Array<{ value: ContentType; label: string }> = [
 ]
 
 const platformMap = computed(() => new Map(platforms.value.map((platform) => [platform.id, platform])))
+const selectedFilterView = computed(() => filterViews.value.find((view) => (
+  view.id === selectedFilterViewId.value
+)) ?? null)
 const selectedSummary = computed(() => items.value.find((item) => item.id === selectedId.value) ?? null)
 const metricDefinitions = computed(() => resolveContentMetricDefinitions(detail.value?.metricDefinitions ?? []))
 const historyMetricDefinitions = computed(() => availableContentMetricDefinitions(
@@ -102,6 +127,7 @@ const activeFilterCount = computed(() => [
   filters.type,
   tagsFromInput(filterTagsInput.value).length > 0 ? 'tags' : '',
   filters.bookmark === 'all' ? '' : filters.bookmark,
+  filters.syncWarningOnly ? 'sync-warning' : '',
   filters.publishedFrom,
   filters.publishedTo,
   filters.capturedFrom,
@@ -110,6 +136,25 @@ const activeFilterCount = computed(() => [
 
 function platformName(platformId: string): string {
   return platformMap.value.get(platformId)?.name ?? platformId
+}
+
+function replaceFilterView(value: ContentFilterView): void {
+  filterViews.value = [
+    value,
+    ...filterViews.value.filter((view) => view.id !== value.id)
+  ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+}
+
+function filterViewReferences(): {
+  accountIds: string[]
+  platformIds: PlatformDefinition['id'][]
+  groupIds: string[]
+} {
+  return {
+    accountIds: accounts.value.map((account) => account.id),
+    platformIds: platforms.value.map((platform) => platform.id),
+    groupIds: groups.value.map((group) => group.id)
+  }
 }
 
 async function loadItems(offset = pageOffset.value): Promise<void> {
@@ -148,6 +193,15 @@ async function loadTagFacets(): Promise<void> {
   }
 }
 
+async function loadFilterViews(): Promise<void> {
+  try {
+    filterViews.value = await window.socialVault.content.listFilterViews()
+    if (selectedFilterViewId.value && !selectedFilterView.value) selectedFilterViewId.value = ''
+  } catch (cause) {
+    error.value = `无法读取筛选视图：${messageOf(cause)}`
+  }
+}
+
 async function loadDetail(id: string | null): Promise<void> {
   const sequence = ++detailSequence
   detail.value = null
@@ -176,9 +230,175 @@ async function applyFilters(): Promise<void> {
   await Promise.all([loadItems(0), loadTagFacets()])
 }
 
+async function applySelectedFilterView(): Promise<void> {
+  if (!selectedFilterViewId.value || filterViewBusy.value) return
+  const view = selectedFilterView.value
+  if (!view) {
+    selectedFilterViewId.value = ''
+    error.value = '这个筛选视图已不存在，请重新选择。'
+    return
+  }
+  filterViewBusy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    const reconciledState = filterReferencesLoaded.value
+      ? reconcileContentFilterViewStateReferences(view.state, filterViewReferences())
+      : contentFilterViewStateFromFilters(contentSearchFiltersFromViewState(view.state))
+    Object.assign(filters, contentSearchFiltersFromViewState(reconciledState))
+    filterTagsInput.value = tagsToInput(filters.tags)
+    if (filterReferencesLoaded.value && JSON.stringify(reconciledState) !== JSON.stringify(view.state)) {
+      replaceFilterView(await window.socialVault.content.saveFilterView({
+        id: view.id,
+        name: view.name,
+        state: reconciledState
+      }))
+    }
+    await applyFilters()
+    notice.value = `已应用筛选视图“${view.name}”。`
+  } catch (cause) {
+    error.value = `无法应用筛选视图：${messageOf(cause)}`
+  } finally {
+    filterViewBusy.value = false
+  }
+}
+
+function openFilterViewDialog(): void {
+  if (filterViewBusy.value) return
+  filterViewPreviouslyFocused = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null
+  filterViewName.value = ''
+  filterViewDialogError.value = ''
+  filterViewDialogOpen.value = true
+  void nextTick(() => filterViewNameInput.value?.focus())
+}
+
+function closeFilterViewDialog(): void {
+  if (filterViewBusy.value) return
+  filterViewDialogOpen.value = false
+  filterViewDialogError.value = ''
+  restoreFilterViewDialogFocus()
+}
+
+function restoreFilterViewDialogFocus(): void {
+  const returnFocus = filterViewPreviouslyFocused
+  filterViewPreviouslyFocused = null
+  void nextTick(() => returnFocus?.focus())
+}
+
+function onFilterViewDialogKeydown(event: KeyboardEvent): void {
+  if (!filterViewDialogOpen.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeFilterViewDialog()
+    return
+  }
+  if (event.key !== 'Tab' || !filterViewDialog.value) return
+  const focusable = [...filterViewDialog.value.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+  )]
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (!first || !last) return
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+async function createFilterView(): Promise<void> {
+  if (filterViewBusy.value) return
+  const name = filterViewName.value.trim()
+  if (!name) {
+    filterViewDialogError.value = '请输入视图名称。'
+    return
+  }
+  filterViewBusy.value = true
+  filterViewDialogError.value = ''
+  error.value = ''
+  notice.value = ''
+  try {
+    filters.tags = tagsFromInput(filterTagsInput.value)
+    filterTagsInput.value = tagsToInput(filters.tags)
+    const saved = await window.socialVault.content.saveFilterView({
+      name,
+      state: contentFilterViewStateFromFilters(filters)
+    })
+    replaceFilterView(saved)
+    selectedFilterViewId.value = saved.id
+    filterViewDialogOpen.value = false
+    restoreFilterViewDialogFocus()
+    notice.value = `筛选视图“${saved.name}”已保存。`
+  } catch (cause) {
+    filterViewDialogError.value = messageOf(cause)
+  } finally {
+    filterViewBusy.value = false
+  }
+}
+
+async function updateSelectedFilterView(): Promise<void> {
+  const view = selectedFilterView.value
+  if (!view || filterViewBusy.value) return
+  filterViewBusy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    filters.tags = tagsFromInput(filterTagsInput.value)
+    filterTagsInput.value = tagsToInput(filters.tags)
+    const saved = await window.socialVault.content.saveFilterView({
+      id: view.id,
+      name: view.name,
+      state: contentFilterViewStateFromFilters(filters)
+    })
+    replaceFilterView(saved)
+    notice.value = `筛选视图“${saved.name}”已更新。`
+  } catch (cause) {
+    error.value = `无法更新筛选视图：${messageOf(cause)}`
+  } finally {
+    filterViewBusy.value = false
+  }
+}
+
+async function deleteSelectedFilterView(): Promise<void> {
+  const view = selectedFilterView.value
+  if (!view || filterViewBusy.value) return
+  const confirmed = await confirmDialog({
+    title: '删除筛选视图',
+    description: `确认删除“${view.name}”？`,
+    confirmLabel: '删除',
+    tone: 'danger'
+  })
+  if (!confirmed) return
+  filterViewBusy.value = true
+  error.value = ''
+  notice.value = ''
+  try {
+    await window.socialVault.content.deleteFilterView(view.id)
+    filterViews.value = filterViews.value.filter((item) => item.id !== view.id)
+    selectedFilterViewId.value = ''
+    notice.value = `筛选视图“${view.name}”已删除。`
+  } catch (cause) {
+    error.value = `无法删除筛选视图：${messageOf(cause)}`
+  } finally {
+    filterViewBusy.value = false
+  }
+}
+
+function restoreAccountSortPreference(accountId = filters.accountId): void {
+  const preference = readContentSortPreference(accountId)
+  filters.sort = preference.sort
+  filters.order = preference.order
+}
+
 async function resetFilters(): Promise<void> {
   Object.assign(filters, createDefaultContentSearchFilters())
+  restoreAccountSortPreference('')
   filterTagsInput.value = ''
+  selectedFilterViewId.value = ''
   advancedFiltersOpen.value = false
   pageOffset.value = 0
   selectedContentIds.value = []
@@ -343,6 +563,35 @@ async function copyOriginalUrl(value: Pick<ContentSummary, 'id' | 'title' | 'url
   }
 }
 
+async function copySelectedOriginalUrls(): Promise<void> {
+  if (selectedContentIds.value.length === 0 || batchCopying.value) return
+  const selectedIds = new Set(selectedContentIds.value)
+  const selectedItems = items.value.filter((item) => selectedIds.has(item.id))
+  const copyableCount = selectedItems.filter((item) => item.url.trim()).length
+  const missingCount = selectedItems.length - copyableCount
+  const urls = selectedContentOriginalUrls(items.value, selectedContentIds.value)
+  const duplicateCount = Math.max(0, copyableCount - urls.length)
+  error.value = ''
+  notice.value = ''
+  if (urls.length === 0) {
+    error.value = `所选 ${selectedItems.length} 条内容均没有可复制的原帖链接。`
+    return
+  }
+  batchCopying.value = true
+  try {
+    await navigator.clipboard.writeText(urls.join('\n'))
+    const details = [
+      missingCount > 0 ? `${missingCount} 条无链接` : '',
+      duplicateCount > 0 ? `${duplicateCount} 条链接重复` : ''
+    ].filter(Boolean)
+    notice.value = `已复制 ${urls.length} 个原帖链接${details.length > 0 ? `，跳过${details.join('、')}` : ''}。`
+  } catch (cause) {
+    error.value = `无法批量复制原帖链接：${messageOf(cause)}`
+  } finally {
+    batchCopying.value = false
+  }
+}
+
 function metricValue(item: ContentSummary, metricId: ContentMetricId): number | null {
   return contentMetricValue(item.latestSnapshot, metricId)
 }
@@ -384,29 +633,48 @@ watch(
   [() => filters.accountId, () => filters.platformId, () => filters.groupId],
   () => void loadTagFacets()
 )
+watch(
+  () => filters.accountId,
+  (accountId) => restoreAccountSortPreference(accountId),
+  { flush: 'sync' }
+)
+watch(
+  [() => filters.sort, () => filters.order],
+  ([sort, order]) => {
+    persistContentSortPreference(filters.accountId, { sort, order })
+  }
+)
 watch(historyMetricDefinitions, (definitions) => {
   if (definitions.some((definition) => definition.id === selectedHistoryMetricId.value)) return
   selectedHistoryMetricId.value = definitions[0]?.id ?? null
 }, { immediate: true })
 
 onMounted(async () => {
+  document.addEventListener('keydown', onFilterViewDialogKeydown, true)
   removeContentListener = window.socialVault.content.onChanged(() => void refreshContent())
-  try {
-    const [platformResult, accountResult, groupResult] = await Promise.all([
-      window.socialVault.platforms.list(),
-      window.socialVault.accounts.list(),
-      window.socialVault.groups.list()
-    ])
-    platforms.value = platformResult
-    accounts.value = accountResult
-    groups.value = groupResult
-  } catch (cause) {
-    error.value = messageOf(cause)
-  }
+  await Promise.all([
+    (async () => {
+      try {
+        const [platformResult, accountResult, groupResult] = await Promise.all([
+          window.socialVault.platforms.list(),
+          window.socialVault.accounts.list(),
+          window.socialVault.groups.list()
+        ])
+        platforms.value = platformResult
+        accounts.value = accountResult
+        groups.value = groupResult
+        filterReferencesLoaded.value = true
+      } catch (cause) {
+        error.value = messageOf(cause)
+      }
+    })(),
+    loadFilterViews()
+  ])
   await Promise.all([loadItems(0), loadTagFacets()])
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onFilterViewDialogKeydown, true)
   removeContentListener?.()
   removeContentListener = null
 })
@@ -422,7 +690,8 @@ onBeforeUnmount(() => {
     <div v-if="error" class="alert error"><span>{{ error }}</span><button type="button" @click="error = ''">关闭</button></div>
     <div v-if="notice" class="alert success"><span>{{ notice }}</span><button type="button" @click="notice = ''">关闭</button></div>
 
-    <form class="filter-bar content-filter-bar" role="search" @submit.prevent="applyFilters" @keydown.esc="advancedFiltersOpen = false">
+    <form class="filter-bar content-filter-bar" role="search" :aria-busy="filterViewBusy" @submit.prevent="applyFilters" @keydown.esc="advancedFiltersOpen = false">
+      <fieldset class="content-filter-fields" :disabled="filterViewBusy">
       <div class="content-filter-primary">
         <label class="filter-search">
           <span>搜索</span>
@@ -450,6 +719,7 @@ onBeforeUnmount(() => {
         <label><span>分组</span><select v-model="filters.groupId"><option value="">全部分组</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
         <label><span>类型</span><select v-model="filters.type"><option value="">全部类型</option><option v-for="option in contentTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
         <label><span>本地收藏</span><select v-model="filters.bookmark"><option value="all">全部内容</option><option value="bookmarked">仅收藏</option><option value="unbookmarked">未收藏</option></select></label>
+        <label class="content-sync-warning-filter"><span>同步状态</span><span><input v-model="filters.syncWarningOnly" type="checkbox" /> 来自部分完成同步</span></label>
         <label class="filter-tags-input"><span>标签</span><input v-model="filterTagsInput" placeholder="使用逗号分隔多个标签" /></label>
         <label><span>标签匹配</span><select v-model="filters.tagMatch"><option value="all">同时包含全部</option><option value="any">包含任一标签</option></select></label>
         <label><span>发布开始</span><input v-model="filters.publishedFrom" type="date" :max="filters.publishedTo || undefined" /></label>
@@ -464,13 +734,38 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="content-export-controls">
-        <span>导出当前筛选</span>
-        <select v-model="exportFormat" aria-label="导出格式"><option value="csv">CSV</option><option value="json">JSON</option></select>
-        <label v-if="exportFormat === 'json'" class="content-inline-check"><input v-model="exportSnapshots" type="checkbox" /> 包含指标快照</label>
-        <button class="button" type="button" :disabled="exportBusy" @click="exportFiltered">{{ exportBusy ? '导出中…' : '导出' }}</button>
+      <div class="content-filter-footer">
+        <div class="content-filter-view-controls">
+          <span>筛选视图</span>
+          <select v-model="selectedFilterViewId" aria-label="已保存的筛选视图" :disabled="filterViewBusy" @change="applySelectedFilterView">
+            <option value="">临时视图</option>
+            <option v-for="view in filterViews" :key="view.id" :value="view.id">{{ view.name }}</option>
+          </select>
+          <button class="button content-filter-view-save" type="button" aria-label="保存当前筛选为新视图" title="保存当前筛选为新视图" :disabled="filterViewBusy" @click="openFilterViewDialog">保存</button>
+          <button v-if="selectedFilterView" class="button content-filter-view-icon" type="button" aria-label="更新筛选视图" title="更新筛选视图" :disabled="filterViewBusy" @click="updateSelectedFilterView"><span aria-hidden="true">↻</span></button>
+          <button v-if="selectedFilterView" class="button content-filter-view-icon content-filter-view-delete" type="button" aria-label="删除筛选视图" title="删除筛选视图" :disabled="filterViewBusy" @click="deleteSelectedFilterView"><span aria-hidden="true">×</span></button>
+        </div>
+        <div class="content-export-controls">
+          <span>导出当前筛选</span>
+          <select v-model="exportFormat" aria-label="导出格式"><option value="csv">CSV</option><option value="json">JSON</option></select>
+          <label v-if="exportFormat === 'json'" class="content-inline-check"><input v-model="exportSnapshots" type="checkbox" /> 快照</label>
+          <button class="button" type="button" :disabled="exportBusy" @click="exportFiltered">{{ exportBusy ? '导出中…' : '导出' }}</button>
+        </div>
       </div>
+      </fieldset>
     </form>
+
+    <div v-if="filterViewDialogOpen" class="modal-backdrop" @pointerdown.self="closeFilterViewDialog">
+      <section ref="filterViewDialog" class="modal compact content-filter-view-dialog" role="dialog" aria-modal="true" aria-labelledby="content-filter-view-title" aria-describedby="content-filter-view-description">
+        <div class="modal-head">
+          <div><span class="page-eyebrow">筛选视图</span><h2 id="content-filter-view-title">保存当前筛选</h2><p id="content-filter-view-description">名称用于在内容中心快速切换。</p></div>
+          <button type="button" aria-label="关闭保存筛选视图" @click="closeFilterViewDialog">×</button>
+        </div>
+        <label>视图名称<input ref="filterViewNameInput" v-model="filterViewName" maxlength="40" placeholder="例如：知乎本月复盘" @keydown.enter.prevent="createFilterView" /></label>
+        <p v-if="filterViewDialogError" class="content-filter-view-error" role="alert">{{ filterViewDialogError }}</p>
+        <div class="modal-actions"><button class="button" type="button" :disabled="filterViewBusy" @click="closeFilterViewDialog">取消</button><button class="button primary" type="button" :disabled="filterViewBusy || !filterViewName.trim()" @click="createFilterView">{{ filterViewBusy ? '保存中…' : '保存' }}</button></div>
+      </section>
+    </div>
 
     <section v-if="selectedContentIds.length > 0" class="content-batch-toolbar" aria-label="批量整理">
       <strong>已选择 {{ selectedContentIds.length }} 条</strong>
@@ -480,6 +775,7 @@ onBeforeUnmount(() => {
       <span class="content-batch-divider"></span>
       <button class="button" type="button" :disabled="batchSaving" @click="runBulkUpdate({ isBookmarked: true })">收藏</button>
       <button class="button" type="button" :disabled="batchSaving" @click="runBulkUpdate({ isBookmarked: false })">取消收藏</button>
+      <button class="button" type="button" :disabled="batchCopying" @click="copySelectedOriginalUrls"><span aria-hidden="true">⧉</span> {{ batchCopying ? '复制中…' : '复制链接' }}</button>
       <button class="content-clear-selection" type="button" @click="selectedContentIds = []">清除选择</button>
     </section>
 

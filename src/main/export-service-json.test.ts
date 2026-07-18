@@ -88,15 +88,16 @@ describe('ExportService JSON export', () => {
       id: `content-${index}`,
       remoteId: `remote-${index}`
     }))
-    const offsets: number[] = []
+    const queries: Array<{ offset?: number; limit?: number; syncWarningOnly?: boolean }> = []
     const database = {
       listAccounts: () => [],
       listGroups: () => [],
       listAccountSnapshots: () => [],
       getAccountMetricHistory: () => { throw new Error('unexpected account metric read') },
       listContents: () => [],
-      searchContents: ({ offset = 0, limit = 100 }: { offset?: number; limit?: number }) => {
-        offsets.push(offset)
+      searchContents: (query: { offset?: number; limit?: number; syncWarningOnly?: boolean }) => {
+        queries.push({ ...query })
+        const { offset = 0, limit = 100 } = query
         const items = contents.slice(offset, offset + limit)
         return { items, total: contents.length, offset, limit, hasMore: offset + items.length < contents.length, searchMode: 'none' as const }
       },
@@ -104,11 +105,14 @@ describe('ExportService JSON export', () => {
     }
 
     await expect(new ExportService({} as never, database).exportFiltered({
-      query: { keyword: '筛选' },
+      query: { keyword: '筛选', syncWarningOnly: true },
       format: 'csv'
     })).resolves.toMatchObject({ cancelled: false, exportedContentCount: 5_001 })
 
-    expect(offsets).toEqual([0, 5_000])
+    expect(queries).toEqual([
+      { keyword: '筛选', syncWarningOnly: true, offset: 0, limit: 5_000 },
+      { keyword: '筛选', syncWarningOnly: true, offset: 5_000, limit: 5_000 }
+    ])
     expect(writeFile.mock.calls[0]?.[1]).toContain('is_bookmarked')
   })
 })

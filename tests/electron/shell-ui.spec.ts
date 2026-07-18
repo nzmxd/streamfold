@@ -429,6 +429,105 @@ test('分析支持发帖快捷范围、发布周对比、周统计和内容趋�
   await expect(dialog).toBeHidden()
 })
 
+test('内容工作流保存筛选、记忆账号排序并批量复制链接', async ({}, testInfo) => {
+  test.setTimeout(60_000)
+  await seedAnalyticsData()
+  await openSection('content')
+  const contentPage = page.locator('.content-page')
+  await expect(contentPage.locator('.content-row')).toHaveCount(2)
+
+  await contentPage.getByRole('checkbox', { name: '选择本页' }).check()
+  await contentPage.getByRole('button', { name: '复制链接' }).click()
+  await expect(contentPage.getByText('已复制 2 个原帖链接。')).toBeVisible()
+  const copied = await application.evaluate(({ clipboard }) => clipboard.readText())
+  expect(copied.split(/\r?\n/u)).toEqual([
+    'https://example.test/analytics-current',
+    'https://example.test/analytics-previous'
+  ])
+  await contentPage.getByRole('button', { name: '清除选择' }).click()
+
+  const accountFilter = contentPage.locator('.content-filter-primary select').nth(0)
+  await accountFilter.selectOption({ label: '分析实测账号' })
+  await contentPage.getByRole('button', { name: '更多筛选' }).click()
+  await contentPage.getByLabel('排序依据').selectOption('views')
+  await contentPage.getByLabel('顺序').selectOption('asc')
+  await contentPage.getByRole('button', { name: '收起筛选' }).click()
+  await accountFilter.selectOption('')
+  await accountFilter.selectOption({ label: '分析实测账号' })
+  await contentPage.getByRole('button', { name: '更多筛选' }).click()
+  await expect(contentPage.getByLabel('排序依据')).toHaveValue('views')
+  await expect(contentPage.getByLabel('顺序')).toHaveValue('asc')
+  await contentPage.getByRole('checkbox', { name: '来自部分完成同步' }).check()
+  await contentPage.getByLabel('每页').selectOption('100')
+  await contentPage.getByRole('button', { name: '收起筛选' }).click()
+
+  const saveViewButton = contentPage.getByRole('button', { name: '保存当前筛选为新视图' })
+  await saveViewButton.click()
+  const saveDialog = page.getByRole('dialog', { name: '保存当前筛选' })
+  const viewNameInput = saveDialog.getByPlaceholder('例如：知乎本月复盘')
+  await expect(viewNameInput).toBeFocused()
+  await viewNameInput.fill('同步复盘')
+  await saveDialog.getByRole('button', { name: '关闭保存筛选视图' }).focus()
+  await page.keyboard.press('Shift+Tab')
+  const confirmSaveView = saveDialog.getByRole('button', { name: '保存', exact: true })
+  await expect(confirmSaveView).toBeFocused()
+  await page.screenshot({
+    path: testInfo.outputPath('content-save-filter-view-dialog.png'),
+    animations: 'disabled'
+  })
+  await confirmSaveView.click()
+  await expect(saveDialog).toBeHidden()
+  await expect(saveViewButton).toBeFocused()
+  const viewSelect = contentPage.getByLabel('已保存的筛选视图')
+  await expect(viewSelect.locator('option:checked')).toHaveText('同步复盘')
+
+  await contentPage.getByRole('button', { name: '重置' }).click()
+  await expect(viewSelect).toHaveValue('')
+  await viewSelect.selectOption({ label: '同步复盘' })
+  await expect(contentPage.getByText('已应用筛选视图“同步复盘”。')).toBeVisible()
+  await contentPage.getByRole('button', { name: '更多筛选' }).click()
+  await expect(contentPage.getByRole('checkbox', { name: '来自部分完成同步' })).toBeChecked()
+  await expect(contentPage.getByLabel('每页')).toHaveValue('100')
+  await contentPage.getByRole('button', { name: '收起筛选' }).click()
+  await contentPage.getByLabel('导出格式').selectOption('json')
+  await expect(contentPage.getByRole('checkbox', { name: '快照' })).toBeVisible()
+  await application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0]?.setSize(900, 800)
+  })
+  await page.waitForTimeout(100)
+  const compactLayout = await contentPage.evaluate((element) => {
+    const filter = element.querySelector<HTMLElement>('.content-filter-bar')
+    const footer = element.querySelector<HTMLElement>('.content-filter-footer')
+    return {
+      pageOverflow: element.scrollWidth - element.clientWidth,
+      filterOverflow: (filter?.scrollWidth ?? 0) - (filter?.clientWidth ?? 0),
+      footerOverflow: (footer?.scrollWidth ?? 0) - (footer?.clientWidth ?? 0)
+    }
+  })
+  expect(compactLayout.pageOverflow).toBeLessThanOrEqual(1)
+  expect(compactLayout.filterOverflow).toBeLessThanOrEqual(1)
+  expect(compactLayout.footerOverflow).toBeLessThanOrEqual(1)
+  await page.screenshot({
+    path: testInfo.outputPath('content-saved-view-json-900.png'),
+    animations: 'disabled'
+  })
+  await application.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0]?.setSize(920, 640)
+  })
+
+  await page.reload()
+  await page.locator('#app').waitFor({ state: 'visible' })
+  await openSection('content')
+  const reloadedContentPage = page.locator('.content-page')
+  const reloadedViewSelect = reloadedContentPage.getByLabel('已保存的筛选视图')
+  await expect(reloadedViewSelect.locator('option', { hasText: '同步复盘' })).toHaveCount(1)
+  await reloadedViewSelect.selectOption({ label: '同步复盘' })
+  await reloadedContentPage.getByRole('button', { name: '删除' }).click()
+  const deleteDialog = page.getByRole('alertdialog', { name: '删除筛选视图' })
+  await deleteDialog.getByRole('button', { name: '删除', exact: true }).click()
+  await expect(reloadedViewSelect.locator('option', { hasText: '同步复盘' })).toHaveCount(0)
+})
+
 test('账号批量同步会在入队前预览并跳过未登录账号', async () => {
   await openSection('accounts')
   await page.getByRole('button', { name: '＋ 添加账号' }).click()

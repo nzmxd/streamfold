@@ -20,6 +20,7 @@ import {
   parseMarkTaskHandled,
   parseMoveGroup,
   parseRestoreEncryptedBackup,
+  parseSaveContentFilterView,
   parseTaskQuery,
   parseUpdateAccount,
   parseUpdateContent,
@@ -84,12 +85,12 @@ describe('IPC validation', () => {
       keyword: '  复盘  ', accountIds: ['a', 'a'], platformId: 'publisher.platform',
       groupId: 'group', tags: ['重点', '重点'], tagMatch: 'all', bookmarked: true,
       publishedFrom: '2026-07-01', publishedTo: '2026-07-15',
-      sort: 'captured', order: 'asc', limit: 50, offset: 100
+      syncWarningOnly: true, sort: 'captured', order: 'asc', limit: 50, offset: 100
     })).toEqual({
       keyword: '复盘', accountIds: ['a'], platformId: 'publisher.platform', groupId: 'group',
       tags: ['重点'], tagMatch: 'all', bookmarked: true,
       publishedFrom: '2026-07-01T00:00:00.000Z', publishedTo: '2026-07-15T00:00:00.000Z',
-      sort: 'captured', order: 'asc', limit: 50, offset: 100
+      syncWarningOnly: true, sort: 'captured', order: 'asc', limit: 50, offset: 100
     })
     expect(parseBulkUpdateContents({
       contentIds: ['c1', 'c1', 'c2'], isBookmarked: true,
@@ -103,9 +104,66 @@ describe('IPC validation', () => {
       query: { bookmarked: true }, format: 'json', includeSnapshots: true
     })).toEqual({ query: { bookmarked: true }, format: 'json', includeSnapshots: true })
     expect(() => parseContentSearchQuery({ limit: 101 })).toThrow('返回数量无效')
+    expect(() => parseContentSearchQuery({ syncWarningOnly: 'true' })).toThrow('同步异常筛选无效')
     expect(() => parseContentSearchQuery({ publishedFrom: '2026-07-15', publishedTo: '2026-07-01' }))
       .toThrow('发布时间范围无效')
     expect(() => parseBulkUpdateContents({ contentIds: ['c1'] })).toThrow('没有需要执行')
+  })
+
+  it('normalizes complete saved content filter views and rejects malformed state', () => {
+    const input = {
+      name: '  每日复盘  ',
+      state: {
+        keyword: '  增长  ',
+        accountId: ' account-1 ',
+        platformId: 'zhihu',
+        groupId: ' group-1 ',
+        type: 'article',
+        tags: [' 重点 ', '重点'],
+        tagMatch: 'any',
+        bookmark: 'unbookmarked',
+        syncWarningOnly: true,
+        publishedFrom: '2026-07-01',
+        publishedTo: '2026-07-15',
+        capturedFrom: '',
+        capturedTo: '',
+        sort: 'captured',
+        order: 'desc',
+        pageSize: 50
+      }
+    }
+
+    expect(parseSaveContentFilterView(input)).toEqual({
+      name: '每日复盘',
+      state: {
+        keyword: '增长',
+        accountId: 'account-1',
+        platformId: 'zhihu',
+        groupId: 'group-1',
+        type: 'article',
+        tags: ['重点'],
+        tagMatch: 'any',
+        bookmark: 'unbookmarked',
+        syncWarningOnly: true,
+        publishedFrom: '2026-07-01',
+        publishedTo: '2026-07-15',
+        capturedFrom: '',
+        capturedTo: '',
+        sort: 'captured',
+        order: 'desc',
+        pageSize: 50
+      }
+    })
+    expect(() => parseSaveContentFilterView({
+      ...input,
+      state: { ...input.state, pageSize: 30 }
+    })).toThrow('每页数量无效')
+    expect(() => parseSaveContentFilterView({
+      ...input,
+      state: { ...input.state, publishedFrom: '2026-02-30' }
+    })).toThrow('发布开始日期无效')
+    expect(() => parseSaveContentFilterView({ ...input, name: ' ' }))
+      .toThrow('筛选视图名称长度应为 1-40 个字符')
   })
 
   it('validates reliable analytics queries', () => {

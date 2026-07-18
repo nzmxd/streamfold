@@ -88,6 +88,46 @@ describe('social vault renderer facade', () => {
     )
   })
 
+  it('exposes saved content filter views through fixed plain-data channels', async () => {
+    const invoke = vi.fn(async () => undefined)
+    const bridge: SocialVaultBridge = {
+      runtime: { platform: 'win32' },
+      invoke,
+      on: vi.fn(() => () => undefined)
+    }
+    const api = createSocialVaultApi(bridge)
+    const state = {
+      keyword: '',
+      accountId: '',
+      platformId: '' as const,
+      groupId: '',
+      type: '' as const,
+      tags: [],
+      tagMatch: 'all' as const,
+      bookmark: 'all' as const,
+      syncWarningOnly: false,
+      publishedFrom: '',
+      publishedTo: '',
+      capturedFrom: '',
+      capturedTo: '',
+      sort: 'published' as const,
+      order: 'desc' as const,
+      pageSize: 50
+    }
+
+    await api.content.listFilterViews()
+    await api.content.saveFilterView({ name: '默认视图', state })
+    await api.content.deleteFilterView('view-1')
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'content:list-filter-views', '[]')
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      'content:save-filter-view',
+      JSON.stringify([{ name: '默认视图', state }])
+    )
+    expect(invoke).toHaveBeenNthCalledWith(3, 'content:delete-filter-view', '["view-1"]')
+  })
+
   it('serializes custom theme colors through the fixed appearance channel', async () => {
     const invoke = vi.fn(async () => ({
       preference: 'system',

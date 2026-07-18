@@ -13,6 +13,7 @@ import {
   type ConfirmSessionApiIdentityInput,
   type ContentQuery,
   type ContentLifecycleQuery,
+  type ContentFilterViewState,
   type ContentSearchQuery,
   type ContentTagFacetQuery,
   type CreateAccountInput,
@@ -29,6 +30,7 @@ import {
   type SavePluginConfigInput,
   type UpsertPluginGrantInput,
   type RestoreEncryptedBackupInput,
+  type SaveContentFilterViewInput,
   type SyncMode,
   type UpdateContentInput,
   type UpdateGroupInput,
@@ -232,6 +234,9 @@ export function parseContentSearchQuery(value: unknown): ContentSearchQuery {
   if (record.publishedTo !== undefined) result.publishedTo = asDate(record.publishedTo, '发布结束时间')
   if (record.capturedFrom !== undefined) result.capturedFrom = asDate(record.capturedFrom, '采集开始时间')
   if (record.capturedTo !== undefined) result.capturedTo = asDate(record.capturedTo, '采集结束时间')
+  if (record.syncWarningOnly !== undefined) {
+    result.syncWarningOnly = asBoolean(record.syncWarningOnly, '同步异常筛选')
+  }
   if (record.sort !== undefined) result.sort = asEnum(record.sort, contentSearchSorts, '排序字段')
   if (record.order !== undefined) result.order = asEnum(record.order, ['asc', 'desc'] as const, '排序方向')
   if (record.limit !== undefined) result.limit = asInteger(record.limit, '返回数量', 1, 100)
@@ -239,6 +244,51 @@ export function parseContentSearchQuery(value: unknown): ContentSearchQuery {
   validateRange(result.publishedFrom, result.publishedTo, '发布时间')
   validateRange(result.capturedFrom, result.capturedTo, '采集时间')
   return result
+}
+
+export function parseContentFilterViewState(value: unknown): ContentFilterViewState {
+  const record = asRecord(value)
+  const platformId = asText(record.platformId, '平台', 0, 128)
+  const type = asText(record.type, '内容类型', 0, 20)
+  const publishedFrom = asFilterViewDate(record.publishedFrom, '发布开始日期')
+  const publishedTo = asFilterViewDate(record.publishedTo, '发布结束日期')
+  const capturedFrom = asFilterViewDate(record.capturedFrom, '采集开始日期')
+  const capturedTo = asFilterViewDate(record.capturedTo, '采集结束日期')
+  const pageSize = asInteger(record.pageSize, '每页数量', 1, 100)
+  if (![25, 50, 100].includes(pageSize)) throw new Error('每页数量无效')
+  validateRange(publishedFrom || undefined, publishedTo || undefined, '发布时间')
+  validateRange(capturedFrom || undefined, capturedTo || undefined, '采集时间')
+  return {
+    keyword: asText(record.keyword, '搜索词', 0, 200),
+    accountId: asText(record.accountId, '账号', 0, 80),
+    platformId: platformId ? asPlatformId(platformId) : '',
+    groupId: asText(record.groupId, '分组', 0, 80),
+    type: type ? asEnum(type, contentTypes, '内容类型') : '',
+    tags: asStringArray(record.tags, '内容标签', 20, 24),
+    tagMatch: asEnum(record.tagMatch, ['all', 'any'] as const, '标签匹配方式'),
+    bookmark: asEnum(
+      record.bookmark,
+      ['all', 'bookmarked', 'unbookmarked'] as const,
+      '收藏筛选'
+    ),
+    syncWarningOnly: asBoolean(record.syncWarningOnly, '同步异常筛选'),
+    publishedFrom,
+    publishedTo,
+    capturedFrom,
+    capturedTo,
+    sort: asEnum(record.sort, contentSearchSorts, '排序字段'),
+    order: asEnum(record.order, ['asc', 'desc'] as const, '排序方向'),
+    pageSize
+  }
+}
+
+export function parseSaveContentFilterView(value: unknown): SaveContentFilterViewInput {
+  const record = asRecord(value)
+  return {
+    ...(record.id === undefined ? {} : { id: asId(record.id) }),
+    name: asText(record.name, '筛选视图名称', 1, 40),
+    state: parseContentFilterViewState(record.state)
+  }
 }
 
 export function parseContentTagFacetQuery(value: unknown): ContentTagFacetQuery {
@@ -562,6 +612,11 @@ function asCalendarDate(value: unknown, label: string): string {
     throw new Error(`${label}无效`)
   }
   return text
+}
+
+function asFilterViewDate(value: unknown, label: string): string {
+  const text = asText(value, label, 0, 10)
+  return text ? asCalendarDate(text, label) : ''
 }
 
 function validateRange(from: string | undefined, to: string | undefined, label: string): void {

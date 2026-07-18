@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  contentFilterViewStateFromFilters,
   contentSearchQueryFromFilters,
+  contentSearchFiltersFromViewState,
   contentTagFacetQueryFromFilters,
   createDefaultContentSearchFilters,
   paginationRange,
+  reconcileContentFilterViewStateReferences,
   reconcileContentSelection,
   reconcilePageSelection,
+  selectedContentOriginalUrls,
   tagsFromInput,
   tagsToInput,
   toggleSelectedTag
@@ -53,7 +57,8 @@ describe('content search query helpers', () => {
       publishedFrom: '2026-07-01',
       publishedTo: '2026-07-13',
       capturedFrom: '2026-07-02',
-      capturedTo: '2026-07-14'
+      capturedTo: '2026-07-14',
+      syncWarningOnly: true
     })
 
     expect(contentSearchQueryFromFilters(filters)).toEqual({
@@ -70,14 +75,89 @@ describe('content search query helpers', () => {
       publishedFrom: new Date(2026, 6, 1, 0, 0, 0, 0).toISOString(),
       publishedTo: new Date(2026, 6, 13, 23, 59, 59, 999).toISOString(),
       capturedFrom: new Date(2026, 6, 2, 0, 0, 0, 0).toISOString(),
-      capturedTo: new Date(2026, 6, 14, 23, 59, 59, 999).toISOString()
+      capturedTo: new Date(2026, 6, 14, 23, 59, 59, 999).toISOString(),
+      syncWarningOnly: true
     })
   })
 
   it('defaults to newest published content first', () => {
     expect(createDefaultContentSearchFilters()).toMatchObject({
+      syncWarningOnly: false,
       sort: 'published',
       order: 'desc'
+    })
+  })
+
+  it('round-trips a normalized saved view including its page size', () => {
+    const filters = createDefaultContentSearchFilters()
+    Object.assign(filters, {
+      keyword: '  内容复盘 ',
+      accountId: 'account-1',
+      platformId: 'zhihu',
+      groupId: 'group-1',
+      tags: [' 增长 ', '增长', '复盘'],
+      bookmark: 'bookmarked',
+      publishedFrom: '2026-07-01',
+      capturedTo: '2026-07-14',
+      syncWarningOnly: true,
+      sort: 'views',
+      order: 'asc',
+      pageSize: 100
+    })
+
+    const state = contentFilterViewStateFromFilters(filters)
+    expect(state).toEqual({
+      keyword: '内容复盘',
+      accountId: 'account-1',
+      platformId: 'zhihu',
+      groupId: 'group-1',
+      type: '',
+      tags: ['增长', '复盘'],
+      tagMatch: 'all',
+      bookmark: 'bookmarked',
+      publishedFrom: '2026-07-01',
+      publishedTo: '',
+      capturedFrom: '',
+      capturedTo: '2026-07-14',
+      syncWarningOnly: true,
+      sort: 'views',
+      order: 'asc',
+      pageSize: 100
+    })
+    expect(contentSearchFiltersFromViewState(state)).toMatchObject({
+      keyword: '内容复盘',
+      accountId: 'account-1',
+      platformId: 'zhihu',
+      groupId: 'group-1',
+      tags: ['增长', '复盘'],
+      bookmark: 'bookmarked',
+      publishedFrom: '2026-07-01',
+      capturedTo: '2026-07-14',
+      syncWarningOnly: true,
+      sort: 'views',
+      order: 'asc',
+      pageSize: 100
+    })
+  })
+
+  it('removes saved references that no longer exist', () => {
+    const state = contentFilterViewStateFromFilters({
+      ...createDefaultContentSearchFilters(),
+      keyword: '保留条件',
+      accountId: 'deleted-account',
+      platformId: 'zhihu',
+      groupId: 'deleted-group',
+      syncWarningOnly: true
+    })
+
+    expect(reconcileContentFilterViewStateReferences(state, {
+      accountIds: ['account-1'],
+      platformIds: ['xiaohongshu'],
+      groupIds: ['group-1']
+    })).toEqual({
+      ...createDefaultContentSearchFilters(),
+      keyword: '保留条件',
+      syncWarningOnly: true
     })
   })
 
@@ -114,5 +194,17 @@ describe('content search query helpers', () => {
     expect(reconcileContentSelection(items, 'missing')).toBe('first')
     expect(reconcileContentSelection([], 'missing')).toBeNull()
     expect(reconcilePageSelection(items, ['second', 'hidden', 'second'])).toEqual(['second'])
+  })
+
+  it('extracts selected original links in page order and removes blanks and duplicates', () => {
+    const items = [
+      { id: 'first', url: ' https://example.test/first ' },
+      { id: 'second', url: '' },
+      { id: 'third', url: 'https://example.test/first' },
+      { id: 'fourth', url: 'https://example.test/fourth' }
+    ]
+
+    expect(selectedContentOriginalUrls(items, ['fourth', 'third', 'missing', 'first', 'second']))
+      .toEqual(['https://example.test/first', 'https://example.test/fourth'])
   })
 })
