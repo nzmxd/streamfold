@@ -141,6 +141,7 @@ export class PluginLifecycleService {
     const breaking = Boolean(existing && (
       major(existing.manifest.version) !== major(verified.manifest.version) || reauthorization.length > 0
     ))
+    if (existing) this.stop(verified.manifest.id)
     this.options.host.registerVerifiedPackage(verified.manifest)
     try {
       await this.options.entries.stageAndActivate(verified)
@@ -228,6 +229,7 @@ export class PluginLifecycleService {
         throw new Error('插件更新包含主版本或权限范围变化，需要确认后重新授权')
       }
       const previousManifest = current?.manifest ?? null
+      if (current) this.stop(entry.pluginId)
       this.options.host.registerVerifiedPackage(verified.manifest)
       let installed: InstalledPluginPackage
       try {
@@ -361,7 +363,10 @@ function platformSecurityFingerprint(
       )
     )),
     endpoints: structuredClone(contribution.endpoints).sort((left, right) => left.id.localeCompare(right.id)),
-    captures: structuredClone(contribution.captures).sort((left, right) => left.id.localeCompare(right.id))
+    captures: structuredClone(contribution.captures).sort((left, right) => left.id.localeCompare(right.id)),
+    backgroundCapture: contribution.backgroundCapture
+      ? structuredClone(contribution.backgroundCapture)
+      : null
   })
 }
 

@@ -353,7 +353,7 @@ async function purgeAccount(): Promise<void> {
 
         <div class="metric-grid account-status-grid">
           <article>
-            <span>连接状态</span><strong>{{ connectionStatusLabel(account.connectionStatus) }}</strong><small>{{ browserState?.windowOpen ? '浏览器窗口已打开' : '需要时可重新打开浏览器' }}</small>
+            <span>连接状态</span><strong>{{ connectionStatusLabel(account.connectionStatus) }}</strong><small>{{ browserState?.windowOpen ? '浏览器窗口已打开' : browserState?.message.includes('后台监听') ? '账号页面正在后台监听' : '需要时可重新打开浏览器' }}</small>
           </article>
           <article>
             <span>身份归属</span><strong>{{ ownershipStatusLabel(account.ownershipStatus) }}</strong><small>{{ account.remoteName || '尚未绑定平台身份' }}</small>
@@ -362,9 +362,12 @@ async function purgeAccount(): Promise<void> {
             <span>数据同步</span><strong>{{ account.syncEnabled ? syncStatusLabel(account.syncStatus) : '未启用' }}</strong><small>{{ syncModeLabel(account.syncMode) }}</small>
           </article>
           <article>
-            <span>浏览器窗口</span><strong>{{ browserState?.windowOpen ? '已打开' : '已关闭' }}</strong><small>{{ browserState?.windowOpen ? '可切换到窗口继续操作' : '登录状态会继续保留' }}</small>
+            <span>浏览器窗口</span><strong>{{ browserState?.windowOpen ? '已打开' : browserState?.message.includes('后台监听') ? '后台运行' : '已关闭' }}</strong><small>{{ browserState?.windowOpen ? '可切换到窗口继续操作' : browserState?.message.includes('后台监听') ? '关闭窗口不会停止身份监听' : '登录状态会继续保留' }}</small>
           </article>
         </div>
+        <p v-if="account.syncStatus === 'partial'" class="warning-message">
+          {{ account.lastSyncError || '本次同步已保存可信数据，但内容范围未完整。' }}
+        </p>
 
         <section class="workflow-card">
           <div class="section-heading"><div><h3>使用步骤</h3><p>完成登录与身份核验后即可同步数据。</p></div></div>
@@ -430,7 +433,7 @@ async function purgeAccount(): Promise<void> {
           </div>
         </section>
         <section v-if="browserState" class="browser-session-status">
-          <div><span>窗口</span><strong>{{ browserState.windowOpen ? '已打开' : '已关闭' }}</strong></div>
+          <div><span>窗口</span><strong>{{ browserState.windowOpen ? '已打开' : browserState.message.includes('后台监听') ? '后台运行' : '已关闭' }}</strong></div>
           <div class="session-address"><span>最后访问页面</span><strong :title="formatBrowserLastVisitedPage(browserState.url)">{{ formatBrowserLastVisitedPage(browserState.url) }}</strong></div>
         </section>
       </div>

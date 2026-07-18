@@ -3,6 +3,7 @@ export const jobStatuses = [
   'validating',
   'committing',
   'succeeded',
+  'succeeded_with_warnings',
   'failed',
   'cancelled',
   'interrupted'
@@ -53,6 +54,7 @@ export const taskStatuses = [
   'queued',
   'running',
   'succeeded',
+  'succeeded_with_warnings',
   'failed',
   'cancelled',
   'interrupted',
@@ -105,6 +107,8 @@ export interface TaskView {
   attempt: number
   errorCode: string
   errorMessage: string
+  coverage: import('./contracts').SyncCoverage | null
+  warnings: string[]
   createdAt: string
   startedAt: string | null
   finishedAt: string | null
@@ -143,6 +147,7 @@ export interface TaskSummary {
   runningCount: number
   needsAttentionCount: number
   completedTodayCount: number
+  partialTodayCount: number
   failedTodayCount: number
   updatedAt: string
 }
@@ -154,6 +159,7 @@ export interface TaskBatchView {
   queuedCount: number
   runningCount: number
   succeededCount: number
+  partialCount: number
   failedCount: number
   cancelledCount: number
   interruptedCount: number

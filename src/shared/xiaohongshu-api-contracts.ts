@@ -1,4 +1,5 @@
 import type { JobRecord } from './job-contracts'
+import type { SyncCoverage } from './contracts'
 
 export type ApiIdentityStatus =
   | 'confirmation_required'
@@ -40,6 +41,7 @@ export interface XiaohongshuSyncResult {
   capturedAt: string
   profile: XiaohongshuSyncProfile
   contentCount: number
+  coverage: SyncCoverage
   stats: {
     newContentCount: number
     updatedContentCount: number
@@ -47,5 +49,6 @@ export interface XiaohongshuSyncResult {
     skippedSnapshotCount: number
   }
   job: JobRecord
+  warnings: string[]
   message: string
 }

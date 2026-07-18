@@ -116,6 +116,24 @@ describe('Streamfold plugin SDK', () => {
           resourceTypes: ['Fetch', 'XHR'],
           method: 'GET'
         }],
+        backgroundCapture: {
+          captures: [{
+            captureId: 'profile.capture',
+            responseFieldPaths: ['/data/user/id', '/data/user/name'],
+            responseCorrelations: [{
+              routeParameter: 'userId',
+              responseFieldPaths: ['/data/user/id'],
+              comparison: 'exact'
+            }]
+          }],
+          cacheTtlSeconds: 120,
+          retryIntervalSeconds: 2,
+          maximumRetryIntervalSeconds: 60,
+          identityDiscovery: {
+            strategy: 'on-capture',
+            captureIds: ['profile.capture']
+          }
+        },
         minimumIntervalSeconds: 60,
         recommendedSyncIntervalHours: 24
       }]
@@ -128,6 +146,36 @@ describe('Streamfold plugin SDK', () => {
       route: 'https://example.com/i/user/{userId}?source=official',
       graphqlOperationName: 'UserContents'
     })
+    expect(contribution.backgroundCapture?.captures[0]).toMatchObject({
+      captureId: 'profile.capture',
+      responseCorrelations: [{ routeParameter: 'userId', comparison: 'exact' }]
+    })
+    for (const path of [
+      '/auth', '/auth_code', '/sig', '/session_key', '/client_session_key',
+      '/access_key', '/oauth_nonce', '/laravel_session', '/PHPSESSID',
+      '/connect_sid', '/__Secure-3PSIDTS', '/data/*'
+    ]) {
+      const invalidBackground = {
+        ...manifest,
+        contributions: [{
+          ...contribution,
+          backgroundCapture: {
+            ...contribution.backgroundCapture!,
+            captures: [{
+              captureId: 'profile.capture',
+              responseFieldPaths: [path],
+              responseCorrelations: [{
+                routeParameter: 'userId',
+                responseFieldPaths: [path],
+                comparison: 'exact'
+              }]
+            }]
+          }
+        }]
+      }
+      expect(() => validateManifest(invalidBackground)).toThrow('敏感字段')
+      expect(() => validatePluginManifestV2(invalidBackground)).toThrow('敏感字段')
+    }
     expect(() => validateManifest({
       ...manifest,
       contributions: [{

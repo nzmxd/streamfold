@@ -64,6 +64,7 @@ export function jobStatusLabel(status: JobStatus): string {
     validating: '校验中',
     committing: '写入中',
     succeeded: '已完成',
+    succeeded_with_warnings: '部分完成',
     failed: '失败',
     cancelled: '已取消',
     interrupted: '已中断'

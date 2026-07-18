@@ -1,3 +1,8 @@
+import {
+  isSensitiveBackgroundFieldName,
+  SENSITIVE_CREDENTIAL_FIELD_PATTERN_SOURCE
+} from '../../shared/plugin-host-contracts'
+
 const MAX_DIAGNOSTIC_SOURCE_LENGTH = 64_000
 const MAX_DIAGNOSTIC_LENGTH = 16_000
 const MAX_DIAGNOSTIC_DEPTH = 5
@@ -7,14 +12,19 @@ const MAX_DIAGNOSTIC_NODES = 200
 const MAX_DIAGNOSTIC_CHARACTERS = 14_000
 const MAX_DIAGNOSTIC_STRING_LENGTH = 8_000
 const MAX_HEADLINE_LENGTH = 8_000
-const SENSITIVE_KEY = '(?:password|passwd|pwd|passphrase|[a-z0-9_.-]*(?:cookie|authorization|secret|token|credential)[a-z0-9_.-]*|(?:access|refresh|auth|id|confirmation|xsec)[-_. ]*token|auth[-_. ]?code|oauth[-_. ]?code|api[-_. ]?key|x[-_. ]?api[-_. ]?key|private[-_. ]?key|csrf|xsrf|session(?:[-_. ]?id)?|ticket|a1|web[_-]?session|webid|xsecappid|ct0|twid|z_c0|d_c0|q_c1)'
+const SENSITIVE_KEY = SENSITIVE_CREDENTIAL_FIELD_PATTERN_SOURCE
 const INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY}\\b\\s*[:=]\\s*)[^\\s,;&#]+`, 'gi')
+const DOUBLE_QUOTED_INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY}\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`, 'gi')
+const SINGLE_QUOTED_INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY}\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`, 'gi')
+const UNTERMINATED_DOUBLE_QUOTED_INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY}\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\\\r\\n])*(?=$|\\r?\\n)`, 'gim')
+const UNTERMINATED_SINGLE_QUOTED_INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY}\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\\\r\\n])*(?=$|\\r?\\n)`, 'gim')
+const LINE_TAIL_SECRET = new RegExp(`(?<![?&#])\\b(${SENSITIVE_KEY}\\s*[:=]\\s*)(?!["'])[^\\r\\n]+`, 'gi')
 const HEADER_SECRET = new RegExp(`(^|\\n)([ \\t]*${SENSITIVE_KEY}\\s*:\\s*)[^\\r\\n]*(?:\\n[ \\t]+[^\\r\\n]*)*`, 'gim')
 const PASSWORD_LINE_SECRET = /(?<![?&#])\b((?:password|passwd|pwd|passphrase)\s*[:=]\s*)[^\r\n]+/gi
 const COOKIE_LINE_SECRET = /(?<![?&#])\b([a-z0-9_.-]*cookie[a-z0-9_.-]*\s*[:=]\s*)[^\r\n]+/gi
 const AUTH_SCHEME_SECRET = /\b(Bearer|Basic|Digest|Negotiate|Token)\s+[^\s,;]+/gi
 const JWT_SECRET = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g
-const COMMON_COOKIE_SECRET = /\b(a1|web[_-]?session|webid|xsecappid|auth[_-]?token|ct0|twid|z_c0|d_c0|q_c1)\s*=\s*[^\s;,&#]+/gi
+const COMMON_COOKIE_SECRET = /\b(a1|sid|sapisid|hsid|ssid|apisid|lsid|osid|sessdata|bili[_-]?jct|web[_-]?session|webid|xsecappid|auth[_-]?token|ct0|twid|ttwid|odin[_-]?tt|z_c0|d_c0|q_c1|__secure[-_. ]?(?:1p|3p)(?:sid(?:ts|cc)?|apisid)|sidcc|psidts)\s*=\s*[^\s;,&#]+/gi
 const PRIVATE_KEY_SECRET = /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)? PRIVATE KEY-----/g
 const UNTERMINATED_PRIVATE_KEY_SECRET = /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----[\s\S]*$/g
 const ARROW_SECRET = new RegExp(`\\b(${SENSITIVE_KEY})\\b\\s*(?:->|=>)\\s*[^\\r\\n]+`, 'gi')
@@ -103,6 +113,11 @@ export function sanitizeSandboxDiagnostic(value: string): string {
     .replace(PRIVATE_KEY_SECRET, '[REDACTED_PRIVATE_KEY]')
     .replace(UNTERMINATED_PRIVATE_KEY_SECRET, '[REDACTED_PRIVATE_KEY]')
     .replace(HEADER_SECRET, '$1$2[REDACTED]')
+    .replace(DOUBLE_QUOTED_INLINE_SECRET, '$1"[REDACTED]"')
+    .replace(SINGLE_QUOTED_INLINE_SECRET, "$1'[REDACTED]'")
+    .replace(UNTERMINATED_DOUBLE_QUOTED_INLINE_SECRET, '$1"[REDACTED]"')
+    .replace(UNTERMINATED_SINGLE_QUOTED_INLINE_SECRET, "$1'[REDACTED]'")
+    .replace(LINE_TAIL_SECRET, '$1[REDACTED]')
     .replace(PASSWORD_LINE_SECRET, '$1[REDACTED]')
     .replace(COOKIE_LINE_SECRET, '$1[REDACTED]')
     .replace(ARROW_SECRET, '$1 -> [REDACTED]')
@@ -294,9 +309,7 @@ function redactHttpUrls(value: string): string {
 }
 
 function isSensitiveDiagnosticKey(key: string): boolean {
-  const normalized = key.toLocaleLowerCase().replace(/[^a-z0-9]/gu, '')
-  return /(?:password|passwd|pwd|passphrase|cookie|authorization|secret|token|credential|apikey|privatekey|csrf|xsrf|sessionid|^session$|ticket)/u.test(normalized) ||
-    /^(?:a1|websession|webid|xsecappid|ct0|twid|zc0|dc0|qc1)$/u.test(normalized)
+  return isSensitiveBackgroundFieldName(key)
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | null {

@@ -25,7 +25,12 @@ import {
   normalizePluginNetworkError,
   pluginNetworkResponseError
 } from './plugins/network-diagnostics'
-import { XBackgroundCaptureMonitor } from './plugins/x-background-capture-monitor'
+import {
+  BackgroundCaptureSupervisor,
+  matchesBackgroundResponseCorrelations,
+  type BackgroundCaptureHealth,
+  type BackgroundCaptureNotice
+} from './plugins/background-capture-supervisor'
 import { isTrustedBrowserUrl } from './shell-security'
 import {
   XIAOHONGSHU_API_ENDPOINTS,
@@ -71,14 +76,28 @@ interface ManagedWorkspace {
   apiLeaseCount: number
   shellReady: Promise<void>
   apiPageReady: Promise<void> | null
-  xBackgroundCapture: XBackgroundCaptureMonitor | null
+  backgroundCapture: BackgroundCaptureSupervisor | null
+  backgroundCaptureNamespace: string | null
+  backgroundCapturePluginId: string | null
+  backgroundCaptureResumePending: boolean
   state: BrowserState
 }
 
 export interface PluginCaptureActivity {
   accountId: string
   captureId: string | null
+  pluginId: string | null
+  contributionId: string | null
+  reason: 'navigation' | 'capture' | 'health'
+  health: BackgroundCaptureHealth | null
+  error: Error | null
   sequence: number
+}
+
+export interface PluginCaptureBootstrapOptions {
+  pluginId?: string
+  retryInitialDelayMs: number
+  retryMaximumDelayMs: number
 }
 
 export interface XiaohongshuApiTransportLease {
@@ -100,6 +119,14 @@ export class BrowserManager {
   private readonly disconnecting = new Set<string>()
   private readonly activeApiCaptures = new Set<string>()
   private readonly pluginCaptureListeners = new Set<(activity: PluginCaptureActivity) => void>()
+  private readonly activePluginCaptureBootstraps = new Set<string>()
+  private readonly resumablePluginCaptures = new Set<string>()
+  private readonly backgroundBootstrapTasks = new Map<string, Promise<void>>()
+  private readonly backgroundBootstrapOwners = new Map<string, string>()
+  private readonly backgroundBootstrapPolicies = new Map<string, PluginCaptureBootstrapOptions>()
+  private readonly backgroundBootstrapGenerations = new Map<string, number>()
+  private readonly backgroundBootstrapRetryAttempts = new Map<string, number>()
+  private readonly backgroundBootstrapRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private pluginCaptureSequence = 0
   private shuttingDown = false
 
@@ -122,6 +149,8 @@ export class BrowserManager {
     if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
     const account = this.findAccount(accountId)
     if (!account) throw new Error('账号不存在')
+    await this.waitForBackgroundBootstrap(accountId)
+    if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
 
     const existing = this.workspaces.get(accountId)
     if (existing && !existing.window.isDestroyed()) {
@@ -149,6 +178,8 @@ export class BrowserManager {
     const account = this.findAccount(accountId)
     if (!account) throw new Error('账号不存在')
     if (!isOfficialUrl(account.platformId, targetUrl)) throw new Error('原帖链接不是已审核的官方地址')
+    await this.waitForBackgroundBootstrap(accountId)
+    if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
 
     let managed = this.workspaces.get(accountId)
     if (managed && !managed.disposed && !managed.window.isDestroyed() &&
@@ -183,6 +214,8 @@ export class BrowserManager {
     if (!account) throw new Error('账号不存在')
     if (account.platformId !== 'xiaohongshu') throw new Error('该 API 传输仅允许小红书账号')
 
+    await this.waitForBackgroundBootstrap(accountId)
+    if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
     let managed = this.workspaces.get(accountId)
     if (!managed || managed.disposed || managed.window.isDestroyed() ||
       managed.view.webContents.isDestroyed()) {
@@ -197,7 +230,7 @@ export class BrowserManager {
       await this.prepareXiaohongshuApiPage(managed)
       this.requireXiaohongshuApiWorkspace(accountId)
     } catch (error) {
-      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      this.releaseApiLease(managed)
       throw error
     }
 
@@ -211,7 +244,7 @@ export class BrowserManager {
       release: (): void => {
         if (released) return
         released = true
-        if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+        this.releaseApiLease(managed)
       }
     })
   }
@@ -222,6 +255,8 @@ export class BrowserManager {
     if (!account) throw new Error('账号不存在')
     if (account.platformId !== 'zhihu') throw new Error('该 API 传输仅允许知乎账号')
 
+    await this.waitForBackgroundBootstrap(accountId)
+    if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
     let managed = this.workspaces.get(accountId)
     if (!managed || managed.disposed || managed.window.isDestroyed() ||
       managed.view.webContents.isDestroyed()) {
@@ -236,7 +271,7 @@ export class BrowserManager {
       await this.prepareZhihuApiPage(managed)
       this.requireZhihuApiWorkspace(accountId)
     } catch (error) {
-      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      this.releaseApiLease(managed)
       throw error
     }
 
@@ -250,7 +285,7 @@ export class BrowserManager {
       release: (): void => {
         if (released) return
         released = true
-        if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+        this.releaseApiLease(managed)
       }
     })
   }
@@ -272,7 +307,7 @@ export class BrowserManager {
         endpoint.maximumResponseBytes ?? 256 * 1024
       )
     } finally {
-      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      this.releaseApiLease(managed)
     }
   }
 
@@ -288,33 +323,70 @@ export class BrowserManager {
   ): Promise<unknown[]> {
     const capture = contribution.captures.find((item) => item.id === captureId)
     if (!capture) throw new Error('平台插件请求了未声明的捕获规则')
-    const managed = await this.acquirePluginWorkspace(accountId, contribution, false)
     const rendered = renderDeclaredCaptureUrls(capture, params)
+    const background = contribution.backgroundCapture
+    const backgroundRule = background?.captures.find((item) => item.captureId === capture.id)
+    const managed = await this.acquirePluginWorkspace(accountId, contribution, false)
     if (policy === 'background-cache') {
       try {
-        if (pluginId !== 'streamfold.x' || contribution.id !== 'streamfold.x.platform') {
+        if (!background || !backgroundRule) {
           throw new Error('该平台适配器不支持后台响应监听')
         }
-        if (!managed.xBackgroundCapture) {
-          managed.xBackgroundCapture = new XBackgroundCaptureMonitor(
-            managed.view.webContents,
-            (notice) => this.emitPluginCaptureActivity(managed, notice.captureId)
-          )
+        const requestedLimit = limit ?? capture.maximumResponses ?? 20
+        if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+          throw new Error('平台后台捕获响应数量无效')
         }
-        return managed.xBackgroundCapture.read(
-          `${pluginId}:${pluginVersion}:${contribution.id}`,
+        const namespace = `${pluginId}:${pluginVersion}:${contribution.id}`
+        if (managed.backgroundCaptureNamespace && managed.backgroundCaptureNamespace !== namespace) {
+          this.stopWorkspaceBackgroundCapture(managed)
+        }
+        if (!managed.backgroundCapture) {
+          managed.backgroundCaptureNamespace = namespace
+          managed.backgroundCapturePluginId = pluginId
+          managed.backgroundCapture = new BackgroundCaptureSupervisor(
+            managed.view.webContents,
+            (notice) => this.emitPluginCaptureActivity(managed, {
+              pluginId,
+              contributionId: contribution.id,
+              notice
+            }),
+            Date.now,
+            {
+              cacheTtlMs: background.cacheTtlSeconds * 1_000,
+              retryInitialDelayMs: background.retryIntervalSeconds * 1_000,
+              retryMaximumDelayMs: background.maximumRetryIntervalSeconds * 1_000
+            }
+          )
+          managed.backgroundCaptureResumePending = false
+        }
+        this.activePluginCaptureBootstraps.add(accountId)
+        this.resumablePluginCaptures.add(accountId)
+        this.backgroundBootstrapOwners.set(accountId, pluginId)
+        this.backgroundBootstrapPolicies.set(accountId, {
+          pluginId,
+          retryInitialDelayMs: background.retryIntervalSeconds * 1_000,
+          retryMaximumDelayMs: background.maximumRetryIntervalSeconds * 1_000
+        })
+        return managed.backgroundCapture.read(
+          namespace,
           capture,
+          backgroundRule.responseFieldPaths,
+          backgroundRule.responseCorrelations ?? [],
+          rendered.routeParameters,
           rendered.responseUrl,
           rendered.routeUrl,
-          Math.min(limit ?? capture.maximumResponses ?? 20, capture.maximumResponses ?? 100)
+          Math.min(requestedLimit, capture.maximumResponses ?? 100)
         )
       } finally {
-        if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+        this.releaseApiLease(managed)
       }
     }
-    this.stopWorkspaceBackgroundCapture(managed)
+    if (managed.backgroundCapture || managed.backgroundCaptureResumePending) {
+      managed.backgroundCaptureResumePending = true
+    }
+    this.stopWorkspaceBackgroundCapture(managed, true)
     if (this.activeApiCaptures.has(accountId)) {
-      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      this.releaseApiLease(managed)
       throw new Error('该账号正在执行响应捕获')
     }
     this.activeApiCaptures.add(accountId)
@@ -324,21 +396,217 @@ export class BrowserManager {
         capture,
         rendered.responseUrl,
         Math.min(limit ?? capture.maximumResponses ?? 20, capture.maximumResponses ?? 100),
-        rendered.routeUrl
+        rendered.routeUrl,
+        backgroundRule?.responseCorrelations?.length
+          ? (value) => matchesBackgroundResponseCorrelations(
+              value,
+              backgroundRule.responseCorrelations ?? [],
+              rendered.routeParameters
+            )
+          : undefined
       )
     } finally {
       this.activeApiCaptures.delete(accountId)
-      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      if (managed.backgroundCaptureResumePending) {
+        const currentAccount = this.findAccount(accountId)
+        if (!currentAccount || currentAccount.remoteId) this.stopWorkspaceBackgroundCapture(managed)
+        else this.bootstrapPluginCapture(accountId)
+      }
+      this.releaseApiLease(managed)
     }
   }
 
-  stopPluginCapture(accountId: string): void {
+  stopPluginCapture(accountId: string, preserveResume = false): void {
     const managed = this.workspaces.get(accountId)
-    if (managed) this.stopWorkspaceBackgroundCapture(managed)
+    const hadResumeIntent = this.activePluginCaptureBootstraps.has(accountId) ||
+      this.resumablePluginCaptures.has(accountId) ||
+      Boolean(managed?.backgroundCapture || managed?.backgroundCaptureResumePending)
+    this.invalidateBackgroundBootstrap(accountId)
+    if (preserveResume) {
+      if (hadResumeIntent) this.resumablePluginCaptures.add(accountId)
+    } else {
+      this.resumablePluginCaptures.delete(accountId)
+      this.backgroundBootstrapOwners.delete(accountId)
+      this.backgroundBootstrapPolicies.delete(accountId)
+    }
+    if (!managed) {
+      this.cleanupBackgroundBootstrapGeneration(accountId)
+      return
+    }
+    if (!managed.foregroundRequested && managed.apiLeaseCount === 0) {
+      this.disposeWorkspace(managed, true)
+      this.cleanupBackgroundBootstrapGeneration(accountId)
+      return
+    }
+    this.stopWorkspaceBackgroundCapture(managed)
+    this.disposeHiddenWorkspaceIfIdle(managed)
+    this.cleanupBackgroundBootstrapGeneration(accountId)
   }
 
   stopAllPluginCaptures(): void {
-    for (const managed of this.workspaces.values()) this.stopWorkspaceBackgroundCapture(managed)
+    const accountIds = new Set([
+      ...this.activePluginCaptureBootstraps,
+      ...this.resumablePluginCaptures,
+      ...this.backgroundBootstrapTasks.keys(),
+      ...this.backgroundBootstrapOwners.keys(),
+      ...this.backgroundBootstrapPolicies.keys(),
+      ...this.backgroundBootstrapRetryTimers.keys(),
+      ...this.workspaces.keys()
+    ])
+    for (const accountId of accountIds) this.stopPluginCapture(accountId)
+  }
+
+  stopPluginCapturesForPlugin(pluginId: string, preserveResume = true): void {
+    const accountIds = new Set<string>()
+    for (const [accountId, ownerPluginId] of this.backgroundBootstrapOwners) {
+      if (ownerPluginId === pluginId) accountIds.add(accountId)
+    }
+    for (const managed of [...this.workspaces.values()]) {
+      if (managed.backgroundCapturePluginId === pluginId) accountIds.add(managed.account.id)
+    }
+    for (const accountId of accountIds) this.stopPluginCapture(accountId, preserveResume)
+  }
+
+  bootstrapPluginCapture(
+    accountId: string,
+    options?: PluginCaptureBootstrapOptions
+  ): void {
+    if (options) {
+      this.backgroundBootstrapPolicies.set(accountId, { ...options })
+      if (options.pluginId) this.backgroundBootstrapOwners.set(accountId, options.pluginId)
+    }
+    const account = this.findAccount(accountId)
+    if (!account || account.remoteId) {
+      this.stopPluginCapture(accountId)
+      return
+    }
+    this.activePluginCaptureBootstraps.add(accountId)
+    this.resumablePluginCaptures.add(accountId)
+    const managed = this.workspaces.get(accountId)
+    if (!managed || managed.disposed) {
+      this.restorePluginCaptureWorkspace(accountId)
+      return
+    }
+    managed.backgroundCaptureResumePending = true
+    this.emitPluginCaptureActivity(managed, {
+      pluginId: null,
+      contributionId: account.adapterContributionId,
+      notice: null
+    })
+  }
+
+  private restorePluginCaptureWorkspace(accountId: string): void {
+    if (this.backgroundBootstrapTasks.has(accountId) || this.shuttingDown ||
+      !this.activePluginCaptureBootstraps.has(accountId)) return
+    const generation = this.backgroundBootstrapGenerations.get(accountId) ?? 0
+    const task = (async () => {
+      const account = this.findAccount(accountId)
+      if (!account || account.remoteId || !this.isBackgroundBootstrapCurrent(accountId, generation)) return
+      let managed = this.workspaces.get(accountId)
+      if (!managed || managed.disposed || managed.window.isDestroyed() ||
+        managed.view.webContents.isDestroyed()) {
+        managed = await this.createWorkspace(account, false)
+      }
+      const current = this.findAccount(accountId)
+      if (!current || current.remoteId || !this.isBackgroundBootstrapCurrent(accountId, generation)) {
+        const replacementPending = Boolean(current && !current.remoteId &&
+          this.activePluginCaptureBootstraps.has(accountId))
+        if (!replacementPending && !managed.foregroundRequested && managed.apiLeaseCount === 0) {
+          this.disposeWorkspace(managed, true)
+        }
+        return
+      }
+      managed.backgroundCaptureResumePending = true
+      this.clearBackgroundBootstrapRetry(accountId)
+      this.emitPluginCaptureActivity(managed, {
+        pluginId: null,
+        contributionId: current.adapterContributionId,
+        notice: null
+      })
+    })().catch((error) => {
+      if (!this.isBackgroundBootstrapCurrent(accountId, generation)) return
+      const retry = this.schedulePluginCaptureWorkspaceRestore(accountId, generation)
+      this.emitPluginCaptureWorkspaceFailure(accountId, error, retry)
+    }).finally(() => {
+      if (this.backgroundBootstrapTasks.get(accountId) === task) {
+        this.backgroundBootstrapTasks.delete(accountId)
+      }
+      if (this.activePluginCaptureBootstraps.has(accountId) &&
+        generation !== (this.backgroundBootstrapGenerations.get(accountId) ?? 0)) {
+        this.restorePluginCaptureWorkspace(accountId)
+      }
+      this.cleanupBackgroundBootstrapGeneration(accountId)
+    })
+    this.backgroundBootstrapTasks.set(accountId, task)
+  }
+
+  private schedulePluginCaptureWorkspaceRestore(
+    accountId: string,
+    generation: number
+  ): { retryAttempt: number; nextRetryAt: string } | null {
+    if (!this.isBackgroundBootstrapCurrent(accountId, generation) ||
+      this.backgroundBootstrapRetryTimers.has(accountId)) return null
+    const policy = this.backgroundBootstrapPolicies.get(accountId) ?? {
+      retryInitialDelayMs: 1_000,
+      retryMaximumDelayMs: 60_000
+    }
+    const attempt = (this.backgroundBootstrapRetryAttempts.get(accountId) ?? 0) + 1
+    this.backgroundBootstrapRetryAttempts.set(accountId, attempt)
+    const delay = Math.min(
+      policy.retryMaximumDelayMs,
+      policy.retryInitialDelayMs * (2 ** Math.min(attempt - 1, 20))
+    )
+    const timer = setTimeout(() => {
+      this.backgroundBootstrapRetryTimers.delete(accountId)
+      if (this.isBackgroundBootstrapCurrent(accountId, generation)) {
+        this.restorePluginCaptureWorkspace(accountId)
+      }
+    }, delay)
+    timer.unref?.()
+    this.backgroundBootstrapRetryTimers.set(accountId, timer)
+    return {
+      retryAttempt: attempt,
+      nextRetryAt: new Date(Date.now() + delay).toISOString()
+    }
+  }
+
+  private clearBackgroundBootstrapRetry(accountId: string): void {
+    const timer = this.backgroundBootstrapRetryTimers.get(accountId)
+    if (timer) clearTimeout(timer)
+    this.backgroundBootstrapRetryTimers.delete(accountId)
+    this.backgroundBootstrapRetryAttempts.delete(accountId)
+  }
+
+  private invalidateBackgroundBootstrap(accountId: string): void {
+    this.activePluginCaptureBootstraps.delete(accountId)
+    this.backgroundBootstrapGenerations.set(
+      accountId,
+      (this.backgroundBootstrapGenerations.get(accountId) ?? 0) + 1
+    )
+    this.clearBackgroundBootstrapRetry(accountId)
+  }
+
+  private isBackgroundBootstrapCurrent(accountId: string, generation: number): boolean {
+    return !this.shuttingDown && this.activePluginCaptureBootstraps.has(accountId) &&
+      (this.backgroundBootstrapGenerations.get(accountId) ?? 0) === generation
+  }
+
+  private cleanupBackgroundBootstrapGeneration(accountId: string): void {
+    if (this.activePluginCaptureBootstraps.has(accountId) ||
+      this.resumablePluginCaptures.has(accountId) ||
+      this.backgroundBootstrapTasks.has(accountId) ||
+      this.backgroundBootstrapRetryTimers.has(accountId) ||
+      this.backgroundBootstrapOwners.has(accountId) ||
+      this.backgroundBootstrapPolicies.has(accountId)) return
+    this.backgroundBootstrapGenerations.delete(accountId)
+  }
+
+  private async waitForBackgroundBootstrap(accountId: string): Promise<void> {
+    while (true) {
+      const task = this.backgroundBootstrapTasks.get(accountId)
+      if (!task) return
+      await task
+    }
   }
 
   private async acquirePluginWorkspace(
@@ -352,6 +620,8 @@ export class BrowserManager {
     if (account.platformId !== contribution.platform.id) {
       throw new Error('平台适配器与账号绑定不匹配')
     }
+    await this.waitForBackgroundBootstrap(accountId)
+    if (this.disconnecting.has(accountId)) throw new Error('账号正在断开，请稍候')
     let managed = this.workspaces.get(accountId)
     if (!managed || managed.disposed || managed.window.isDestroyed() || managed.view.webContents.isDestroyed()) {
       managed = await this.createWorkspace(account, false)
@@ -370,7 +640,7 @@ export class BrowserManager {
       }
       return managed
     } catch (error) {
-      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      this.releaseApiLease(managed)
       throw error
     }
   }
@@ -391,7 +661,15 @@ export class BrowserManager {
 
   private showWorkspace(managed: ManagedWorkspace): void {
     promoteApiWorkspace(managed)
-    managed.state = { ...managed.state, windowOpen: true }
+    managed.state = {
+      ...managed.state,
+      windowOpen: true,
+      message: managed.state.loading
+        ? '正在加载官方页面…'
+        : managed.state.official
+          ? '平台页面已打开'
+          : managed.state.message
+    }
     this.emitState(managed)
     if (managed.window.isMinimized()) managed.window.restore()
     managed.window.show()
@@ -542,7 +820,7 @@ export class BrowserManager {
         contribution.platform.imageHosts
       )
     } finally {
-      if (endApiLease(managed)) this.disposeWorkspace(managed, true)
+      this.releaseApiLease(managed)
     }
   }
 
@@ -640,19 +918,16 @@ export class BrowserManager {
 
   async disconnect(accountId: string): Promise<void> {
     if (this.disconnecting.has(accountId)) throw new Error('账号正在断开')
-    this.stopPluginCapture(accountId)
-    const active = this.workspaces.get(accountId)
-    if ((active?.apiLeaseCount ?? 0) > 0 || this.activeApiCaptures.has(accountId)) {
-      throw new Error('账号正在同步或核验，请稍候')
-    }
     this.disconnecting.add(accountId)
-    const account = this.findAccount(accountId)
-    if (!account) {
-      this.disconnecting.delete(accountId)
-      throw new Error('账号不存在')
-    }
-
     try {
+      this.stopPluginCapture(accountId)
+      await this.waitForBackgroundBootstrap(accountId)
+      const active = this.workspaces.get(accountId)
+      if ((active?.apiLeaseCount ?? 0) > 0 || this.activeApiCaptures.has(accountId)) {
+        throw new Error('账号正在同步或核验，请稍候')
+      }
+      const account = this.findAccount(accountId)
+      if (!account) throw new Error('账号不存在')
       const managed = this.workspaces.get(accountId)
       if (managed) this.disposeWorkspace(managed, true)
 
@@ -664,10 +939,16 @@ export class BrowserManager {
 
   destroy(): void {
     this.shuttingDown = true
-    this.closeAll()
+    void this.closeAll()
   }
 
-  closeAll(): void {
+  async closeAll(): Promise<void> {
+    this.stopAllPluginCaptures()
+    for (const managed of [...this.workspaces.values()]) this.disposeWorkspace(managed, true)
+    this.workspaces.clear()
+    this.senderAccounts.clear()
+    const tasks = [...this.backgroundBootstrapTasks.values()]
+    if (tasks.length > 0) await Promise.allSettled(tasks)
     for (const managed of [...this.workspaces.values()]) this.disposeWorkspace(managed, true)
     this.workspaces.clear()
     this.senderAccounts.clear()
@@ -768,7 +1049,10 @@ export class BrowserManager {
       apiLeaseCount: 0,
       shellReady: Promise.resolve(),
       apiPageReady: null,
-      xBackgroundCapture: null,
+      backgroundCapture: null,
+      backgroundCaptureNamespace: null,
+      backgroundCapturePluginId: null,
+      backgroundCaptureResumePending: false,
       state: {
         accountId: account.id,
         platformId: account.platformId,
@@ -797,6 +1081,21 @@ export class BrowserManager {
     window.on('unmaximize', layout)
     window.once('ready-to-show', () => {
       if (this.showWindows && managed.foregroundRequested && !window.isDestroyed()) window.show()
+    })
+    window.on('close', (event) => {
+      if (this.shuttingDown || managed.disposed ||
+        (!managed.backgroundCapture && !managed.backgroundCaptureResumePending)) return
+      event.preventDefault()
+      managed.foregroundRequested = false
+      managed.state = {
+        ...managed.state,
+        windowOpen: false,
+        message: managed.backgroundCapture
+          ? '窗口已隐藏，后台监听仍在运行'
+          : '窗口已隐藏，后台监听将在身份核验后继续'
+      }
+      window.hide()
+      this.emitState(managed)
     })
     window.on('closed', () => {
       if (!this.shuttingDown) this.disposeWorkspace(managed, false)
@@ -861,8 +1160,12 @@ export class BrowserManager {
     contents.on('did-stop-loading', () => {
       this.refreshState(managed)
       const account = this.findAccount(managed.account.id)
-      if (account?.platformId === 'x' && !account.remoteId && isOfficialUrl('x', contents.getURL())) {
-        this.emitPluginCaptureActivity(managed, null)
+      if (account && !account.remoteId && isOfficialUrl(account.platformId, contents.getURL())) {
+        this.emitPluginCaptureActivity(managed, {
+          pluginId: null,
+          contributionId: account.adapterContributionId,
+          notice: null
+        })
       }
     })
     contents.on('did-navigate', () => this.refreshState(managed))
@@ -910,6 +1213,8 @@ export class BrowserManager {
     const contents = managed.view.webContents
     const rawUrl = contents.getURL()
     const official = Boolean(rawUrl) && isOfficialUrl(managed.account.platformId, rawUrl)
+    const listeningInBackground = !managed.foregroundRequested &&
+      (Boolean(managed.backgroundCapture) || managed.backgroundCaptureResumePending)
     managed.state = {
       ...managed.state,
       url: displayUrl(rawUrl),
@@ -919,7 +1224,13 @@ export class BrowserManager {
       canGoForward: contents.navigationHistory.canGoForward(),
       official,
       windowOpen: managed.foregroundRequested,
-      message: official ? '平台页面已打开' : '正在打开平台页面'
+      message: listeningInBackground
+        ? managed.backgroundCapture
+          ? '窗口已隐藏，后台监听仍在运行'
+          : '窗口已隐藏，后台监听将在身份核验后继续'
+        : official
+          ? '平台页面已打开'
+          : '正在打开平台页面'
     }
     this.emitState(managed)
   }
@@ -930,11 +1241,23 @@ export class BrowserManager {
     if (!managed.window.isDestroyed()) managed.window.webContents.send('browser:state', state)
   }
 
-  private emitPluginCaptureActivity(managed: ManagedWorkspace, captureId: string | null): void {
-    if (managed.disposed || this.findAccount(managed.account.id)?.platformId !== 'x') return
+  private emitPluginCaptureActivity(
+    managed: ManagedWorkspace,
+    input: {
+      pluginId: string | null
+      contributionId: string | null
+      notice: BackgroundCaptureNotice | null
+    }
+  ): void {
+    if (managed.disposed || !this.findAccount(managed.account.id)) return
     const activity: PluginCaptureActivity = {
       accountId: managed.account.id,
-      captureId,
+      captureId: input.notice?.captureId ?? null,
+      pluginId: input.pluginId,
+      contributionId: input.contributionId,
+      reason: input.notice?.reason ?? 'navigation',
+      health: input.notice?.health ?? null,
+      error: input.notice?.error ?? null,
       sequence: ++this.pluginCaptureSequence
     }
     for (const listener of this.pluginCaptureListeners) {
@@ -942,9 +1265,55 @@ export class BrowserManager {
     }
   }
 
-  private stopWorkspaceBackgroundCapture(managed: ManagedWorkspace): void {
-    managed.xBackgroundCapture?.dispose()
-    managed.xBackgroundCapture = null
+  private emitPluginCaptureWorkspaceFailure(
+    accountId: string,
+    error: unknown,
+    retry: { retryAttempt: number; nextRetryAt: string } | null
+  ): void {
+    const account = this.findAccount(accountId)
+    if (!account || this.shuttingDown) return
+    const failure = normalizePluginNetworkError(error, '平台后台监听工作区恢复失败')
+    const activity: PluginCaptureActivity = {
+      accountId,
+      captureId: null,
+      pluginId: this.backgroundBootstrapOwners.get(accountId) ?? null,
+      contributionId: account.adapterContributionId,
+      reason: 'health',
+      health: {
+        status: retry ? 'retrying' : 'degraded',
+        retryAttempt: retry?.retryAttempt ?? 0,
+        nextRetryAt: retry?.nextRetryAt ?? null,
+        lastCaptureAt: null,
+        lastError: failure.message
+      },
+      error: failure,
+      sequence: ++this.pluginCaptureSequence
+    }
+    for (const listener of this.pluginCaptureListeners) {
+      try { listener(activity) } catch {}
+    }
+  }
+
+  private stopWorkspaceBackgroundCapture(managed: ManagedWorkspace, preserveResume = false): void {
+    managed.backgroundCapture?.dispose()
+    managed.backgroundCapture = null
+    managed.backgroundCaptureNamespace = null
+    if (!preserveResume) {
+      managed.backgroundCapturePluginId = null
+      managed.backgroundCaptureResumePending = false
+    }
+  }
+
+  private disposeHiddenWorkspaceIfIdle(managed: ManagedWorkspace): void {
+    if (!managed.disposed && !managed.foregroundRequested && managed.apiLeaseCount === 0 &&
+      !managed.backgroundCapture && !managed.backgroundCaptureResumePending) {
+      this.disposeWorkspace(managed, true)
+    }
+  }
+
+  private releaseApiLease(managed: ManagedWorkspace): void {
+    endApiLease(managed)
+    this.disposeHiddenWorkspaceIfIdle(managed)
   }
 
   private workspaceForSender(event: IpcMainInvokeEvent): ManagedWorkspace {
@@ -995,8 +1364,29 @@ export class BrowserManager {
 
   private disposeWorkspace(managed: ManagedWorkspace, closeWindow: boolean): void {
     if (managed.disposed) return
-    managed.disposed = true
+    const hadBackgroundCapture = Boolean(managed.backgroundCapture)
     this.stopWorkspaceBackgroundCapture(managed)
+    if (!hadBackgroundCapture) {
+      this.emitPluginCaptureActivity(managed, {
+        pluginId: null,
+        contributionId: managed.account.adapterContributionId,
+        notice: {
+          captureId: null,
+          reason: 'health',
+          generation: `workspace:${managed.senderId}`,
+          revision: 0,
+          health: {
+            status: 'stopped',
+            retryAttempt: 0,
+            nextRetryAt: null,
+            lastCaptureAt: null,
+            lastError: ''
+          },
+          error: null
+        }
+      })
+    }
+    managed.disposed = true
     if (this.workspaces.get(managed.account.id) === managed) {
       this.workspaces.delete(managed.account.id)
     }
@@ -1986,7 +2376,7 @@ function renderDeclaredUrl(
 function renderDeclaredCaptureUrls(
   declaration: PlatformCaptureDeclaration,
   params: Record<string, unknown>
-): { routeUrl: string; responseUrl: string } {
+): { routeUrl: string; responseUrl: string; routeParameters: Record<string, string> } {
   const used = new Set<string>()
   const route = declaredRouteTemplateParts(declaration.route)
   const renderedRoute = new URL(renderDeclaredUrlWithUsed(route.origin, route.path, [], params, used))
@@ -1999,7 +2389,12 @@ function renderDeclaredCaptureUrls(
     used
   )
   assertNoUndeclaredParams(params, used)
-  return { routeUrl: renderedRoute.href, responseUrl }
+  const routeParameters: Record<string, string> = {}
+  for (const match of route.path.matchAll(/\{([a-zA-Z][a-zA-Z0-9_-]{0,63})\}/g)) {
+    const key = match[1]!
+    routeParameters[key] = declaredScalar(params[key], key)
+  }
+  return { routeUrl: renderedRoute.href, responseUrl, routeParameters }
 }
 
 function renderDeclaredUrlWithUsed(
@@ -2146,7 +2541,8 @@ async function captureDeclaredPlatformJson(
   declaration: PlatformCaptureDeclaration,
   expectedUrl: string,
   limit: number,
-  routeUrl = declaration.route
+  routeUrl = declaration.route,
+  acceptValue?: (value: unknown) => boolean
 ): Promise<unknown[]> {
   if (contents.isDestroyed()) throw new Error('账号浏览器工作区已关闭')
   const browserDebugger = contents.debugger
@@ -2230,6 +2626,7 @@ async function captureDeclaredPlatformJson(
           rejectedFailure = pluginNetworkResponseError('平台捕获端点返回 API 错误', diagnosticInput)
           return
         }
+        if (acceptValue && !acceptValue(value)) return
         // A valid replay proves recovery from an earlier rejected candidate,
         // but must not consume the bounded quota reserved for unique pages.
         rejectedFailure = null

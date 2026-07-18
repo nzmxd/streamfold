@@ -99,6 +99,7 @@ function progressValue(task: TaskView): number {
             <span v-else class="cell-primary">{{ task.stage || '—' }}</span>
             <small v-if="task.status === 'running' || task.status === 'queued'">{{ task.stage || '等待调度' }}</small>
             <small v-else-if="task.errorMessage" class="task-error" :title="task.errorMessage">{{ task.errorMessage }}</small>
+            <small v-else-if="task.warnings.length" class="task-warning" :title="task.warnings[0]">{{ task.warnings[0] }}</small>
           </td>
           <td>
             <span class="cell-primary">{{ formatDate(task.startedAt ?? task.createdAt, true) }}</span>
@@ -175,6 +176,7 @@ function progressValue(task: TaskView): number {
 .task-progress i { display: block; height: 100%; background: var(--brand); border-radius: inherit; transition: width .18s ease; }
 .task-progress b { color: var(--text-secondary); font-size: var(--font-caption); line-height: var(--line-caption); font-weight: 600; }
 .task-error { max-width: 210px; color: var(--danger) !important; }
+.task-warning { max-width: 210px; color: var(--warning) !important; }
 .task-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
 .task-actions button { min-height: 31px; padding: 4px 8px; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; cursor: pointer; font-size: var(--font-caption); line-height: var(--line-caption); white-space: nowrap; }
 .task-actions button:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); border-color: var(--border-strong); }

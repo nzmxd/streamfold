@@ -60,7 +60,7 @@ function countFor(value: string): number {
   if (value === 'ungrouped') return props.allAccounts.filter((item) => item.groupIds.length === 0).length
   if (value === 'problem') return props.allAccounts.filter((item) =>
     ['expired', 'mismatch'].includes(item.connectionStatus) ||
-    ['failed', 'cooldown', 'unsupported'].includes(item.syncStatus)
+    ['partial', 'failed', 'cooldown', 'unsupported'].includes(item.syncStatus)
   ).length
   if (value === 'paused') return props.allAccounts.filter((item) => !item.syncEnabled).length
   return props.groups.find((group) => group.id === value)?.accountCount ?? 0
@@ -92,7 +92,7 @@ function countFor(value: string): number {
       <select :value="selectedGroup" @change="emit('update:selectedGroup', ($event.target as HTMLSelectElement).value)">
         <option value="all">全部账号（{{ countFor('all') }}）</option>
         <option value="ungrouped">未分组（{{ countFor('ungrouped') }}）</option>
-        <option value="problem">连接/同步异常（{{ countFor('problem') }}）</option>
+        <option value="problem">连接/同步提示（{{ countFor('problem') }}）</option>
         <option value="paused">同步已暂停（{{ countFor('paused') }}）</option>
         <option v-for="group in groups" :key="group.id" :value="group.id">
           {{ group.name }}（{{ group.accountCount }}）

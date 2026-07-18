@@ -42,7 +42,7 @@ export function useAccounts() {
       if (
         selectedGroup.value === 'problem' &&
         !['expired', 'mismatch'].includes(account.connectionStatus) &&
-        !['failed', 'cooldown', 'unsupported'].includes(account.syncStatus)
+        !['partial', 'failed', 'cooldown', 'unsupported'].includes(account.syncStatus)
       ) return false
       if (selectedGroup.value === 'paused' && account.syncEnabled) return false
       if (

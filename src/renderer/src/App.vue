@@ -78,7 +78,7 @@ async function promptIdentityBinding(candidate: SessionApiIdentityCheckResult): 
   activeIdentityCandidates.add(candidateKey)
   try {
     const confirmed = await confirmDialog({
-      title: '绑定当前 X 账号？',
+      title: '绑定当前登录账号？',
       description: '后台监听已读取到当前登录身份。确认后会重新读取一次最新资料，再完成本地账号绑定。',
       details: [`昵称：${candidate.remoteName}`, `账号 ID：${candidate.remoteId}`],
       confirmLabel: '确认绑定',

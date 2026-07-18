@@ -34,7 +34,7 @@ export const OFFICIAL_PLUGIN_DEFINITIONS = Object.freeze([
   }),
   Object.freeze({
     pluginId: 'streamfold.x',
-    version: '1.1.5',
+    version: '1.2.0',
     label: 'X',
     sourceDirectory: join(repositoryRoot, 'tooling', 'builtin-plugins', 'streamfold.x'),
     trustModulePath: join(repositoryRoot, 'src', 'main', 'plugins', 'official-x-trust.generated.ts'),

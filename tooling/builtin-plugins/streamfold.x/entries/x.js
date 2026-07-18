@@ -113,6 +113,20 @@ function identityFailure(code) {
   return { [IDENTITY_FAILURE_KEY]: code };
 }
 
+function identityPending(context, stage) {
+  if (!context || context.capturePolicy !== 'background-cache') {
+    return identityFailure(
+      stage === 'settings' ? IDENTITY_FAILURES.settingsEmpty : IDENTITY_FAILURES.currentProfileEmpty
+    );
+  }
+  return {
+    status: 'capture_pending',
+    message: stage === 'settings'
+      ? '正在后台监听 X 登录账号设置。'
+      : '已识别 X 登录账号，正在后台监听账号资料。'
+  };
+}
+
 function unwrapUserResult(value, label) {
   let result = object(value, label);
   for (let depth = 0; depth < 2 && !own(result, 'rest_id') && isObject(result.result); depth += 1) {
@@ -371,11 +385,11 @@ function parseTimelineResponse(value, boundRemoteId) {
   return { tweetResults, bottomCursor, terminatedBottom, ignoredInstruction };
 }
 
-async function readIdentity(_context, rawInput) {
+async function readIdentity(context, rawInput) {
   readIdentityInput(rawInput);
   const settingsResponses = await streamfold.platform.captureJson('x.identity.settings', {}, 1);
   if (!Array.isArray(settingsResponses)) return identityFailure(IDENTITY_FAILURES.responseInvalid);
-  if (settingsResponses.length === 0) return identityFailure(IDENTITY_FAILURES.settingsEmpty);
+  if (settingsResponses.length === 0) return identityPending(context, 'settings');
   if (settingsResponses.length !== 1 || !isObject(settingsResponses[0])) {
     return identityFailure(IDENTITY_FAILURES.responseInvalid);
   }
@@ -392,7 +406,7 @@ async function readIdentity(_context, rawInput) {
     1
   );
   if (!Array.isArray(currentResponses)) return identityFailure(IDENTITY_FAILURES.responseInvalid);
-  if (currentResponses.length === 0) return identityFailure(IDENTITY_FAILURES.currentProfileEmpty);
+  if (currentResponses.length === 0) return identityPending(context, 'profile');
   if (currentResponses.length !== 1 || !isObject(currentResponses[0])) {
     return identityFailure(IDENTITY_FAILURES.responseInvalid);
   }
@@ -412,7 +426,14 @@ async function collect(_context, rawInput) {
   const input = collectInput(rawInput);
   const capturedAt = new Date().toISOString();
   if (input.scope === 'profile_only') {
-    return { capturedAt, profile: null, contentMetricDefinitions: CONTENT_METRIC_DEFINITIONS, contents: [], warnings: [] };
+    return {
+      capturedAt,
+      profile: null,
+      contentMetricDefinitions: CONTENT_METRIC_DEFINITIONS,
+      contents: [],
+      coverage: { requestedContentCount: 0, actualContentCount: 0, paginationEnded: true },
+      warnings: []
+    };
   }
 
   const target = input.scope === 'recent_20' ? 20 : 100;
@@ -469,6 +490,11 @@ async function collect(_context, rawInput) {
     profile: null,
     contentMetricDefinitions: CONTENT_METRIC_DEFINITIONS,
     contents: contents.slice(0, target),
+    coverage: {
+      requestedContentCount: target,
+      actualContentCount: Math.min(contents.length, target),
+      paginationEnded: Boolean(lastPage && (lastPage.bottomCursor === null || lastPage.terminatedBottom))
+    },
     warnings
   };
 }

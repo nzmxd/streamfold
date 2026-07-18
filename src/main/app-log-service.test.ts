@@ -80,6 +80,30 @@ describe('AppLogService', () => {
     }
   })
 
+  it('redacts prefixed and secure-cookie credential aliases consistently', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'streamfold-logs-'))
+    const service = new AppLogService(directory)
+    service.error('network', 'x_access_key=ACCESS PART TWO', {
+      details: "client_session_key='SESSION PART TWO'\n" +
+        'oauth_signature=OAUTH,SECOND\n__Secure-3PSIDTS=GOOGLE_COOKIE',
+      context: {
+        auth_code: 'AUTH_CODE',
+        sig: 'SIGNATURE',
+        request_signature: 'REQUEST_SIGNATURE',
+        laravel_session: 'LARAVEL_SESSION',
+        PHPSESSID: 'PHP_SESSION',
+        status: 502
+      }
+    })
+    const serialized = JSON.stringify(service.list().items[0])
+
+    expect(serialized).toContain('502')
+    for (const secret of [
+      'ACCESS PART TWO', 'SESSION PART TWO', 'OAUTH,SECOND', 'GOOGLE_COOKIE',
+      'AUTH_CODE', 'SIGNATURE', 'REQUEST_SIGNATURE', 'LARAVEL_SESSION', 'PHP_SESSION'
+    ]) expect(serialized).not.toContain(secret)
+  })
+
   it('redacts URL credentials and preserves structured non-Error rejection details', () => {
     const directory = mkdtempSync(join(tmpdir(), 'streamfold-logs-'))
     const service = new AppLogService(directory)

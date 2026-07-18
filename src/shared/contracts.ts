@@ -16,10 +16,17 @@ export const connectionStatuses = ['pending', 'ready', 'expired', 'mismatch', 'd
 export type ConnectionStatus = (typeof connectionStatuses)[number]
 export const ownershipStatuses = ['unconfirmed', 'user_confirmed', 'plugin_verified'] as const
 export type OwnershipStatus = (typeof ownershipStatuses)[number]
-export const syncStatuses = ['idle', 'queued', 'running', 'cooldown', 'failed', 'unsupported'] as const
+export const syncStatuses = ['idle', 'queued', 'running', 'partial', 'cooldown', 'failed', 'unsupported'] as const
 export type SyncStatus = (typeof syncStatuses)[number]
 
 export type SyncMode = 'profile_only' | 'recent_20' | 'recent_100' | 'disabled'
+
+export interface SyncCoverage {
+  requestedContentCount: number
+  actualContentCount: number
+  /** null means that the adapter could not reliably determine the pagination state. */
+  paginationEnded: boolean | null
+}
 
 export interface PlatformDefinition {
   id: PlatformId

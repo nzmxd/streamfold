@@ -583,6 +583,7 @@ function toPayload(
   cachedAvatar: CachedProfileAvatar | null,
   mode: Exclude<SyncMode, 'disabled'>
 ): StandardDataset {
+  const requestedContentCount = mode === 'profile_only' ? 0 : mode === 'recent_20' ? 20 : 100
   return {
     capturedAt,
     profile: {
@@ -632,6 +633,11 @@ function toPayload(
       publishedAt: content.publishedAt,
       snapshots: [contentSnapshot(content, snapshot.contentAnalytics.get(content.id), capturedAt)]
     })),
+    coverage: {
+      requestedContentCount,
+      actualContentCount: snapshot.contents.length,
+      paginationEnded: requestedContentCount === 0 || snapshot.contents.length < requestedContentCount
+    },
     warnings: contentCoverageWarnings(snapshot, mode)
   }
 }
@@ -860,8 +866,10 @@ function syncResult(
       thanks: snapshot.profile.thankedCount
     },
     contentCount: snapshot.contents.length,
+    coverage: committed.coverage,
     stats: committed.stats,
     job,
+    warnings: committed.warnings,
     message: syncMessage(snapshot, mode)
   }
 }

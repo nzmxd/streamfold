@@ -641,6 +641,33 @@ describe('SocialDatabase', () => {
     expect(database.getPluginState('xiaohongshu-session-api')).toMatchObject({ successCount: 2 })
   })
 
+  it('redacts credentials from persisted managed sync warnings', () => {
+    const account = createManagedAccount(database, 'warning-owner', '告警账号')
+    const payload = standardDataset('warning-owner', 'warning-content')
+    payload.warnings = [
+      '响应降级：auth_token=private-auth-token',
+      'Cookie: sid=private-cookie',
+      'Authorization: Bearer private-bearer-token'
+    ]
+    database.markManagedSyncStarted(account.id, '2026-07-13T08:00:00.000Z')
+    const metadata = managedSyncMetadata(database, account.id, '2026-07-13T08:00:01.000Z')
+
+    const result = database.commitManagedSync(payload, metadata)
+    const persisted = database.getJob(metadata.jobId)
+    const serialized = JSON.stringify({
+      warnings: result.warnings,
+      jobResult: persisted?.result,
+      accountError: database.getAccount(account.id)?.lastSyncError
+    })
+
+    expect(result.job.status).toBe('succeeded_with_warnings')
+    expect(database.getAccount(account.id)?.syncStatus).toBe('partial')
+    expect(serialized).toContain('[REDACTED]')
+    expect(serialized).not.toContain('private-auth-token')
+    expect(serialized).not.toContain('private-cookie')
+    expect(serialized).not.toContain('private-bearer-token')
+  })
+
   it('keeps an automatic alias and current profile fields in sync with managed profile data', () => {
     const created = database.createAccount({ platformId: 'xiaohongshu', syncMode: 'recent_20' })
     database.applyManagedIdentity(created.id, {

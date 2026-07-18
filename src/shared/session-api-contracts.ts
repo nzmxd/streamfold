@@ -1,4 +1,4 @@
-import type { SyncMode } from './contracts'
+import type { SyncCoverage, SyncMode } from './contracts'
 import type { JobRecord } from './job-contracts'
 
 /** Identity states shared by every first-party, session-backed platform adapter. */
@@ -63,6 +63,7 @@ export interface SessionApiSyncResult {
   capturedAt: string
   profile: SessionApiSyncProfile
   contentCount: number
+  coverage: SyncCoverage
   stats: SessionApiSyncStats
   job: JobRecord
   warnings?: string[]

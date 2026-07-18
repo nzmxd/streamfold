@@ -23,6 +23,8 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     platformId: 'xiaohongshu',
     pluginId: 'streamfold.builtin.xiaohongshu',
     contributionId: 'xiaohongshu.adapter',
+    coverage: null,
+    warnings: [],
     progress: 0,
     stage: '等待执行',
     attempt: 1,

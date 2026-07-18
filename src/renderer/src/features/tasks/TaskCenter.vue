@@ -35,6 +35,7 @@ const emptySummary: TaskSummary = {
   runningCount: 0,
   needsAttentionCount: 0,
   completedTodayCount: 0,
+  partialTodayCount: 0,
   failedTodayCount: 0,
   updatedAt: ''
 }
@@ -323,6 +324,12 @@ function showToast(value: string): void {
     if (toast.value === value) toast.value = ''
   }, 2800)
 }
+
+function paginationStatusLabel(value: boolean | null): string {
+  if (value === true) return '已到末页'
+  if (value === false) return '尚有下一页'
+  return '未知'
+}
 </script>
 
 <template>
@@ -357,7 +364,7 @@ function showToast(value: string): void {
         <span>需要处理</span><strong>{{ summary.needsAttentionCount }}</strong><small>尚未解决的失败或中断</small>
       </article>
       <article class="feature-card tone-success">
-        <span>今日完成</span><strong>{{ summary.completedTodayCount }}</strong><small>{{ summary.failedTodayCount }} 个今日失败</small>
+        <span>今日完成</span><strong>{{ summary.completedTodayCount }}</strong><small>{{ summary.partialTodayCount }} 个部分完成 · {{ summary.failedTodayCount }} 个失败</small>
       </article>
     </section>
 
@@ -366,7 +373,7 @@ function showToast(value: string): void {
         <button type="button" :class="{ active: viewMode === 'tasks' }" role="tab" :aria-selected="viewMode === 'tasks'" @click="viewMode = 'tasks'">任务</button>
         <button type="button" :class="{ active: viewMode === 'batches' }" role="tab" :aria-selected="viewMode === 'batches'" @click="viewMode = 'batches'">批次</button>
       </div>
-      <label>状态<select v-model="statusFilter"><option value="all">全部状态</option><option value="queued">排队中</option><option value="running">运行中</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="interrupted">已中断</option><option value="paused">已暂停</option><option value="cancelled">已取消</option></select></label>
+      <label>状态<select v-model="statusFilter"><option value="all">全部状态</option><option value="queued">排队中</option><option value="running">运行中</option><option value="succeeded">已完成</option><option value="succeeded_with_warnings">部分完成</option><option value="failed">失败</option><option value="interrupted">已中断</option><option value="paused">已暂停</option><option value="cancelled">已取消</option></select></label>
       <label>处置<select v-model="attentionFilter"><option value="all">全部处置</option><option value="pending">需要处理</option><option value="resolved">已解决</option></select></label>
       <label>触发<select v-model="triggerFilter"><option value="all">全部来源</option><option value="manual">手动</option><option value="scheduled">定时</option><option value="event">事件</option><option value="retry">重试</option></select></label>
       <label>平台<select v-model="platformFilter"><option value="all">全部平台</option><option v-for="platform in platforms" :key="platform.id" :value="platform.id">{{ platform.name }}</option></select></label>
@@ -403,9 +410,9 @@ function showToast(value: string): void {
         @click="openBatch(batch.id)"
       >
         <span class="batch-card-icon" aria-hidden="true">≡</span>
-        <span class="batch-card-copy"><strong>同步批次 · {{ formatDate(batch.createdAt, true) }}</strong><small>{{ taskTriggerLabel(batch.trigger) }}触发 · {{ batch.totalCount }} 个任务</small></span>
+        <span class="batch-card-copy"><strong>同步批次 · {{ formatDate(batch.createdAt, true) }}</strong><small>{{ taskTriggerLabel(batch.trigger) }}触发 · {{ batch.totalCount }} 个任务<span v-if="batch.needsAttentionCount"> · {{ batch.needsAttentionCount }} 个需处理</span></small></span>
         <span class="batch-card-counts"><b>{{ batch.succeededCount }}</b><small>完成</small></span>
-        <span class="batch-card-counts warning"><b>{{ batch.needsAttentionCount }}</b><small>需处理</small></span>
+        <span class="batch-card-counts warning"><b>{{ batch.partialCount }}</b><small>部分完成</small></span>
         <span class="batch-card-progress"><i><b :style="{ width: `${batchProgress(batch)}%` }" /></i><small>{{ batchProgress(batch) }}%</small></span>
         <span class="batch-card-arrow">›</span>
       </button>
@@ -424,7 +431,7 @@ function showToast(value: string): void {
           <div><span class="page-eyebrow">批次详情</span><h2 id="task-batch-title">{{ selectedBatch ? `同步批次 · ${formatDate(selectedBatch.batch.createdAt, true)}` : '正在读取批次' }}</h2><p v-if="selectedBatch">{{ taskTriggerLabel(selectedBatch.batch.trigger) }}触发 · 同步范围 {{ selectedBatch.batch.requestedScope === 'account_default' ? '按账号默认设置' : selectedBatch.batch.requestedScope === 'profile_only' ? '仅资料' : selectedBatch.batch.requestedScope === 'recent_20' ? '最近 20 条' : '最近 100 条' }}</p></div>
           <button type="button" aria-label="关闭批次详情" @click="closeBatchDialog">×</button>
         </div>
-        <div v-if="selectedBatch" class="batch-dialog-summary"><span>共 {{ selectedBatch.totalCount }}</span><span>{{ selectedBatch.succeededCount }} 完成</span><span>{{ selectedBatch.runningCount }} 运行中</span><span>{{ selectedBatch.needsAttentionCount }} 需处理</span></div>
+        <div v-if="selectedBatch" class="batch-dialog-summary"><span>共 {{ selectedBatch.totalCount }}</span><span>{{ selectedBatch.succeededCount }} 完成</span><span>{{ selectedBatch.partialCount }} 部分完成</span><span>{{ selectedBatch.runningCount }} 运行中</span><span>{{ selectedBatch.needsAttentionCount }} 需处理</span></div>
         <div class="batch-dialog-content">
           <div v-if="batchLoading" class="task-loading">正在读取批次任务…</div>
           <TaskList
@@ -451,10 +458,12 @@ function showToast(value: string): void {
           <div><dt>账号</dt><dd>{{ selectedTask.accountAlias || selectedTask.accountId || '通用任务' }}</dd></div>
           <div v-if="selectedTask.pluginId"><dt>插件</dt><dd>{{ selectedTask.pluginId }}<span v-if="selectedTask.contributionId"> · {{ selectedTask.contributionId }}</span></dd></div>
           <div><dt>阶段</dt><dd>{{ selectedTask.stage || '—' }}<span v-if="selectedTask.progress !== null"> · {{ selectedTask.progress }}%</span></dd></div>
+          <div v-if="selectedTask.coverage"><dt>同步覆盖</dt><dd>请求 {{ selectedTask.coverage.requestedContentCount }} 条 · 实际 {{ selectedTask.coverage.actualContentCount }} 条 · 分页 {{ paginationStatusLabel(selectedTask.coverage.paginationEnded) }}</dd></div>
           <div><dt>创建时间</dt><dd>{{ formatDate(selectedTask.createdAt, true) }}</dd></div>
           <div v-if="selectedTask.startedAt"><dt>开始时间</dt><dd>{{ formatDate(selectedTask.startedAt, true) }}</dd></div>
           <div v-if="selectedTask.finishedAt"><dt>结束时间</dt><dd>{{ formatDate(selectedTask.finishedAt, true) }}</dd></div>
           <div v-if="selectedTask.attentionState"><dt>处置状态</dt><dd>{{ taskAttentionLabel(selectedTask.attentionState) }}<span v-if="selectedTask.attentionResolvedAt"> · {{ formatDate(selectedTask.attentionResolvedAt, true) }}</span></dd></div>
+          <div v-if="selectedTask.warnings.length" class="detail-warning"><dt>同步提示</dt><dd><span v-for="(warning, index) in selectedTask.warnings" :key="index">{{ warning }}</span></dd></div>
           <div v-if="selectedTask.errorCode || selectedTask.errorMessage" class="detail-error"><dt>错误</dt><dd><b v-if="selectedTask.errorCode">{{ selectedTask.errorCode }}</b>{{ selectedTask.errorMessage }}</dd></div>
         </dl>
         <div class="modal-actions"><button class="button" type="button" @click="selectedTask = null">关闭</button><button v-if="selectedTask.kind !== 'account.sync'" class="button" type="button" @click="emit('navigate', 'plugins'); selectedTask = null">打开插件中心</button><button v-if="taskNeedsLogin(selectedTask)" class="button" type="button" :disabled="busyTaskId === selectedTask.id" @click="openAccountBrowser(selectedTask)">处理登录</button><button v-if="canCancelTask(selectedTask)" class="button" type="button" :disabled="busyTaskId === selectedTask.id" @click="cancelTask(selectedTask)">取消任务</button><button v-if="selectedTask.attentionState === 'pending'" class="button" type="button" :disabled="busyTaskId === selectedTask.id" @click="markTaskHandled(selectedTask)">标为已处理</button><button v-if="canRetryTask(selectedTask)" class="button primary" type="button" :disabled="busyTaskId === selectedTask.id" @click="retryTask(selectedTask)">重试</button></div>
@@ -522,6 +531,7 @@ function showToast(value: string): void {
 .task-detail-list dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--text-secondary); font-size: var(--font-secondary); line-height: var(--line-secondary); }
 .task-detail-list .detail-error dd { display: grid; gap: 3px; color: var(--danger); }
 .task-detail-list .detail-error b { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: var(--font-caption); }
+.task-detail-list .detail-warning dd { display: grid; gap: 4px; color: var(--warning); }
 @media (max-width: 1180px) {
   .task-filter-card { grid-template-columns: auto repeat(3, minmax(125px, 1fr)); }
   .task-filter-card label:nth-of-type(n + 4), .task-filter-card > .task-reset { grid-row: 2; }

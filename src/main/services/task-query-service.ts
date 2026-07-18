@@ -1,4 +1,4 @@
-import type { Account } from '../../shared/contracts'
+import type { Account, SyncCoverage } from '../../shared/contracts'
 import type {
   JobBatchRecord,
   JobRecord,
@@ -167,7 +167,10 @@ export class TaskQueryService {
       runningCount: tasks.filter((task) => task.status === 'running').length,
       needsAttentionCount: tasks.filter((task) => task.attentionState === 'pending').length,
       completedTodayCount: tasks.filter((task) =>
-        task.status === 'succeeded' && finishedToday(task)
+        (task.status === 'succeeded' || task.status === 'succeeded_with_warnings') && finishedToday(task)
+      ).length,
+      partialTodayCount: tasks.filter((task) =>
+        task.status === 'succeeded_with_warnings' && finishedToday(task)
       ).length,
       failedTodayCount: tasks.filter((task) =>
         task.status === 'failed' && finishedToday(task)
@@ -286,6 +289,8 @@ function mapJob(job: JobRecord, accountsById: ReadonlyMap<string, Account>): Tas
     attempt: job.attempt,
     errorCode: job.errorCode,
     errorMessage: job.errorMessage,
+    coverage: jobCoverage(job),
+    warnings: jobWarnings(job),
     createdAt: job.createdAt,
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
@@ -318,6 +323,8 @@ function mapPluginRun(
     attempt: run.attempt,
     errorCode: run.errorCode,
     errorMessage: run.errorMessage,
+    coverage: null,
+    warnings: [],
     createdAt: run.createdAt,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
@@ -451,6 +458,7 @@ function taskSearchText(task: TaskView): string {
     task.stage,
     task.errorCode,
     task.errorMessage,
+    ...task.warnings,
     task.attentionState
   ].filter((value): value is string => Boolean(value)).join('\n').toLocaleLowerCase()
 }
@@ -465,12 +473,38 @@ function buildBatchView(batch: JobBatchRecord, tasks: TaskView[]): TaskBatchView
     queuedCount: count('queued'),
     runningCount: count('running'),
     succeededCount: count('succeeded'),
+    partialCount: count('succeeded_with_warnings'),
     failedCount: count('failed'),
     cancelledCount: count('cancelled'),
     interruptedCount: count('interrupted'),
     pausedCount: count('paused'),
     needsAttentionCount: tasks.filter((task) => task.attentionState === 'pending').length
   }
+}
+
+function jobCoverage(job: JobRecord): SyncCoverage | null {
+  const value = job.result?.coverage
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const coverage = value as Record<string, unknown>
+  const requestedContentCount = coverage.requestedContentCount
+  const actualContentCount = coverage.actualContentCount
+  const paginationEnded = coverage.paginationEnded
+  if (!Number.isSafeInteger(requestedContentCount) || Number(requestedContentCount) < 0 ||
+    !Number.isSafeInteger(actualContentCount) || Number(actualContentCount) < 0 ||
+    (paginationEnded !== null && typeof paginationEnded !== 'boolean')) return null
+  return {
+    requestedContentCount: Number(requestedContentCount),
+    actualContentCount: Number(actualContentCount),
+    paginationEnded
+  }
+}
+
+function jobWarnings(job: JobRecord): string[] {
+  const warnings = job.result?.warnings
+  if (!Array.isArray(warnings)) return []
+  return warnings.filter((warning): warning is string => (
+    typeof warning === 'string' && warning.trim().length > 0
+  )).slice(0, 100)
 }
 
 function compareTasks(left: TaskView, right: TaskView): number {

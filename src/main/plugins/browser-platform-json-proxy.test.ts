@@ -160,7 +160,8 @@ describe('declarative platform Fetch/XHR capture', () => {
 
     expect(__pluginPlatformJsonTest.renderDeclaredCaptureUrls(declaration, { userId: 'owner/a' })).toEqual({
       routeUrl: 'https://example.com/i/user/owner%2Fa?source=official',
-      responseUrl: 'https://api.example.com/v1/users/owner%2Fa/contents'
+      responseUrl: 'https://api.example.com/v1/users/owner%2Fa/contents',
+      routeParameters: { userId: 'owner/a' }
     })
     expect(() => __pluginPlatformJsonTest.renderDeclaredCaptureUrls(
       declaration,

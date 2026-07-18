@@ -20,6 +20,7 @@ import type {
   MoveGroupInput,
   OwnershipStatus,
   PlatformId,
+  SyncCoverage,
   SyncMode,
   SyncStatus,
   UpdateAccountInput,
@@ -112,6 +113,7 @@ import type {
   StandardDataset,
   StandardProfile
 } from './plugins/types'
+import { sanitizeSandboxDiagnostic } from './plugins/sandbox-diagnostics'
 import {
   legacyIntervalMinutes,
   normalizePluginScheduleCadence
@@ -168,6 +170,8 @@ export interface ManagedSyncCommitMetadata {
 export interface ManagedSyncCommitResult {
   stats: DatasetCommitStats
   job: JobRecord
+  coverage: SyncCoverage
+  warnings: string[]
 }
 
 export interface UpsertPluginPackageOptions {
@@ -1789,10 +1793,15 @@ export class SocialDatabase {
       } else throw new Error('同步期间插件包不可用，未写入任何数据')
 
       const now = new Date().toISOString()
+      const coverage = resolveSyncCoverage(payload, metadata.payloadMode)
+      const warnings = resolveSyncWarnings(payload.warnings, coverage)
+      const partial = warnings.length > 0
+      const syncStatus: SyncStatus = partial ? 'partial' : 'idle'
+      const jobStatus: JobStatus = partial ? 'succeeded_with_warnings' : 'succeeded'
       const status = deriveAccountStatus({
         connectionStatus: account.connectionStatus,
         syncEnabled: account.syncEnabled,
-        syncStatus: 'idle',
+        syncStatus,
         syncMode: account.syncMode
       })
       const hasAvatarCacheKey = profile.avatarCacheKey !== undefined
@@ -1806,8 +1815,8 @@ export class SocialDatabase {
           avatar_mime = CASE WHEN ? = 1 THEN ? ELSE avatar_mime END,
           bio = CASE WHEN ? = 1 THEN ? ELSE bio END,
           creator_level = CASE WHEN ? = 1 THEN ? ELSE creator_level END,
-          identity_verified_at = ?, sync_status = 'idle', cooldown_until = NULL,
-          last_sync_error = '', status = ?, last_synced_at = ?,
+          identity_verified_at = ?, sync_status = ?, cooldown_until = NULL,
+          last_sync_error = ?, status = ?, last_synced_at = ?,
           updated_at = ? WHERE id = ?
       `).run(
         profile.remoteName,
@@ -1821,6 +1830,8 @@ export class SocialDatabase {
         hasCreatorLevel ? 1 : 0,
         profile.creatorLevel ?? null,
         metadata.finishedAt,
+        syncStatus,
+        warnings[0] ?? '',
         status,
         payload.capturedAt,
         now,
@@ -1860,13 +1871,21 @@ export class SocialDatabase {
         adapterContributionId,
         semanticsRevision
       )
-      const resultJson = JSON.stringify({ ...stats, warnings: payload.warnings })
+      const resultJson = JSON.stringify({ ...stats, coverage, warnings })
       const jobUpdate = this.db.prepare(`
-        UPDATE jobs SET status = 'succeeded', progress = 100, stage = '只读同步完成',
+        UPDATE jobs SET status = ?, progress = 100, stage = ?,
           result_json = ?, error_code = '', error_message = '', finished_at = ?
         WHERE id = ? AND status = 'committing' AND kind = 'managed_sync'
           AND account_id = ? AND plugin_id = ?
-      `).run(resultJson, metadata.finishedAt, job.id, account.id, metadata.pluginId)
+      `).run(
+        jobStatus,
+        partial ? '只读同步部分完成' : '只读同步完成',
+        resultJson,
+        metadata.finishedAt,
+        job.id,
+        account.id,
+        metadata.pluginId
+      )
       if (Number(jobUpdate.changes) !== 1) throw new Error('受管同步任务状态已变更')
       const pluginUpdate = this.db.prepare(`
         UPDATE plugin_installations SET last_run_at = ?, success_count = success_count + 1,
@@ -1894,11 +1913,12 @@ export class SocialDatabase {
           accountMetricDefinitions: payload.accountMetricDefinitions ?? [],
           accountMetricSnapshots: payload.accountMetricSnapshots ?? [],
           contents: payload.contents,
-          warnings: payload.warnings,
+          coverage,
+          warnings,
           stats
         }
       })
-      return { stats, job: requireJob(this.getJob(job.id)) }
+      return { stats, job: requireJob(this.getJob(job.id)), coverage, warnings }
     })
   }
 
@@ -3271,7 +3291,7 @@ export class SocialDatabase {
     const where = [
       `account_id IN (${sqlPlaceholders(accountIds.length)})`,
       "kind = 'managed_sync'",
-      "status = 'succeeded'",
+      "status IN ('succeeded', 'succeeded_with_warnings')",
       'finished_at IS NOT NULL'
     ]
     const parameters: string[] = [...accountIds]
@@ -3639,6 +3659,14 @@ export class SocialDatabase {
           detail: account.lastSyncError || '请检查插件和登录状态',
           accountId: account.id
         })
+      } else if (account.syncStatus === 'partial') {
+        reminders.push({
+          id: `sync-partial:${account.id}`,
+          tone: 'warning',
+          title: `${accountName} 部分同步完成`,
+          detail: account.lastSyncError || '部分内容尚未完成同步',
+          accountId: account.id
+        })
       } else if (account.syncStatus === 'cooldown') {
         reminders.push({
           id: `cooldown:${account.id}`,
@@ -3654,7 +3682,7 @@ export class SocialDatabase {
       readyAccountCount: accounts.filter((account) => account.connectionStatus === 'ready').length,
       attentionAccountCount: accounts.filter((account) => (
         account.connectionStatus !== 'ready' ||
-        ['failed', 'cooldown', 'unsupported'].includes(account.syncStatus)
+        ['partial', 'failed', 'cooldown', 'unsupported'].includes(account.syncStatus)
       )).length,
       contentCount: contents.length,
       views: sum(contents.map((content) => content.latestSnapshot?.views)),
@@ -4664,6 +4692,63 @@ function validateManagedSync(
   if (payload.contents.length > limits[metadata.payloadMode]) {
     throw new Error('受管同步内容数量超过授权范围')
   }
+  resolveSyncCoverage(payload, metadata.payloadMode)
+}
+
+function resolveSyncCoverage(
+  payload: StandardDataset,
+  mode: Exclude<SyncMode, 'disabled'>
+): SyncCoverage {
+  const requestedContentCount = mode === 'profile_only' ? 0 : mode === 'recent_20' ? 20 : 100
+  const supplied = payload.coverage
+  if (supplied !== undefined) {
+    if (!Number.isSafeInteger(supplied.requestedContentCount) ||
+      supplied.requestedContentCount !== requestedContentCount) {
+      throw new Error('同步覆盖范围与请求不一致')
+    }
+    if (!Number.isSafeInteger(supplied.actualContentCount) ||
+      supplied.actualContentCount !== payload.contents.length) {
+      throw new Error('同步覆盖实际数量与数据集不一致')
+    }
+    if (supplied.paginationEnded !== null && typeof supplied.paginationEnded !== 'boolean') {
+      throw new Error('同步覆盖分页状态无效')
+    }
+    if (mode === 'profile_only' && supplied.paginationEnded !== true) {
+      throw new Error('仅资料同步的覆盖状态无效')
+    }
+    return { ...supplied }
+  }
+
+  const profileContentCount = payload.profile?.contentCount
+  const paginationEnded = mode === 'profile_only'
+    ? true
+    : profileContentCount !== null && profileContentCount !== undefined &&
+      payload.contents.length >= Math.min(profileContentCount, requestedContentCount)
+      ? true
+      : null
+  return {
+    requestedContentCount,
+    actualContentCount: payload.contents.length,
+    paginationEnded
+  }
+}
+
+function resolveSyncWarnings(
+  supplied: readonly string[],
+  coverage: SyncCoverage
+): string[] {
+  const warnings = supplied
+    .filter((warning) => typeof warning === 'string' && warning.trim().length > 0)
+    .map((warning) => safeSyncErrorMessage(warning))
+  if (
+    coverage.actualContentCount < coverage.requestedContentCount &&
+    coverage.paginationEnded !== true
+  ) {
+    const pagination = coverage.paginationEnded === false ? '分页尚未结束' : '分页状态未知'
+    const coverageWarning = `请求 ${coverage.requestedContentCount} 条内容，实际同步 ${coverage.actualContentCount} 条，${pagination}。`
+    if (!warnings.includes(coverageWarning)) warnings.push(coverageWarning)
+  }
+  return warnings.slice(0, 100)
 }
 
 function validateStandardDataset(payload: StandardDataset): void {
@@ -5095,7 +5180,8 @@ function checkpointDatabase(database: DatabaseSync): void {
 }
 
 function isTerminalJob(status: JobStatus): boolean {
-  return status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'interrupted'
+  return status === 'succeeded' || status === 'succeeded_with_warnings' || status === 'failed' ||
+    status === 'cancelled' || status === 'interrupted'
 }
 
 function clampInteger(value: number, minimum: number, maximum: number): number {
@@ -5130,7 +5216,7 @@ function isIsoCalendarDate(value: string): boolean {
 
 function safeSyncErrorMessage(value: unknown): string {
   if (typeof value !== 'string') return '受管同步失败'
-  const normalized = value
+  const normalized = sanitizeSandboxDiagnostic(value)
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()

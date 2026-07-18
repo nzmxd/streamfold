@@ -201,10 +201,7 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
 
   it('passes the expected stable identity into probes and collection', async () => {
     const repository = repositoryFixture()
-    repository.commitManagedSync.mockReturnValue({
-      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
-      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
-    })
+    repository.commitManagedSync.mockReturnValue(managedSyncCommitResult())
     const runtime = runtimeSequence([
       identity('stable-owner'),
       dataset('stable-owner'),
@@ -359,10 +356,9 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
 
   it('returns plugin warnings to the foreground sync result', async () => {
     const repository = repositoryFixture()
-    repository.commitManagedSync.mockReturnValue({
-      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
-      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
-    })
+    repository.commitManagedSync.mockReturnValue(managedSyncCommitResult([
+      '平台本次只返回可见内容。'
+    ]))
     const payload = dataset('stable-owner')
     payload.warnings = ['平台本次只返回可见内容。']
     const adapter = createAdapter(repository, runtimeSequence([
@@ -392,10 +388,7 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
 
   it('caches a declared remote avatar and commits only the local cache reference', async () => {
     const repository = repositoryFixture()
-    repository.commitManagedSync.mockReturnValue({
-      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
-      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
-    })
+    repository.commitManagedSync.mockReturnValue(managedSyncCommitResult())
     const runtime = runtimeSequence([
       identity('stable-owner'),
       dataset('stable-owner', 'https://example.com/avatar/owner.webp'),
@@ -424,10 +417,7 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
 
   it('accepts declared dynamic metrics while keeping decimal ratios intact', async () => {
     const repository = repositoryFixture()
-    repository.commitManagedSync.mockReturnValue({
-      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
-      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
-    })
+    repository.commitManagedSync.mockReturnValue(managedSyncCommitResult())
     const payload = dataset('stable-owner')
     payload.contentMetricDefinitions = [{
       id: 'cover_click_rate', label: '封面点击率', valueKind: 'ratio', unit: 'ratio',
@@ -456,10 +446,7 @@ describe('SandboxPlatformAdapter synchronization orchestration', () => {
 
   it('accepts account period metrics with status, null values and negative deltas', async () => {
     const repository = repositoryFixture()
-    repository.commitManagedSync.mockReturnValue({
-      stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
-      job: { ...jobRecord(), status: 'succeeded', progress: 100, finishedAt: now }
-    })
+    repository.commitManagedSync.mockReturnValue(managedSyncCommitResult())
     const payload = dataset('stable-owner')
     payload.accountMetricDefinitions = [
       {
@@ -644,7 +631,26 @@ function dataset(remoteId: string, avatarUrl = ''): Record<string, unknown> {
         capturedAt: now
       }]
     }],
+    coverage: {
+      requestedContentCount: 20,
+      actualContentCount: 1,
+      paginationEnded: true
+    },
     warnings: []
+  }
+}
+
+function managedSyncCommitResult(warnings: string[] = []) {
+  return {
+    stats: { newContentCount: 1, updatedContentCount: 0, snapshotCount: 1, skippedSnapshotCount: 0 },
+    coverage: { requestedContentCount: 20, actualContentCount: 1, paginationEnded: true },
+    warnings,
+    job: {
+      ...jobRecord(),
+      status: warnings.length > 0 ? 'succeeded_with_warnings' : 'succeeded',
+      progress: 100,
+      finishedAt: now
+    }
   }
 }
 

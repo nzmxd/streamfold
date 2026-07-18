@@ -242,7 +242,7 @@ export class XiaohongshuApiService {
               existingExcerpts
             })
         const cachedAvatar = await this.cacheAvatar(account.id, snapshot.profile)
-        const payload = toPayload(snapshot, capturedAt, cachedAvatar)
+        const payload = toPayload(snapshot, capturedAt, cachedAvatar, requestedMode)
         job = await this.options.jobs.transition(job, 'committing', { progress: 85, stage: '保存同步数据' })
         const finishedAt = this.now()
         const committedResult = this.options.repository.commitManagedSync(payload, {
@@ -519,9 +519,11 @@ async function collectProfileOnly(
 function toPayload(
   snapshot: XiaohongshuApiSnapshot,
   capturedAt: string,
-  cachedAvatar: CachedProfileAvatar | null
+  cachedAvatar: CachedProfileAvatar | null,
+  mode: Exclude<SyncMode, 'disabled'>
 ): StandardDataset {
   const metrics = snapshot.accountMetrics.thirty
+  const requestedContentCount = mode === 'profile_only' ? 0 : mode === 'recent_20' ? 20 : 100
   return {
     capturedAt,
     contentMetricDefinitions: XIAOHONGSHU_CONTENT_METRIC_DEFINITIONS,
@@ -567,6 +569,11 @@ function toPayload(
         }
       }]
     })),
+    coverage: {
+      requestedContentCount,
+      actualContentCount: snapshot.contents.length,
+      paginationEnded: requestedContentCount === 0 || snapshot.contents.length < requestedContentCount
+    },
     warnings: snapshot.warnings
   }
 }
@@ -589,6 +596,9 @@ function syncResult(
       ? `${missingExcerptCount} 条摘要将在后续同步中继续补齐。`
       : `${missingExcerptCount} 条作品的平台详情未提供摘要。`
     : ''
+  const baseMessage = snapshot.contents.length > 0
+    ? `已同步账号资料和 ${snapshot.contents.length} 条作品。${excerptMessage}${missingExcerptMessage}`
+    : '已同步账号资料和账号指标。'
   return {
     accountId: account.id,
     mode,
@@ -604,11 +614,13 @@ function syncResult(
       creatorLevel: snapshot.profile.creatorLevel
     },
     contentCount: snapshot.contents.length,
+    coverage: committed.coverage,
     stats: committed.stats,
     job,
-    message: snapshot.contents.length > 0
-      ? `已同步账号资料和 ${snapshot.contents.length} 条作品。${excerptMessage}${missingExcerptMessage}`
-      : '已同步账号资料和账号指标。'
+    warnings: committed.warnings,
+    message: committed.warnings.length > 0
+      ? `${baseMessage} 提示：${committed.warnings[0]}`
+      : baseMessage
   }
 }
 

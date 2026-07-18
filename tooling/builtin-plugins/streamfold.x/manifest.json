@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "id": "streamfold.x",
   "name": "X",
-  "version": "1.1.5",
+  "version": "1.2.0",
   "description": "从已登录的 X 网页会话中读取本人公开资料和帖子数据。",
   "license": "Apache-2.0",
   "publisher": {
@@ -10,8 +10,8 @@
     "name": "归页",
     "keyId": "streamfold-official"
   },
-  "minimumAppVersion": "0.7.9",
-  "sdkVersion": "1.0.0",
+  "minimumAppVersion": "0.7.11",
+  "sdkVersion": "1.2.0",
   "contributions": [
     {
       "id": "streamfold.x.platform",
@@ -112,6 +112,129 @@
           "maximumTotalBytes": 2097152
         }
       ],
+      "backgroundCapture": {
+        "captures": [
+          {
+            "captureId": "x.identity.settings",
+            "responseFieldPaths": [
+              "/screen_name"
+            ]
+          },
+          {
+            "captureId": "x.identity.profile.initial",
+            "responseFieldPaths": [
+              "/data/user/result/__typename",
+              "/data/user/result/rest_id",
+              "/data/user/result/core/screen_name",
+              "/data/user/result/core/name",
+              "/data/user/result/avatar/image_url",
+              "/data/user/result/profile_bio/description",
+              "/data/user/result/legacy/screen_name",
+              "/data/user/result/legacy/name",
+              "/data/user/result/legacy/profile_image_url_https",
+              "/data/user/result/legacy/description",
+              "/data/user/result/legacy/followers_count",
+              "/data/user/result/legacy/friends_count",
+              "/data/user/result/legacy/statuses_count",
+              "/data/user/result/result/__typename",
+              "/data/user/result/result/rest_id",
+              "/data/user/result/result/core/screen_name",
+              "/data/user/result/result/core/name",
+              "/data/user/result/result/avatar/image_url",
+              "/data/user/result/result/profile_bio/description",
+              "/data/user/result/result/legacy/screen_name",
+              "/data/user/result/result/legacy/name",
+              "/data/user/result/result/legacy/profile_image_url_https",
+              "/data/user/result/result/legacy/description",
+              "/data/user/result/result/legacy/followers_count",
+              "/data/user/result/result/legacy/friends_count",
+              "/data/user/result/result/legacy/statuses_count",
+              "/data/user/result/result/result/__typename",
+              "/data/user/result/result/result/rest_id",
+              "/data/user/result/result/result/core/screen_name",
+              "/data/user/result/result/result/core/name",
+              "/data/user/result/result/result/avatar/image_url",
+              "/data/user/result/result/result/profile_bio/description",
+              "/data/user/result/result/result/legacy/screen_name",
+              "/data/user/result/result/result/legacy/name",
+              "/data/user/result/result/result/legacy/profile_image_url_https",
+              "/data/user/result/result/result/legacy/description",
+              "/data/user/result/result/result/legacy/followers_count",
+              "/data/user/result/result/result/legacy/friends_count",
+              "/data/user/result/result/result/legacy/statuses_count",
+              "/data/user_result_by_screen_name/result/__typename",
+              "/data/user_result_by_screen_name/result/rest_id",
+              "/data/user_result_by_screen_name/result/core/screen_name",
+              "/data/user_result_by_screen_name/result/core/name",
+              "/data/user_result_by_screen_name/result/avatar/image_url",
+              "/data/user_result_by_screen_name/result/profile_bio/description",
+              "/data/user_result_by_screen_name/result/legacy/screen_name",
+              "/data/user_result_by_screen_name/result/legacy/name",
+              "/data/user_result_by_screen_name/result/legacy/profile_image_url_https",
+              "/data/user_result_by_screen_name/result/legacy/description",
+              "/data/user_result_by_screen_name/result/legacy/followers_count",
+              "/data/user_result_by_screen_name/result/legacy/friends_count",
+              "/data/user_result_by_screen_name/result/legacy/statuses_count",
+              "/data/user_result_by_screen_name/result/result/__typename",
+              "/data/user_result_by_screen_name/result/result/rest_id",
+              "/data/user_result_by_screen_name/result/result/core/screen_name",
+              "/data/user_result_by_screen_name/result/result/core/name",
+              "/data/user_result_by_screen_name/result/result/avatar/image_url",
+              "/data/user_result_by_screen_name/result/result/profile_bio/description",
+              "/data/user_result_by_screen_name/result/result/legacy/screen_name",
+              "/data/user_result_by_screen_name/result/result/legacy/name",
+              "/data/user_result_by_screen_name/result/result/legacy/profile_image_url_https",
+              "/data/user_result_by_screen_name/result/result/legacy/description",
+              "/data/user_result_by_screen_name/result/result/legacy/followers_count",
+              "/data/user_result_by_screen_name/result/result/legacy/friends_count",
+              "/data/user_result_by_screen_name/result/result/legacy/statuses_count",
+              "/data/user_result_by_screen_name/result/result/result/__typename",
+              "/data/user_result_by_screen_name/result/result/result/rest_id",
+              "/data/user_result_by_screen_name/result/result/result/core/screen_name",
+              "/data/user_result_by_screen_name/result/result/result/core/name",
+              "/data/user_result_by_screen_name/result/result/result/avatar/image_url",
+              "/data/user_result_by_screen_name/result/result/result/profile_bio/description",
+              "/data/user_result_by_screen_name/result/result/result/legacy/screen_name",
+              "/data/user_result_by_screen_name/result/result/result/legacy/name",
+              "/data/user_result_by_screen_name/result/result/result/legacy/profile_image_url_https",
+              "/data/user_result_by_screen_name/result/result/result/legacy/description",
+              "/data/user_result_by_screen_name/result/result/result/legacy/followers_count",
+              "/data/user_result_by_screen_name/result/result/result/legacy/friends_count",
+              "/data/user_result_by_screen_name/result/result/result/legacy/statuses_count"
+            ],
+            "responseCorrelations": [
+              {
+                "routeParameter": "handle",
+                "responseFieldPaths": [
+                  "/data/user/result/core/screen_name",
+                  "/data/user/result/legacy/screen_name",
+                  "/data/user/result/result/core/screen_name",
+                  "/data/user/result/result/legacy/screen_name",
+                  "/data/user/result/result/result/core/screen_name",
+                  "/data/user/result/result/result/legacy/screen_name",
+                  "/data/user_result_by_screen_name/result/core/screen_name",
+                  "/data/user_result_by_screen_name/result/legacy/screen_name",
+                  "/data/user_result_by_screen_name/result/result/core/screen_name",
+                  "/data/user_result_by_screen_name/result/result/legacy/screen_name",
+                  "/data/user_result_by_screen_name/result/result/result/core/screen_name",
+                  "/data/user_result_by_screen_name/result/result/result/legacy/screen_name"
+                ],
+                "comparison": "case-insensitive"
+              }
+            ]
+          }
+        ],
+        "cacheTtlSeconds": 120,
+        "retryIntervalSeconds": 2,
+        "maximumRetryIntervalSeconds": 60,
+        "identityDiscovery": {
+          "strategy": "on-navigation-and-capture",
+          "captureIds": [
+            "x.identity.settings",
+            "x.identity.profile.initial"
+          ]
+        }
+      },
       "minimumIntervalSeconds": 300,
       "recommendedSyncIntervalHours": 24
     }

@@ -192,6 +192,7 @@ describe('TaskQueryService', () => {
       runningCount: 1,
       needsAttentionCount: 3,
       completedTodayCount: 1,
+      partialTodayCount: 0,
       failedTodayCount: 2,
       updatedAt: now.toISOString()
     })
@@ -200,6 +201,7 @@ describe('TaskQueryService', () => {
       runningCount: 0,
       needsAttentionCount: 0,
       completedTodayCount: 0,
+      partialTodayCount: 0,
       failedTodayCount: 0
     })
   })

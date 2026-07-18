@@ -271,7 +271,7 @@ describe('ZhihuApiService', () => {
       mode: 'recent_20',
       contentCount: 2,
       stats: { newContentCount: 2, snapshotCount: 2 },
-      job: { status: 'succeeded', progress: 100 },
+      job: { status: 'succeeded_with_warnings', progress: 100 },
       message: '已同步账号资料和 2 条可见内容；平台资料统计为 8 条，列表接口本次返回 2 条可见内容。'
     })
     const contents = database.listContents({ accountId: account.id, limit: 20 })

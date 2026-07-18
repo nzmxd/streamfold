@@ -99,52 +99,255 @@ export function registerIpc(
   const discoveryStates = new Map<string, {
     latestSequence: number
     processedSequence: number
+    lastActivitySequence: number
     running: boolean
+    bootstrapped: boolean
+    lastTrigger: 'navigation' | 'capture'
+    retryAttempt: number
+    busyRetryAttempt: number
+    lastErrorSignature: string
+    retryTimer: ReturnType<typeof setTimeout> | null
   }>()
+  const captureHealthStates = new Map<string, string>()
+  const backgroundDiscoveryTasks = new Set<Promise<void>>()
+  let backgroundDiscoveryPaused = false
+  let removeBackgroundBootstrapListener: (() => void) | null = null
+  const clearBackgroundCaptureState = (accountId: string, preserveResume = false): void => {
+    const discovery = discoveryStates.get(accountId)
+    if (discovery?.retryTimer) clearTimeout(discovery.retryTimer)
+    browser.stopPluginCapture(accountId, preserveResume)
+    discoveryStates.delete(accountId)
+    captureHealthStates.delete(accountId)
+  }
+  const declaredBackgroundAdapterForAccount = (accountId: string) => {
+    const account = database.getAccount(accountId)
+    if (!account?.adapterContributionId) return null
+    const state = services.pluginHost.listContributions().find((item) => (
+      item.contribution.kind === 'platform.adapter' &&
+      item.contribution.id === account.adapterContributionId &&
+      item.contribution.platform.id === account.platformId
+    ))
+    if (!state || state.contribution.kind !== 'platform.adapter' ||
+      !state.contribution.backgroundCapture) return null
+    return { account, state, background: state.contribution.backgroundCapture }
+  }
+  const backgroundAdapterForAccount = (accountId: string) => {
+    const declared = declaredBackgroundAdapterForAccount(accountId)
+    if (!declared || declared.account.connectionStatus === 'disconnected' ||
+      !declared.state.enabled || !declared.state.granted ||
+      declared.state.suspendedReason) return null
+    const { account, state } = declared
+    const grant = services.pluginHost.getGrant(state.pluginId, state.contribution.id)
+    const accountAllowed = Boolean(grant?.permissions.includes('platform.session-json') && (
+      grant.accountIds.includes(account.id) ||
+      (account.groupIds ?? []).some((groupId) => grant.groupIds.includes(groupId))
+    ))
+    if (!accountAllowed) return null
+    return declared
+  }
+  const shouldPreserveBackgroundResume = (accountId: string): boolean => {
+    const declared = declaredBackgroundAdapterForAccount(accountId)
+    return Boolean(declared && !declared.account.remoteId && declared.background.identityDiscovery)
+  }
+  const deferIdentityDiscovery = (accountId: string, delayMs: number): void => {
+    const state = discoveryStates.get(accountId)
+    if (!state || state.retryTimer) return
+    state.latestSequence += 1
+    state.retryTimer = setTimeout(() => {
+      state.retryTimer = null
+      runIdentityDiscovery(accountId)
+    }, Math.max(1_000, delayMs))
+    state.retryTimer.unref?.()
+  }
   const runIdentityDiscovery = (accountId: string): void => {
+    if (backgroundDiscoveryPaused) return
     const state = discoveryStates.get(accountId)
     if (!state || state.running) return
+    if (state.retryTimer) {
+      clearTimeout(state.retryTimer)
+      state.retryTimer = null
+    }
     state.running = true
-    void (async () => {
+    let deferred = false
+    const task = (async () => {
       try {
         while (state.processedSequence < state.latestSequence) {
           const sequence = state.latestSequence
-          state.processedSequence = sequence
-          const account = database.getAccount(accountId)
-          if (!account || account.remoteId || account.adapterContributionId !== 'streamfold.x.platform') {
-            browser.stopPluginCapture(accountId)
+          const trigger = state.lastTrigger
+          const resolved = backgroundAdapterForAccount(accountId)
+          if (!resolved || resolved.account.remoteId || !resolved.background.identityDiscovery) {
+            clearBackgroundCaptureState(accountId, shouldPreserveBackgroundResume(accountId))
             return
           }
-          if (services.platformSync.isAccountActive(accountId)) return
+          if (services.platformSync.isAccountActive(accountId)) {
+            state.busyRetryAttempt += 1
+            const initialDelay = resolved.background.retryIntervalSeconds * 1_000
+            const maximumDelay = resolved.background.maximumRetryIntervalSeconds * 1_000
+            const delay = Math.min(
+              maximumDelay,
+              initialDelay * (2 ** Math.min(state.busyRetryAttempt - 1, 20))
+            )
+            deferred = true
+            deferIdentityDiscovery(accountId, delay)
+            return
+          }
+          state.busyRetryAttempt = 0
+          if (trigger === 'navigation') state.bootstrapped = true
+          state.processedSequence = sequence
           try {
             const result = await services.platformSync.discoverIdentity(accountId)
+            state.retryAttempt = 0
+            state.lastErrorSignature = ''
             if (result.status !== 'confirmation_required' || !result.confirmationToken ||
                 !result.remoteId || !result.remoteName) continue
+            const current = backgroundAdapterForAccount(accountId)
+            if (discoveryStates.get(accountId) !== state || !current || current.account.remoteId ||
+              current.state.pluginId !== resolved.state.pluginId ||
+              current.state.contribution.id !== resolved.state.contribution.id) return
             if (!window.isDestroyed()) window.webContents.send('accounts:identity-preview', result)
           } catch (error) {
-            services.logs.captureError('sync', error, {
-              accountId,
-              stage: '后台身份发现'
-            })
+            const current = backgroundAdapterForAccount(accountId)
+            if (discoveryStates.get(accountId) !== state || !current || current.account.remoteId ||
+              current.state.pluginId !== resolved.state.pluginId ||
+              current.state.contribution.id !== resolved.state.contribution.id) return
+            const signature = identityDiscoveryErrorSignature(error)
+            if (signature !== state.lastErrorSignature) {
+              state.lastErrorSignature = signature
+              services.logs.captureError('sync', error, {
+                accountId,
+                pluginId: current.state.pluginId,
+                contributionId: current.state.contribution.id,
+                stage: '后台身份发现'
+              })
+            }
+            state.bootstrapped = false
+            if (trigger === 'navigation') {
+              state.retryAttempt += 1
+              const initialDelay = current.background.retryIntervalSeconds * 1_000
+              const maximumDelay = current.background.maximumRetryIntervalSeconds * 1_000
+              const delay = Math.min(
+                maximumDelay,
+                initialDelay * (2 ** Math.min(state.retryAttempt - 1, 20))
+              )
+              deferred = true
+              deferIdentityDiscovery(accountId, delay)
+            }
+            return
           }
         }
       } finally {
         state.running = false
-        if (state.processedSequence < state.latestSequence) runIdentityDiscovery(accountId)
+        if (!deferred && discoveryStates.get(accountId) === state &&
+          state.processedSequence < state.latestSequence) runIdentityDiscovery(accountId)
       }
     })()
+    backgroundDiscoveryTasks.add(task)
+    void task.then(
+      () => backgroundDiscoveryTasks.delete(task),
+      (error) => {
+        backgroundDiscoveryTasks.delete(task)
+        services.logs.captureError('sync', error, {
+          accountId,
+          stage: '后台身份发现调度'
+        })
+      }
+    )
   }
   removePluginCaptureListener?.()
-  removePluginCaptureListener = browser.onPluginCaptureActivity((activity) => {
+  const removeCaptureActivityListener = browser.onPluginCaptureActivity((activity) => {
+    if (activity.reason === 'health' && activity.health) {
+      if (activity.health.status === 'stopped') {
+        const discovery = discoveryStates.get(activity.accountId)
+        if (discovery?.retryTimer) clearTimeout(discovery.retryTimer)
+        discoveryStates.delete(activity.accountId)
+        captureHealthStates.delete(activity.accountId)
+        return
+      }
+      const previous = captureHealthStates.get(activity.accountId)
+      const previousStatus = previous?.split(':', 1)[0]
+      const signature = `${activity.health.status}:${activity.health.lastError}:${captureErrorSignature(activity.error)}`
+      captureHealthStates.set(activity.accountId, signature)
+      if (previous !== signature) {
+        const context = {
+          accountId: activity.accountId,
+          pluginId: activity.pluginId,
+          contributionId: activity.contributionId,
+          status: activity.health.status,
+          retryAttempt: activity.health.retryAttempt,
+          nextRetryAt: activity.health.nextRetryAt
+        }
+        if (activity.health.status === 'degraded' || activity.health.status === 'retrying') {
+          if (activity.error) {
+            services.logs.captureError('plugin', activity.error, {
+              ...context,
+              stage: '平台后台监听'
+            })
+          } else {
+            services.logs.warn(
+              'plugin',
+              activity.health.lastError || '平台后台监听正在自动重连',
+              { context }
+            )
+          }
+        } else if (activity.health.status === 'listening' &&
+            (previousStatus === 'degraded' || previousStatus === 'retrying')) {
+          services.logs.info('plugin', '平台后台监听已恢复', { context })
+        }
+      }
+      return
+    }
+    const resolved = backgroundAdapterForAccount(activity.accountId)
+    const discovery = resolved?.background.identityDiscovery
+    if (!resolved || resolved.account.remoteId || !discovery) {
+      clearBackgroundCaptureState(
+        activity.accountId,
+        shouldPreserveBackgroundResume(activity.accountId)
+      )
+      return
+    }
+    if ((activity.pluginId && activity.pluginId !== resolved.state.pluginId) ||
+      (activity.contributionId && activity.contributionId !== resolved.state.contribution.id)) {
+      clearBackgroundCaptureState(activity.accountId)
+      return
+    }
     const state = discoveryStates.get(activity.accountId) ?? {
       latestSequence: 0,
       processedSequence: 0,
-      running: false
+      lastActivitySequence: 0,
+      running: false,
+      bootstrapped: false,
+      lastTrigger: 'navigation',
+      retryAttempt: 0,
+      busyRetryAttempt: 0,
+      lastErrorSignature: '',
+      retryTimer: null
     }
-    state.latestSequence = Math.max(state.latestSequence, activity.sequence)
+    if (activity.sequence <= state.lastActivitySequence) return
+    state.lastActivitySequence = activity.sequence
+    const bootstrap = activity.reason === 'navigation' && !state.bootstrapped
+    if (bootstrap) state.bootstrapped = true
+    const shouldDiscover = activity.reason === 'capture'
+      ? Boolean(activity.captureId && discovery.captureIds.includes(activity.captureId))
+      : activity.reason === 'navigation' &&
+        (bootstrap || discovery.strategy === 'on-navigation-and-capture')
+    if (!shouldDiscover) return
+    state.lastTrigger = activity.reason === 'capture' ? 'capture' : 'navigation'
+    state.retryAttempt = 0
+    state.busyRetryAttempt = 0
+    state.latestSequence += 1
     discoveryStates.set(activity.accountId, state)
     runIdentityDiscovery(activity.accountId)
   })
+  removePluginCaptureListener = () => {
+    removeBackgroundBootstrapListener?.()
+    removeBackgroundBootstrapListener = null
+    removeCaptureActivityListener()
+    for (const state of discoveryStates.values()) {
+      if (state.retryTimer) clearTimeout(state.retryTimer)
+    }
+    discoveryStates.clear()
+    captureHealthStates.clear()
+  }
   const runTracked = async <T>(handler: () => T | Promise<T>): Promise<T> => {
     if (maintenance) throw new Error(maintenanceMessage)
     activeOperations += 1
@@ -171,12 +374,45 @@ export function registerIpc(
     maintenance = false
     maintenanceMessage = '本地数据库正在恢复，请稍候'
   }
-  const stopCapturesForPlugin = (pluginId: string): void => {
-    if (pluginId !== 'streamfold.x') return
+  const stopCapturesForPlugin = (pluginId: string, preserveResume = false): void => {
+    const contributionIds = new Set(services.pluginHost.listContributions()
+      .filter((item) => item.pluginId === pluginId && item.contribution.kind === 'platform.adapter')
+      .map((item) => item.contribution.id))
+    if (contributionIds.size === 0) return
     for (const account of database.listAccounts()) {
-      if (account.adapterContributionId === 'streamfold.x.platform') {
-        browser.stopPluginCapture(account.id)
+      if (account.adapterContributionId && contributionIds.has(account.adapterContributionId)) {
+        clearBackgroundCaptureState(account.id, preserveResume)
       }
+    }
+  }
+  const reconcileBackgroundCaptureAccounts = (accountIds?: readonly string[]): void => {
+    const selected = accountIds
+      ? new Set(accountIds)
+      : null
+    for (const account of database.listAccounts()) {
+      if (selected && !selected.has(account.id)) continue
+      const resolved = backgroundAdapterForAccount(account.id)
+      if (!resolved || resolved.account.remoteId || !resolved.background.identityDiscovery) {
+        clearBackgroundCaptureState(account.id, shouldPreserveBackgroundResume(account.id))
+        continue
+      }
+      browser.bootstrapPluginCapture(account.id, {
+        pluginId: resolved.state.pluginId,
+        retryInitialDelayMs: resolved.background.retryIntervalSeconds * 1_000,
+        retryMaximumDelayMs: resolved.background.maximumRetryIntervalSeconds * 1_000
+      })
+    }
+  }
+  const waitForBackgroundDiscoveryIdle = async (): Promise<void> => {
+    while (backgroundDiscoveryTasks.size > 0) {
+      await Promise.allSettled([...backgroundDiscoveryTasks])
+    }
+  }
+  const bootstrapBackgroundCaptureAccounts = (): void => reconcileBackgroundCaptureAccounts()
+  window.webContents.on('did-finish-load', bootstrapBackgroundCaptureAccounts)
+  removeBackgroundBootstrapListener = () => {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.off('did-finish-load', bootstrapBackgroundCaptureAccounts)
     }
   }
   const registerIpcHandler = ipcMain.handle.bind(ipcMain)
@@ -273,21 +509,33 @@ export function registerIpc(
       ))
       if (candidates.length === 1) input.adapterContributionId = candidates[0]!.contribution.id
     }
-    return database.createAccount(input)
+    const account = database.createAccount(input)
+    reconcileBackgroundCaptureAccounts([account.id])
+    return account
   }))
-  handleIpc('accounts:update', trusted((_event, value) => database.updateAccount(parseUpdateAccount(value))))
-  handleIpc('accounts:bulk-update', trusted((_event, value) => (
-    database.bulkUpdateAccounts(parseBulkUpdateAccounts(value))
-  )))
+  handleIpc('accounts:update', trusted((_event, value) => {
+    const input = parseUpdateAccount(value)
+    const account = database.updateAccount(input)
+    if (input.groupIds !== undefined) reconcileBackgroundCaptureAccounts([input.id])
+    return account
+  }))
+  handleIpc('accounts:bulk-update', trusted((_event, value) => {
+    const input = parseBulkUpdateAccounts(value)
+    const accounts = database.bulkUpdateAccounts(input)
+    if (input.groupChange) reconcileBackgroundCaptureAccounts(input.accountIds)
+    return accounts
+  }))
   handleIpc('accounts:disconnect', trusted(async (_event, value) => {
     const id = parseId(value)
     if (services.platformSync.isAccountActive(id)) throw new Error('账号正在同步或核验，请稍候')
     if (disconnectingAccounts.has(id)) throw new Error('账号正在断开')
     disconnectingAccounts.add(id)
     try {
+      clearBackgroundCaptureState(id)
       await browser.disconnect(id)
       database.disconnectAccount(id)
     } finally {
+      reconcileBackgroundCaptureAccounts([id])
       disconnectingAccounts.delete(id)
     }
   }))
@@ -297,6 +545,7 @@ export function registerIpc(
     if (disconnectingAccounts.has(id)) throw new Error('账号正在处理')
     disconnectingAccounts.add(id)
     try {
+      clearBackgroundCaptureState(id)
       await browser.disconnect(id)
       database.disconnectAccount(id)
       await browser.purgeAccountMedia(id)
@@ -312,6 +561,7 @@ export function registerIpc(
     try {
       return await services.platformSync.verifyIdentity(id)
     } finally {
+      reconcileBackgroundCaptureAccounts([id])
       notifyAccountsChanged()
     }
   }))
@@ -320,9 +570,10 @@ export function registerIpc(
     if (disconnectingAccounts.has(input.accountId)) throw new Error('账号正在处理，请稍候')
     try {
       const result = await services.platformSync.confirmIdentity(input)
-      if (result.status === 'verified') browser.stopPluginCapture(input.accountId)
+      if (result.status === 'verified') clearBackgroundCaptureState(input.accountId)
       return result
     } finally {
+      reconcileBackgroundCaptureAccounts([input.accountId])
       notifyAccountsChanged()
     }
   }))
@@ -356,7 +607,8 @@ export function registerIpc(
   handleIpc('accounts:switch-adapter', trusted(async (_event, accountId, contributionId) => {
     const parsedAccountId = parseId(accountId)
     const account = await services.adapterRegistry.switchAdapter(parsedAccountId, parseId(contributionId))
-    browser.stopPluginCapture(parsedAccountId)
+    clearBackgroundCaptureState(parsedAccountId)
+    reconcileBackgroundCaptureAccounts([parsedAccountId])
     notifyAccountsChanged()
     return account
   }))
@@ -364,12 +616,16 @@ export function registerIpc(
   handleIpc('groups:create', trusted((_event, value) => database.createGroup(parseCreateGroup(value))))
   handleIpc('groups:update', trusted((_event, value) => database.updateGroup(parseUpdateGroup(value))))
   handleIpc('groups:move', trusted((_event, value) => database.moveGroup(parseMoveGroup(value))))
-  handleIpc('groups:remove', trusted((_event, value) => database.removeGroup(parseId(value))))
+  handleIpc('groups:remove', trusted((_event, value) => {
+    database.removeGroup(parseId(value))
+    reconcileBackgroundCaptureAccounts()
+  }))
   handleIpc('browser:open', trusted(async (_event, accountId) => {
     const id = parseId(accountId)
     if (disconnectingAccounts.has(id)) throw new Error('账号正在断开，请稍候')
     const state = await browser.open(id)
     database.beginReconnect(id)
+    reconcileBackgroundCaptureAccounts([id])
     return state
   }))
 
@@ -511,9 +767,9 @@ export function registerIpc(
     const next = parseBoolean(enabled, '插件包开关')
     const result = services.pluginHost.setPackageEnabled(pluginId, next)
     if (!next) {
-      stopCapturesForPlugin(pluginId)
+      stopCapturesForPlugin(pluginId, true)
       services.pluginLifecycle.stop(pluginId)
-    }
+    } else reconcileBackgroundCaptureAccounts()
     return result
   }))
   handleIpc('plugins:set-contribution-enabled', trusted((_event, pluginId, contributionId, enabled) => {
@@ -526,23 +782,30 @@ export function registerIpc(
       next
     )
     if (!next) {
-      stopCapturesForPlugin(parsedPluginId)
+      stopCapturesForPlugin(parsedPluginId, true)
       services.pluginLifecycle.stop(parsedPluginId)
-    }
+    } else reconcileBackgroundCaptureAccounts()
     return result
   }))
   handleIpc('plugins:grant', trusted((_event, value) => {
     const grant = parsePluginGrant(value)
     const result = services.pluginHost.grant(grant)
-    stopCapturesForPlugin(grant.pluginId)
+    stopCapturesForPlugin(grant.pluginId, true)
+    services.pluginLifecycle.stop(grant.pluginId)
+    reconcileBackgroundCaptureAccounts()
     return result
   }))
   handleIpc('plugins:get-config', trusted((_event, pluginId, contributionId) => (
     services.pluginHost.getConfig(parseId(pluginId), parseId(contributionId))
   )))
-  handleIpc('plugins:save-config', trusted((_event, value) => (
-    services.pluginHost.saveConfig(parsePluginConfig(value))
-  )))
+  handleIpc('plugins:save-config', trusted((_event, value) => {
+    const input = parsePluginConfig(value)
+    const result = services.pluginHost.saveConfig(input)
+    stopCapturesForPlugin(input.pluginId, true)
+    services.pluginLifecycle.stop(input.pluginId)
+    reconcileBackgroundCaptureAccounts()
+    return result
+  }))
   handleIpc('plugins:schedules', trusted(() => services.pluginHost.listSchedules()))
   handleIpc('plugins:create-schedule', trusted((_event, value) => (
     services.pluginHost.createSchedule(parseCreatePluginSchedule(value))
@@ -559,43 +822,61 @@ export function registerIpc(
   )))
   handleIpc('plugins:catalog', trusted(() => services.pluginLifecycle.getCatalog()))
   handleIpc('plugins:refresh-catalog', trusted(async () => {
-    const state = await services.pluginLifecycle.refreshCatalog()
-    services.adapterRegistry.reconcile()
-    return state
+    try {
+      const state = await services.pluginLifecycle.refreshCatalog()
+      services.adapterRegistry.reconcile()
+      return state
+    } finally {
+      reconcileBackgroundCaptureAccounts()
+    }
   }))
   handleIpc('plugins:install-catalog', trusted(async (_event, pluginId) => {
-    const installed = await services.pluginLifecycle.installFromCatalog(parseId(pluginId))
-    registerNewManifestPlatforms(services.pluginHost)
-    services.adapterRegistry.reconcile()
-    return installed
-  }))
-  handleIpc('plugins:install-development', trusted(async () => {
-    const installed = await services.pluginLifecycle.installDevelopment()
-    if (installed) {
+    try {
+      const installed = await services.pluginLifecycle.installFromCatalog(parseId(pluginId))
       registerNewManifestPlatforms(services.pluginHost)
       services.adapterRegistry.reconcile()
+      return installed
+    } finally {
+      reconcileBackgroundCaptureAccounts()
     }
-    return installed
+  }))
+  handleIpc('plugins:install-development', trusted(async () => {
+    try {
+      const installed = await services.pluginLifecycle.installDevelopment()
+      if (installed) {
+        registerNewManifestPlatforms(services.pluginHost)
+        services.adapterRegistry.reconcile()
+      }
+      return installed
+    } finally {
+      reconcileBackgroundCaptureAccounts()
+    }
   }))
   handleIpc('plugins:update', trusted(async (_event, pluginId, confirmPermissionExpansion) => {
     const parsedPluginId = parseId(pluginId)
-    const installed = await services.pluginLifecycle.update(
-      parsedPluginId,
-      confirmPermissionExpansion === undefined
-        ? false
-        : parseBoolean(confirmPermissionExpansion, '更新权限确认')
-    )
-    registerNewManifestPlatforms(services.pluginHost)
-    services.adapterRegistry.reconcile()
-    stopCapturesForPlugin(parsedPluginId)
-    return installed
+    try {
+      const installed = await services.pluginLifecycle.update(
+        parsedPluginId,
+        confirmPermissionExpansion === undefined
+          ? false
+          : parseBoolean(confirmPermissionExpansion, '更新权限确认')
+      )
+      registerNewManifestPlatforms(services.pluginHost)
+      services.adapterRegistry.reconcile()
+      return installed
+    } finally {
+      reconcileBackgroundCaptureAccounts()
+    }
   }))
   handleIpc('plugins:uninstall', trusted(async (_event, pluginId) => {
     const parsedPluginId = parseId(pluginId)
-    await services.pluginLifecycle.uninstall(parsedPluginId)
-    registerNewManifestPlatforms(services.pluginHost)
-    services.adapterRegistry.reconcile()
-    stopCapturesForPlugin(parsedPluginId)
+    try {
+      await services.pluginLifecycle.uninstall(parsedPluginId)
+      registerNewManifestPlatforms(services.pluginHost)
+      services.adapterRegistry.reconcile()
+    } finally {
+      reconcileBackgroundCaptureAccounts()
+    }
   }))
   handleIpc('plugins:get-developer-mode', trusted(() => services.pluginLifecycle.getDeveloperMode()))
   handleIpc('plugins:set-developer-mode', trusted((_event, enabled) => (
@@ -666,8 +947,10 @@ export function registerIpc(
     }
     services.syncBatches.stop()
     services.pluginAutomation.stop()
+    backgroundDiscoveryPaused = true
     try {
       await beginMaintenance()
+      await waitForBackgroundDiscoveryIdle()
       const result = await services.backup.restore(input)
       const restoredSettings = await services.settings.overview()
       services.updates.setAutomaticChecks(restoredSettings.autoCheckUpdates)
@@ -682,6 +965,8 @@ export function registerIpc(
       return result
     } finally {
       endMaintenance()
+      backgroundDiscoveryPaused = false
+      reconcileBackgroundCaptureAccounts()
       services.pluginAutomation.start()
       services.syncBatches.start()
     }
@@ -823,6 +1108,35 @@ export function unregisterIpc(): void {
 function parseThemePreference(value: unknown): ThemePreference {
   if (value === 'light' || value === 'dark' || value === 'system') return value
   throw new Error('主题设置无效')
+}
+
+function captureErrorSignature(error: Error | null): string {
+  if (!error) return ''
+  const diagnostic = error as Error & {
+    status?: unknown
+    contentType?: unknown
+    apiError?: unknown
+    responseBody?: unknown
+    responseBytes?: unknown
+  }
+  return JSON.stringify([
+    diagnostic.name,
+    diagnostic.message,
+    diagnostic.status ?? null,
+    diagnostic.contentType ?? null,
+    diagnostic.apiError ?? null,
+    diagnostic.responseBody ?? null,
+    diagnostic.responseBytes ?? null
+  ]).slice(0, 12_000)
+}
+
+function identityDiscoveryErrorSignature(error: unknown): string {
+  if (error instanceof Error) return captureErrorSignature(error)
+  try {
+    return `${typeof error}:${String(error)}`.slice(0, 12_000)
+  } catch {
+    return `[${typeof error}]`
+  }
 }
 
 function parseThemeColor(value: unknown): string {

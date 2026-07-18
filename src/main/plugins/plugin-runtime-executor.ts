@@ -165,6 +165,7 @@ export class PluginRuntimeExecutor implements PluginExecutor {
         context: {
           pluginId: request.pluginId,
           contributionId: request.contributionId,
+          capturePolicy: 'fresh',
           trigger: request.trigger,
           accountId: request.accountId,
           event: request.event as JsonValue,
@@ -243,6 +244,7 @@ export class PluginRuntimeExecutor implements PluginExecutor {
           pluginId,
           contributionId,
           accountId,
+          capturePolicy,
           config: config.values as JsonObject
         },
         allowedOperations: allowedOperations(state.contribution, grant),

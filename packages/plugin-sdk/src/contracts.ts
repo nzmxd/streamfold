@@ -82,11 +82,20 @@ export interface StandardProfile {
   favorites?: number | null
 }
 
+export interface SyncCoverage {
+  requestedContentCount: number
+  actualContentCount: number
+  /** null means that the adapter could not reliably determine the pagination state. */
+  paginationEnded: boolean | null
+}
+
 export interface StandardDataset {
   capturedAt: string
   profile: StandardProfile | null
   contentMetricDefinitions?: ContentMetricDefinition[]
   contents: StandardContent[]
+  /** Optional for backward compatibility; current adapters should always provide it. */
+  coverage?: SyncCoverage
   warnings: string[]
 }
 
@@ -95,6 +104,13 @@ export interface PlatformAdapterIdentity {
   remoteName: string
   profile?: JsonObject
 }
+
+export interface PlatformAdapterIdentityPending {
+  status: 'capture_pending'
+  message?: string
+}
+
+export type PlatformAdapterIdentityResult = PlatformAdapterIdentity | PlatformAdapterIdentityPending
 
 export interface PluginPublisher {
   id: string
@@ -176,6 +192,34 @@ export interface PlatformCaptureDeclaration {
   maximumTotalBytes?: number
 }
 
+export type PlatformIdentityDiscoveryStrategy = 'on-capture' | 'on-navigation-and-capture'
+
+export interface PlatformBackgroundIdentityDiscoveryDeclaration {
+  strategy: PlatformIdentityDiscoveryStrategy
+  captureIds: string[]
+}
+
+export interface PlatformBackgroundResponseCorrelationDeclaration {
+  routeParameter: string
+  responseFieldPaths: string[]
+  comparison: 'exact' | 'case-insensitive'
+}
+
+export interface PlatformBackgroundCaptureRuleDeclaration {
+  captureId: string
+  /** RFC 6901-style scalar field paths; non-terminal `*` may select array items. */
+  responseFieldPaths: string[]
+  responseCorrelations?: PlatformBackgroundResponseCorrelationDeclaration[]
+}
+
+export interface PlatformBackgroundCaptureDeclaration {
+  captures: PlatformBackgroundCaptureRuleDeclaration[]
+  cacheTtlSeconds: number
+  retryIntervalSeconds: number
+  maximumRetryIntervalSeconds: number
+  identityDiscovery?: PlatformBackgroundIdentityDiscoveryDeclaration
+}
+
 export interface PlatformContentUrlDeclaration {
   remoteIdTemplate: string
   origin: string
@@ -198,6 +242,7 @@ export interface PlatformAdapterContribution extends PluginContributionBase {
   }
   endpoints: PlatformEndpointDeclaration[]
   captures: PlatformCaptureDeclaration[]
+  backgroundCapture?: PlatformBackgroundCaptureDeclaration
   minimumIntervalSeconds: number
   recommendedSyncIntervalHours: number
 }
@@ -241,6 +286,7 @@ export interface PluginManifestV2 {
 export interface PluginExecutionContext extends JsonObject {
   pluginId: string
   contributionId: string
+  capturePolicy: 'fresh' | 'background-cache'
 }
 
 export interface PlatformAdapterReadIdentityInput extends JsonObject {
@@ -286,7 +332,7 @@ export interface PlatformAdapterContributionModule {
   readIdentity(
     context: Readonly<PluginExecutionContext>,
     input: PlatformAdapterReadIdentityInput
-  ): PlatformAdapterIdentity | Promise<PlatformAdapterIdentity>
+  ): PlatformAdapterIdentityResult | Promise<PlatformAdapterIdentityResult>
   collect(
     context: Readonly<PluginExecutionContext>,
     input: PlatformAdapterCollectInput

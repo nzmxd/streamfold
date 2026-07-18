@@ -16,6 +16,7 @@ export interface TaskBatchSummary {
   queuedCount: number
   runningCount: number
   succeededCount: number
+  partialCount: number
   needsAttentionCount: number
   cancelledCount: number
 }
@@ -27,6 +28,7 @@ export function taskStatusLabel(status: TaskStatus): string {
     queued: '排队中',
     running: '运行中',
     succeeded: '已完成',
+    succeeded_with_warnings: '部分完成',
     failed: '失败',
     cancelled: '已取消',
     interrupted: '已中断',
@@ -36,6 +38,7 @@ export function taskStatusLabel(status: TaskStatus): string {
 
 export function taskStatusTone(status: TaskStatus): TaskTone {
   if (status === 'succeeded') return 'success'
+  if (status === 'succeeded_with_warnings') return 'warning'
   if (status === 'running' || status === 'queued') return 'brand'
   if (status === 'failed') return 'danger'
   if (status === 'interrupted' || status === 'paused') return 'warning'
@@ -107,6 +110,7 @@ export function summarizeTaskBatches(tasks: TaskView[]): TaskBatchSummary[] {
       queuedCount: batch.filter((task) => task.status === 'queued').length,
       runningCount: batch.filter((task) => task.status === 'running').length,
       succeededCount: batch.filter((task) => task.status === 'succeeded').length,
+      partialCount: batch.filter((task) => task.status === 'succeeded_with_warnings').length,
       needsAttentionCount: batch.filter((task) => task.attentionState === 'pending').length,
       cancelledCount: batch.filter((task) => task.status === 'cancelled').length
     }

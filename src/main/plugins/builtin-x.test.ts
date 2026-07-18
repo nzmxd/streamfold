@@ -16,7 +16,7 @@ const OTHER_ID = '900719925474099312345678902'
 describe('built-in X platform adapter', () => {
   it('declares only the bounded signed-in web-session surface', () => {
     expect(xPluginManifest.id).toBe(X_PLUGIN_ID)
-    expect(xPluginManifest).toMatchObject({ version: '1.1.5', minimumAppVersion: '0.7.9' })
+    expect(xPluginManifest).toMatchObject({ version: '1.2.0', minimumAppVersion: '0.7.11' })
     const contribution = xPluginManifest.contributions[0]
     expect(contribution).toMatchObject({
       id: X_PLATFORM_CONTRIBUTION_ID,

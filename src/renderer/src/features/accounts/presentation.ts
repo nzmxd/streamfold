@@ -26,6 +26,7 @@ export function accountHealthPresentation(account: Account): { label: string; to
   }
   if (account.connectionStatus === 'disconnected') return { label: '会话已断开', tone: 'muted' }
   if (account.syncStatus === 'failed') return { label: '同步失败', tone: 'danger' }
+  if (account.syncStatus === 'partial') return { label: '同步部分完成', tone: 'warning' }
   if (!account.syncEnabled) return { label: '同步已暂停', tone: 'muted' }
   if (account.syncStatus === 'unsupported') return { label: '当前插件不支持', tone: 'muted' }
   if (account.syncStatus === 'cooldown' || account.connectionStatus === 'pending') {
@@ -69,6 +70,7 @@ export function syncStatusLabel(status: SyncStatus): string {
     idle: '空闲',
     queued: '等待同步',
     running: '同步中',
+    partial: '部分完成',
     cooldown: '冷却中',
     failed: '同步失败',
     unsupported: '当前插件不支持'

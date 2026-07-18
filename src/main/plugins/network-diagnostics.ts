@@ -1,3 +1,4 @@
+import { isSensitiveBackgroundFieldName } from '../../shared/plugin-host-contracts'
 import { sanitizeSandboxDiagnostic } from './sandbox-diagnostics'
 
 const MAX_RESPONSE_BODY_LENGTH = 8 * 1024
@@ -13,6 +14,7 @@ export interface PluginNetworkResponseDiagnosticInput {
   status: unknown
   contentType: unknown
   body: string | Buffer
+  responseBytes?: number
 }
 
 interface ProjectedText {
@@ -59,15 +61,18 @@ export function pluginNetworkResponseError(
   message: string,
   input: PluginNetworkResponseDiagnosticInput
 ): PluginNetworkDiagnosticError {
-  const bytes = Buffer.isBuffer(input.body)
+  const projectedBytes = Buffer.isBuffer(input.body)
     ? input.body.byteLength
     : Buffer.byteLength(input.body, 'utf8')
+  const bytes = Number.isSafeInteger(input.responseBytes) && input.responseBytes! >= 0
+    ? input.responseBytes!
+    : projectedBytes
   const source = Buffer.isBuffer(input.body)
     ? input.body.subarray(0, MAX_RESPONSE_SOURCE_LENGTH).toString('utf8')
     : input.body.slice(0, MAX_RESPONSE_SOURCE_LENGTH)
-  const sourceTruncated = Buffer.isBuffer(input.body)
+  const sourceTruncated = bytes !== projectedBytes || (Buffer.isBuffer(input.body)
     ? input.body.byteLength > MAX_RESPONSE_SOURCE_LENGTH
-    : input.body.length > MAX_RESPONSE_SOURCE_LENGTH
+    : input.body.length > MAX_RESPONSE_SOURCE_LENGTH)
   const parsed = parseJson(source)
   const projectedError = parsed === undefined ? null : projectApiError(parsed)
   const projectedBody = !projectedError?.text ? projectResponseBody(source, parsed) : null
@@ -271,7 +276,5 @@ function safeContentType(value: unknown): string {
 }
 
 function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLocaleLowerCase().replace(/[^a-z0-9]/gu, '')
-  return /(?:password|passwd|pwd|passphrase|cookie|authorization|secret|token|credential|apikey|privatekey|csrf|xsrf|sessionid|^session$|ticket)/u.test(normalized) ||
-    /^(?:a1|websession|webid|xsecappid|ct0|twid|zc0|dc0|qc1)$/u.test(normalized)
+  return isSensitiveBackgroundFieldName(key)
 }

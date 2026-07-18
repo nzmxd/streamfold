@@ -46,7 +46,10 @@ export function createTestHost(options: TestHostOptions = {}): PluginTestHost {
       }
       const method = request.method ?? 'run'
       if (!/^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/.test(method)) throw new TypeError('调用方法名非法')
-      const contextValue = cloneJson(request.context ?? {}) as JsonObject
+      const contextValue = cloneJson({
+        capturePolicy: 'fresh',
+        ...(request.context ?? {})
+      }) as JsonObject
       const inputValue = cloneJson(request.input ?? null)
       const sandbox: Record<string, unknown> = Object.create(null)
       sandbox.__streamfoldHostCall = async (operation: unknown, payload: unknown): Promise<JsonValue> => {

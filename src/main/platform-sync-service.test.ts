@@ -176,6 +176,11 @@ function syncResult(accountId: string, remoteName: string): SessionApiSyncResult
       following: 0,
       bio: ''
     },
+    coverage: {
+      requestedContentCount: 0,
+      actualContentCount: 0,
+      paginationEnded: true
+    },
     contentCount: 0,
     stats: {
       newContentCount: 0,

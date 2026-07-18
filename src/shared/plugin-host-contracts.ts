@@ -105,6 +105,34 @@ export interface PlatformCaptureDeclaration {
   maximumTotalBytes?: number
 }
 
+export type PlatformIdentityDiscoveryStrategy = 'on-capture' | 'on-navigation-and-capture'
+
+export interface PlatformBackgroundIdentityDiscoveryDeclaration {
+  strategy: PlatformIdentityDiscoveryStrategy
+  captureIds: string[]
+}
+
+export interface PlatformBackgroundResponseCorrelationDeclaration {
+  routeParameter: string
+  responseFieldPaths: string[]
+  comparison: 'exact' | 'case-insensitive'
+}
+
+export interface PlatformBackgroundCaptureRuleDeclaration {
+  captureId: string
+  /** RFC 6901-style scalar field paths; non-terminal `*` may select array items. */
+  responseFieldPaths: string[]
+  responseCorrelations?: PlatformBackgroundResponseCorrelationDeclaration[]
+}
+
+export interface PlatformBackgroundCaptureDeclaration {
+  captures: PlatformBackgroundCaptureRuleDeclaration[]
+  cacheTtlSeconds: number
+  retryIntervalSeconds: number
+  maximumRetryIntervalSeconds: number
+  identityDiscovery?: PlatformBackgroundIdentityDiscoveryDeclaration
+}
+
 /** Trusted host policy for a declared response capture. */
 export type PlatformCapturePolicy = 'fresh' | 'background-cache'
 
@@ -130,6 +158,7 @@ export interface PlatformAdapterContribution extends PluginContributionBase {
   }
   endpoints: PlatformEndpointDeclaration[]
   captures: PlatformCaptureDeclaration[]
+  backgroundCapture?: PlatformBackgroundCaptureDeclaration
   minimumIntervalSeconds: number
   recommendedSyncIntervalHours: number
 }
@@ -424,7 +453,7 @@ function validateContribution(value: unknown): PluginContribution {
     ...(item.configSchema === undefined ? {} : { configSchema: validateConfigSchema(item.configSchema) })
   }
   if (kind === 'platform.adapter') {
-    exactKeys(item, [...commonKeys, 'platform', 'endpoints', 'captures', 'minimumIntervalSeconds', 'recommendedSyncIntervalHours'], '平台适配器')
+    exactKeys(item, [...commonKeys, 'platform', 'endpoints', 'captures', 'backgroundCapture', 'minimumIntervalSeconds', 'recommendedSyncIntervalHours'], '平台适配器')
     const platform = objectValue(item.platform, '平台定义')
     exactKeys(platform, ['id', 'name', 'shortName', 'loginUrl', 'homeUrl', 'navigationHosts', 'imageHosts', 'contentUrls', 'riskNote'], '平台定义')
     if (!common.permissions.includes('platform.session-json')) throw new Error('平台适配器缺少 Session JSON 权限')
@@ -434,6 +463,9 @@ function validateContribution(value: unknown): PluginContribution {
     const captures = arrayValue(item.captures, '平台捕获规则').map(validateCapture)
     assertUniqueIds(endpoints, '平台端点')
     assertUniqueIds(captures, '平台捕获规则')
+    const backgroundCapture = item.backgroundCapture === undefined
+      ? undefined
+      : validateBackgroundCapture(item.backgroundCapture, captures)
     return {
       ...common,
       kind,
@@ -450,6 +482,7 @@ function validateContribution(value: unknown): PluginContribution {
       },
       endpoints,
       captures,
+      ...(backgroundCapture === undefined ? {} : { backgroundCapture }),
       minimumIntervalSeconds: integerValue(item.minimumIntervalSeconds, '最小同步间隔', 1, 86_400),
       recommendedSyncIntervalHours: integerValue(item.recommendedSyncIntervalHours, '建议同步间隔', 1, 720)
     }
@@ -482,6 +515,180 @@ function validateContribution(value: unknown): PluginContribution {
     kind,
     minimumIntervalMinutes,
     ...(defaultIntervalMinutes === undefined ? {} : { defaultIntervalMinutes })
+  }
+}
+
+function validateBackgroundCapture(
+  value: unknown,
+  captures: readonly PlatformCaptureDeclaration[]
+): PlatformBackgroundCaptureDeclaration {
+  const item = objectValue(value, '后台捕获配置')
+  exactKeys(item, [
+    'captures', 'cacheTtlSeconds', 'retryIntervalSeconds',
+    'maximumRetryIntervalSeconds', 'identityDiscovery'
+  ], '后台捕获配置')
+  const declaredCaptures = new Map(captures.map((capture) => [capture.id, capture]))
+  const backgroundCaptures = arrayValue(item.captures, '后台捕获规则').map((value) => {
+    const capture = objectValue(value, '后台捕获规则')
+    exactKeys(capture, ['captureId', 'responseFieldPaths', 'responseCorrelations'], '后台捕获规则')
+    const captureId = identifier(capture.captureId, '后台捕获规则 ID')
+    const declaration = declaredCaptures.get(captureId)
+    if (!declaration) throw new Error('后台捕获引用了未声明的规则')
+    const responseFieldPaths = uniqueStrings(
+      capture.responseFieldPaths,
+      '后台响应字段路径',
+      128,
+      512
+    ).map(backgroundResponseFieldPath)
+    if (responseFieldPaths.length === 0) throw new Error('后台响应字段路径不能为空')
+    assertNoBackgroundPathOverlap(responseFieldPaths)
+    const responseCorrelations = validateBackgroundResponseCorrelations(
+      capture.responseCorrelations,
+      declaration,
+      responseFieldPaths
+    )
+    return {
+      captureId,
+      responseFieldPaths,
+      ...(responseCorrelations === undefined ? {} : { responseCorrelations })
+    }
+  })
+  if (backgroundCaptures.length === 0 || backgroundCaptures.length > 8) {
+    throw new Error('后台捕获规则数量必须在 1 到 8 之间')
+  }
+  assertUniqueIds(backgroundCaptures.map((capture) => ({ id: capture.captureId })), '后台捕获规则')
+  const captureIds = backgroundCaptures.map((capture) => capture.captureId)
+  const retryIntervalSeconds = integerValue(item.retryIntervalSeconds, '后台捕获重试间隔', 1, 3_600)
+  const maximumRetryIntervalSeconds = integerValue(
+    item.maximumRetryIntervalSeconds,
+    '后台捕获最大重试间隔',
+    retryIntervalSeconds,
+    86_400
+  )
+  let identityDiscovery: PlatformBackgroundIdentityDiscoveryDeclaration | undefined
+  if (item.identityDiscovery !== undefined) {
+    const discovery = objectValue(item.identityDiscovery, '后台身份发现配置')
+    exactKeys(discovery, ['strategy', 'captureIds'], '后台身份发现配置')
+    const discoveryCaptureIds = uniqueStrings(discovery.captureIds, '身份发现捕获规则', 8, 128)
+    if (discoveryCaptureIds.length === 0 || discoveryCaptureIds.some((id) => !captureIds.includes(id))) {
+      throw new Error('身份发现捕获规则必须属于后台捕获规则')
+    }
+    identityDiscovery = {
+      strategy: enumValue(
+        discovery.strategy,
+        ['on-capture', 'on-navigation-and-capture'] as const,
+        '身份发现策略'
+      ),
+      captureIds: discoveryCaptureIds
+    }
+  }
+  return {
+    captures: backgroundCaptures,
+    cacheTtlSeconds: integerValue(item.cacheTtlSeconds, '后台捕获缓存时间', 5, 3_600),
+    retryIntervalSeconds,
+    maximumRetryIntervalSeconds,
+    ...(identityDiscovery === undefined ? {} : { identityDiscovery })
+  }
+}
+
+function validateBackgroundResponseCorrelations(
+  value: unknown,
+  capture: PlatformCaptureDeclaration,
+  allowedPaths: readonly string[]
+): PlatformBackgroundResponseCorrelationDeclaration[] | undefined {
+  const routeParameters = [...new Set(templateNames(capture.route))]
+  const responsePathParameters = new Set(templateNames(capture.responsePath))
+  const requiredRouteParameters = routeParameters.filter((name) => !responsePathParameters.has(name))
+  if (value === undefined) {
+    if (requiredRouteParameters.length > 0) {
+      throw new Error('未由响应路径绑定的后台捕获页面参数必须声明响应关联字段')
+    }
+    return undefined
+  }
+  const correlations = arrayValue(value, '后台响应关联').map((item) => {
+    const correlation = objectValue(item, '后台响应关联')
+    exactKeys(correlation, ['routeParameter', 'responseFieldPaths', 'comparison'], '后台响应关联')
+    const routeParameter = correlation.routeParameter
+    if (typeof routeParameter !== 'string' ||
+      !/^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(routeParameter) ||
+      !routeParameters.includes(routeParameter)) {
+      throw new Error('后台响应关联引用了未声明的页面参数')
+    }
+    const responseFieldPaths = uniqueStrings(
+      correlation.responseFieldPaths,
+      '后台响应关联字段路径',
+      32,
+      512
+    ).map(backgroundResponseFieldPath)
+    if (responseFieldPaths.length === 0 ||
+      responseFieldPaths.some((path) => path.split('/').includes('*')) ||
+      responseFieldPaths.some((path) => !allowedPaths.includes(path))) {
+      throw new Error('后台响应关联字段必须是不含通配符的响应字段白名单')
+    }
+    return {
+      routeParameter,
+      responseFieldPaths,
+      comparison: enumValue(
+        correlation.comparison,
+        ['exact', 'case-insensitive'] as const,
+        '后台响应关联比较方式'
+      )
+    }
+  })
+  if (correlations.length === 0 || correlations.length > 16 ||
+    new Set(correlations.map((item) => item.routeParameter)).size !== correlations.length ||
+    requiredRouteParameters.some((name) => !correlations.some((item) => item.routeParameter === name))) {
+    throw new Error('每个未由响应路径绑定的后台捕获页面参数必须有且仅有一个响应关联')
+  }
+  return correlations
+}
+
+function backgroundResponseFieldPath(value: string): string {
+  if (!value.startsWith('/') || value.length > 512) throw new Error('后台响应字段路径非法')
+  const encodedSegments = value.slice(1).split('/')
+  if (encodedSegments.length === 0 || encodedSegments.length > 16 || encodedSegments.some((item) => !item)) {
+    throw new Error('后台响应字段路径非法')
+  }
+  const segments = encodedSegments.map((segment) => {
+    if (/~(?![01])/u.test(segment)) throw new Error('后台响应字段路径非法')
+    return segment.replace(/~1/gu, '/').replace(/~0/gu, '~')
+  })
+  if (segments.at(-1) === '*' ||
+      segments.some((segment) => segment !== '*' && !/^[A-Za-z_][A-Za-z0-9_-]{0,127}$/u.test(segment)) ||
+      segments.some((segment) => isSensitiveBackgroundFieldName(segment))) {
+    throw new Error('后台响应字段路径非法或包含敏感字段')
+  }
+  return `/${segments.map((segment) => segment.replace(/~/gu, '~0').replace(/\//gu, '~1')).join('/')}`
+}
+
+export const SENSITIVE_CREDENTIAL_FIELD_PATTERN_SOURCE = '(?:(?:auth|session|sig)|[a-z0-9_.-]*(?:password|passwd|pwd|passphrase|cookie|authorization|authentication|oauth|auth[-_. ]?code|secret|token|credential|api[-_. ]?key|access[-_. ]?key|private[-_. ]?key|signing[-_. ]?key|session|sessid|guest[-_. ]?id|signature|csrf|xsrf|ticket|bearer)[a-z0-9_.-]*|(?:a1|sid|sapisid|hsid|ssid|apisid|lsid|osid|sessdata|bili[_-]?jct|web[_-]?session|webid|xsecappid|ct0|twid|ttwid|odin[_-]?tt|z_c0|d_c0|q_c1|connect[-_. ]?sid|__secure[-_. ]?(?:1p|3p)(?:sid(?:ts|cc)?|apisid)|sidcc|psidts))'
+
+export function isSensitiveBackgroundFieldName(value: string): boolean {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]/gu, '')
+  return /(?:password|passwd|pwd|passphrase|cookie|authorization|authentication|oauth|authcode|secret|token|credential|apikey|accesskey|privatekey|signingkey|session|sessid|guestid|signature|csrf|xsrf|^auth$|^sig$|ticket|bearer)/u.test(normalized) ||
+    /^(?:a1|sid|sapisid|hsid|ssid|apisid|lsid|osid|sessdata|bilijct|websession|webid|xsecappid|ct0|twid|ttwid|odintt|zc0|dc0|qc1|connectsid|secure1psid(?:ts|cc)?|secure3psid(?:ts|cc)?|secure1papisid|secure3papisid|sidcc|psidts)$/u.test(normalized)
+}
+
+function assertNoBackgroundPathOverlap(paths: readonly string[]): void {
+  for (const path of paths) {
+    if (paths.some((candidate) => candidate !== path && candidate.startsWith(`${path}/`))) {
+      throw new Error('后台响应字段路径不能互为父子路径')
+    }
+  }
+  const segments = paths.map((path) => path.slice(1).split('/'))
+  for (let left = 0; left < segments.length; left += 1) {
+    for (let right = left + 1; right < segments.length; right += 1) {
+      const length = Math.min(segments[left]!.length, segments[right]!.length)
+      for (let index = 0; index < length; index += 1) {
+        const leftSegment = segments[left]![index]!
+        const rightSegment = segments[right]![index]!
+        if (leftSegment === rightSegment) continue
+        if (leftSegment === '*' || rightSegment === '*') {
+          throw new Error('后台响应数组路径不能与具名字段路径混用')
+        }
+        break
+      }
+    }
   }
 }
 

@@ -11,6 +11,10 @@ import {
   writeFileSync
 } from 'node:fs'
 import { basename, join } from 'node:path'
+import {
+  isSensitiveBackgroundFieldName,
+  SENSITIVE_CREDENTIAL_FIELD_PATTERN_SOURCE
+} from '../shared/plugin-host-contracts'
 import type {
   AppLogEntry,
   AppLogExportResult,
@@ -31,7 +35,7 @@ const MAX_DIAGNOSTIC_NODES = 240
 const MAX_DIAGNOSTIC_CHARACTERS = 48_000
 const MAX_DIAGNOSTIC_STRING_LENGTH = 12_000
 const MAX_SANITIZE_SOURCE_LENGTH = 256_000
-const SENSITIVE_KEY_SOURCE = '(?:password|passwd|pwd|passphrase|[a-z0-9_.-]*(?:cookie|authorization|secret|token|credential)[a-z0-9_.-]*|(?:access|refresh|auth|id|confirmation|xsec)[-_. ]*token|auth[-_. ]?code|oauth[-_. ]?code|api[-_. ]?key|x[-_. ]?api[-_. ]?key|private[-_. ]?key|csrf|xsrf|session(?:[-_. ]?id)?|ticket|a1|web[_-]?session|webid|xsecappid|ct0|twid|z_c0|d_c0|q_c1)'
+const SENSITIVE_KEY_SOURCE = SENSITIVE_CREDENTIAL_FIELD_PATTERN_SOURCE
 const DOUBLE_QUOTED_SECRET = new RegExp(`("${SENSITIVE_KEY_SOURCE}"\\s*:\\s*)"(?:\\\\.|[^"\\\\])*"`, 'gi')
 const SINGLE_QUOTED_SECRET = new RegExp(`('${SENSITIVE_KEY_SOURCE}'\\s*:\\s*)'(?:\\\\.|[^'\\\\])*'`, 'gi')
 const UNTERMINATED_DOUBLE_QUOTED_SECRET = new RegExp(`("${SENSITIVE_KEY_SOURCE}"\\s*:\\s*)"(?:\\\\.|[^"\\\\\\r\\n])*(?=$|\\r?\\n)`, 'gim')
@@ -39,7 +43,9 @@ const UNTERMINATED_SINGLE_QUOTED_SECRET = new RegExp(`('${SENSITIVE_KEY_SOURCE}'
 const HEADER_SECRET = new RegExp(`(^|\\r?\\n)([ \\t]*${SENSITIVE_KEY_SOURCE}\\s*:\\s*)[^\\r\\n]*(?:\\r?\\n[ \\t]+[^\\r\\n]*)*`, 'gim')
 const DOUBLE_QUOTED_INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY_SOURCE}\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\])*"`, 'gi')
 const SINGLE_QUOTED_INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY_SOURCE}\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\])*'`, 'gi')
-const LINE_TAIL_SECRET = new RegExp(`\\b((?:password|passwd|pwd|passphrase|[a-z0-9_.-]*(?:cookie|authorization|credential|secret)[a-z0-9_.-]*)\\s*[:=]\\s*)[^\\r\\n]+`, 'gi')
+const UNTERMINATED_DOUBLE_QUOTED_INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY_SOURCE}\\s*[:=]\\s*)"(?:\\\\.|[^"\\\\\\r\\n])*(?=$|\\r?\\n)`, 'gim')
+const UNTERMINATED_SINGLE_QUOTED_INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY_SOURCE}\\s*[:=]\\s*)'(?:\\\\.|[^'\\\\\\r\\n])*(?=$|\\r?\\n)`, 'gim')
+const LINE_TAIL_SECRET = new RegExp(`(?<![?&#])\\b(${SENSITIVE_KEY_SOURCE}\\s*[:=]\\s*)(?!["'])[^\\r\\n]+`, 'gi')
 const COOKIE_INLINE_SECRET = new RegExp(`\\b([a-z0-9_-]*cookie[a-z0-9_-]*\\s*[:=]\\s*)[^\\r\\n]+`, 'gi')
 const AUTHORIZATION_SECRET = /\b((?:proxy[-_. ]?authorization|authorization)\s*[:=]\s*)[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/gi
 const DIGEST_SECRET = /\bDigest\s+[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*/gi
@@ -48,7 +54,7 @@ const INLINE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY_SOURCE})\\b\\s*[:=]\\s*[^\
 const JWT_SECRET = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?\b/g
 const PRIVATE_KEY_SECRET = /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)? PRIVATE KEY-----/g
 const UNTERMINATED_PRIVATE_KEY_SECRET = /-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----[\s\S]*$/g
-const COMMON_COOKIE_SECRET = /\b(a1|web[_-]?session|webid|xsecappid|auth[_-]?token|ct0|twid|z_c0|d_c0|q_c1)\s*=\s*[^\s;,&]+/gi
+const COMMON_COOKIE_SECRET = /\b(a1|sid|sapisid|hsid|ssid|apisid|lsid|osid|sessdata|bili[_-]?jct|web[_-]?session|webid|xsecappid|auth[_-]?token|ct0|twid|ttwid|odin[_-]?tt|z_c0|d_c0|q_c1|__secure[-_. ]?(?:1p|3p)(?:sid(?:ts|cc)?|apisid)|sidcc|psidts)\s*=\s*[^\s;,&]+/gi
 const ARROW_SECRET = new RegExp(`\\b(${SENSITIVE_KEY_SOURCE})\\b\\s*(?:->|=>)\\s*[^\\r\\n]+`, 'gi')
 const NARRATIVE_SECRET = new RegExp(`\\b(${SENSITIVE_KEY_SOURCE})\\b\\s+(?:is|was|equals?)\\s+[^\\r\\n]+`, 'gi')
 const DOUBLE_QUOTED_PAIR = /("((?:\\.|[^"\\]){1,500})"\s*:\s*)"(?:\\.|[^"\\])*"/g
@@ -316,6 +322,8 @@ function redact(value: string): string {
     .replace(HEADER_SECRET, '$1$2[REDACTED]')
     .replace(DOUBLE_QUOTED_INLINE_SECRET, '$1"[REDACTED]"')
     .replace(SINGLE_QUOTED_INLINE_SECRET, "$1'[REDACTED]'")
+    .replace(UNTERMINATED_DOUBLE_QUOTED_INLINE_SECRET, '$1"[REDACTED]"')
+    .replace(UNTERMINATED_SINGLE_QUOTED_INLINE_SECRET, "$1'[REDACTED]'")
     .replace(LINE_TAIL_SECRET, '$1[REDACTED]')
     .replace(ARROW_SECRET, '$1 -> [REDACTED]')
     .replace(NARRATIVE_SECRET, '$1 is [REDACTED]')
@@ -433,9 +441,7 @@ function serializeUnknown(value: unknown): string {
 }
 
 function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLocaleLowerCase().replace(/[^a-z0-9]/g, '')
-  return /(?:password|passwd|pwd|passphrase|cookie|authorization|secret|token|apikey|privatekey|credential|csrf|xsrf|sessionid|^session$|ticket)/.test(normalized) ||
-    /^(?:a1|websession|webid|xsecappid|ct0|twid|zc0|dc0|qc1)$/.test(normalized)
+  return isSensitiveBackgroundFieldName(key)
 }
 
 function formatErrorDetails(error: unknown): string | null {

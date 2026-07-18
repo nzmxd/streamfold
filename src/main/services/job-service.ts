@@ -53,8 +53,9 @@ export interface JobServiceOptions {
 const allowedTransitions: Readonly<Record<JobStatus, readonly JobStatus[]>> = {
   queued: ['validating', 'failed', 'cancelled'],
   validating: ['committing', 'failed'],
-  committing: ['succeeded', 'failed'],
+  committing: ['succeeded', 'succeeded_with_warnings', 'failed'],
   succeeded: [],
+  succeeded_with_warnings: [],
   failed: [],
   cancelled: [],
   interrupted: []

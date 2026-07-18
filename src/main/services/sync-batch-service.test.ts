@@ -266,6 +266,11 @@ function syncResult(accountId: string, job: SessionApiSyncResult['job']): Sessio
       following: null,
       bio: ''
     },
+    coverage: {
+      requestedContentCount: 0,
+      actualContentCount: 0,
+      paginationEnded: true
+    },
     contentCount: 0,
     stats: {
       newContentCount: 0,

@@ -426,12 +426,12 @@ function createWindow(): void {
   const recoveredJobIds = new Set(recoveredJobs.map((job) => job.id))
   const terminalJobIds = new Set(database.listJobs()
     .filter((job) => (
-      ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.status) &&
+      ['succeeded', 'succeeded_with_warnings', 'failed', 'cancelled', 'interrupted'].includes(job.status) &&
       !recoveredJobIds.has(job.id)
     ))
     .map((job) => job.id))
   const logTerminalJob = (job: ReturnType<SocialDatabase['listJobs']>[number]) => {
-    if (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.status) || terminalJobIds.has(job.id)) return
+    if (!['succeeded', 'succeeded_with_warnings', 'failed', 'cancelled', 'interrupted'].includes(job.status) || terminalJobIds.has(job.id)) return
     terminalJobIds.add(job.id)
     const metadata = {
       code: job.errorCode || null,
@@ -448,6 +448,15 @@ function createWindow(): void {
       if (!consumeErrorReportContext('jobId', job.id)) {
         appLogger.error('sync', job.errorMessage || job.stage || '同步任务失败', metadata)
       }
+    } else if (job.status === 'succeeded_with_warnings') {
+      appLogger.warn('sync', job.stage || '同步任务部分完成', {
+        ...metadata,
+        context: {
+          ...metadata.context,
+          coverage: job.result?.coverage ?? null,
+          warningCount: Array.isArray(job.result?.warnings) ? job.result.warnings.length : 0
+        }
+      })
     } else {
       appLogger.info('sync', job.stage || `同步任务${job.status === 'succeeded' ? '完成' : '取消'}`, metadata)
     }
@@ -522,7 +531,10 @@ function createWindow(): void {
     catalogRootPublicKey: pluginCatalogReleaseConfig.catalogRootPublicKey,
     catalogCachePath: join(app.getPath('userData'), 'plugins', 'catalog.json'),
     appVersion: readApplicationVersion(),
-    terminatePlugin: (pluginId) => runtimeExecutor.terminatePlugin(pluginId),
+    terminatePlugin: (pluginId) => {
+      runtimeExecutor.terminatePlugin(pluginId)
+      browserManager?.stopPluginCapturesForPlugin(pluginId)
+    },
     chooseDevelopmentPackage: async () => {
       const result = await dialog.showOpenDialog(mainWindow!, {
         title: '安装开发插件',
@@ -597,11 +609,11 @@ function createWindow(): void {
       showOpenDialog: (options) => dialog.showOpenDialog(mainWindow!, options)
     },
     repository: database,
-    beforeRestore: () => {
+    beforeRestore: async () => {
       pluginAutomationService?.stop()
       syncBatchService?.stop()
       restorePartitions = database!.listAccounts().map((account) => account.sessionPartition)
-      browserManager?.closeAll()
+      await browserManager?.closeAll()
       platformSyncService.invalidatePreviews()
     },
     afterRestore: () => {

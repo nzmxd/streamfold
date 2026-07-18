@@ -5,6 +5,7 @@ import type {
   ContentType,
   MetricValues
 } from '../../shared/content-contracts'
+import type { SyncCoverage } from '../../shared/contracts'
 
 export interface StandardProfile {
   remoteId: string
@@ -60,6 +61,7 @@ export interface StandardDataset {
   contentMetricDefinitions?: ContentMetricDefinition[]
   accountMetricDefinitions?: AccountMetricDefinition[]
   accountMetricSnapshots?: StandardAccountMetricSnapshot[]
+  coverage?: SyncCoverage
   warnings: string[]
 }
 

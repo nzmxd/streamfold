@@ -318,7 +318,7 @@ describe('XiaohongshuApiService', () => {
 
     const result = await createService(() => transport).sync(account.id)
 
-    expect(result).toMatchObject({ contentCount: 1, job: { status: 'succeeded' } })
+    expect(result).toMatchObject({ contentCount: 1, job: { status: 'succeeded_with_warnings' } })
     expect(result.message).toContain('后续同步')
     expect(result.message).toContain('1 条摘要')
     expect(result.job.result?.warnings).toEqual(['部分作品摘要暂未补齐，将在后续同步中继续处理。'])

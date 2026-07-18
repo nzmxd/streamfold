@@ -145,7 +145,7 @@ describe('official X background identity capture', () => {
     }
   })
 
-  it('refreshes the age of a repeated identity response before cache expiry cleanup', async () => {
+  it('refreshes a repeated identity response without emitting a duplicate notice', async () => {
     const browserDebugger = new FakeDebugger()
     let now = 1_000
     const notices: string[] = []
@@ -166,12 +166,18 @@ describe('official X background identity capture', () => {
     await vi.waitFor(() => expect(monitor.read(
       'official:1', settingsCapture(), endpoint, route, 1
     )).toEqual([{ screen_name: 'owner' }]))
+    await vi.waitFor(() => expect(notices).toHaveLength(1))
 
     now += 2 * 60_000 + 1
     emitCapture(browserDebugger, 'repeated', endpoint, { screen_name: 'owner' })
-    await vi.waitFor(() => expect(notices).toHaveLength(2))
-    expect(monitor.read('official:1', settingsCapture(), endpoint, route, 1))
-      .toEqual([{ screen_name: 'owner' }])
+    await vi.waitFor(() => expect(
+      browserDebugger.commands.filter((item) => item.method === 'Network.getResponseBody')
+    ).toHaveLength(2))
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    await vi.waitFor(() => expect(monitor.read(
+      'official:1', settingsCapture(), endpoint, route, 1
+    )).toEqual([{ screen_name: 'owner' }]))
+    expect(notices).toHaveLength(1)
     monitor.dispose()
   })
 

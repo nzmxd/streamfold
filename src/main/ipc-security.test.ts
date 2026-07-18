@@ -28,6 +28,7 @@ vi.mock('electron', () => ({
 }))
 
 import { registerIpc, unregisterIpc, type IpcServices } from './ipc'
+import type { PluginCaptureActivity } from './browser-manager'
 
 describe('IPC trust and maintenance boundary', () => {
   beforeEach(() => {
@@ -268,18 +269,28 @@ describe('IPC trust and maintenance boundary', () => {
       'streamfold.x',
       false
     )
-    expect(fixture.browser.stopPluginCapture).toHaveBeenCalledWith('x-account')
+    expect(fixture.browser.stopPluginCapture).toHaveBeenCalledWith('x-account', true)
     expect(fixture.browser.stopAllPluginCaptures).not.toHaveBeenCalled()
   })
 })
 
 function ipcFixture() {
-  let captureListener: ((activity: { accountId: string; captureId: string | null; sequence: number }) => void) | null = null
+  let captureListener: ((activity: PluginCaptureActivity) => void) | null = null
+  const webContentsListeners = new Map<string, Set<() => void>>()
   const mainFrame = { url: 'app://shell/index.html' }
   const webContents = {
     id: 42,
     mainFrame,
-    send: vi.fn()
+    send: vi.fn(),
+    isDestroyed: vi.fn(() => false),
+    on: vi.fn((event: string, listener: () => void) => {
+      const listeners = webContentsListeners.get(event) ?? new Set()
+      listeners.add(listener)
+      webContentsListeners.set(event, listeners)
+    }),
+    off: vi.fn((event: string, listener: () => void) => {
+      webContentsListeners.get(event)?.delete(listener)
+    })
   }
   const window = {
     webContents,
@@ -288,7 +299,35 @@ function ipcFixture() {
   } as unknown as BrowserWindow
   const pluginHost = {
     listPackages: vi.fn<() => unknown>(() => [{ id: 'safe-package' }]),
-    setPackageEnabled: vi.fn(() => ({ enabled: false }))
+    setPackageEnabled: vi.fn(() => ({ enabled: false })),
+    listContributions: vi.fn(() => [{
+      pluginId: 'streamfold.x',
+      pluginName: 'X',
+      pluginVersion: '1.2.0',
+      enabled: true,
+      granted: true,
+      suspendedReason: '',
+      contribution: {
+        id: 'streamfold.x.platform',
+        kind: 'platform.adapter',
+        platform: { id: 'x' },
+        backgroundCapture: {
+          captures: [],
+          cacheTtlSeconds: 120,
+          retryIntervalSeconds: 2,
+          maximumRetryIntervalSeconds: 60,
+          identityDiscovery: {
+            strategy: 'on-navigation-and-capture',
+            captureIds: ['x.identity.settings', 'x.identity.profile.initial']
+          }
+        }
+      }
+    }]),
+    getGrant: vi.fn(() => ({
+      permissions: ['platform.session-json'],
+      accountIds: ['x-account'],
+      groupIds: []
+    }))
   }
   const pluginLifecycle = {
     installDevelopment: vi.fn(async () => null),
@@ -369,15 +408,26 @@ function ipcFixture() {
     settings,
     browser: {
       applyAppearance: vi.fn(),
-      onPluginCaptureActivity: vi.fn((listener) => {
+      onPluginCaptureActivity: vi.fn((listener: (activity: PluginCaptureActivity) => void) => {
         captureListener = listener
         return () => { captureListener = null }
       }),
       stopPluginCapture: vi.fn(),
-      stopAllPluginCaptures: vi.fn()
+      stopAllPluginCaptures: vi.fn(),
+      bootstrapPluginCapture: vi.fn()
     } as unknown as Parameters<typeof registerIpc>[2],
+    emitWebContents: (event: string) => {
+      for (const listener of webContentsListeners.get(event) ?? []) listener()
+    },
     emitCapture: (activity: { accountId: string; captureId: string | null; sequence: number }) => {
-      captureListener?.(activity)
+      captureListener?.({
+        ...activity,
+        pluginId: activity.captureId ? 'streamfold.x' : null,
+        contributionId: 'streamfold.x.platform',
+        reason: activity.captureId ? 'capture' : 'navigation',
+        health: null,
+        error: null
+      })
     }
   }
 }

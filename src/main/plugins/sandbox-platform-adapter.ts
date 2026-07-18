@@ -29,6 +29,7 @@ import {
   isPluginSupplyChainError,
   type PluginSupplyChainErrorCode
 } from './supply-chain-errors'
+import { sanitizeSandboxDiagnostic } from './sandbox-diagnostics'
 
 interface SandboxAdapterRepository {
   getAccount(id: string): Account | null
@@ -91,10 +92,12 @@ const X_IDENTITY_FAILURES: ReadonlyMap<string, {
 ])
 
 class PluginIdentityCapturePendingError extends Error {
-  constructor(readonly stage: 'settings' | 'profile') {
-    super(stage === 'settings'
+  constructor(readonly stage: 'settings' | 'profile' | 'adapter', message?: string) {
+    super(message ?? (stage === 'settings'
       ? '正在后台监听 X 登录账号设置。'
-      : '已识别 X 登录账号，正在后台监听账号资料。')
+      : stage === 'profile'
+        ? '已识别 X 登录账号，正在后台监听账号资料。'
+        : '正在后台监听平台登录身份。'))
     this.name = 'PluginIdentityCapturePendingError'
   }
 }
@@ -150,14 +153,24 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
         throw error
       }
       if (account.remoteId) return this.commitIdentity(account, identity)
-      const preview: IdentityPreview = {
-        token: randomUUID(),
-        accountId,
-        remoteId: identity.remoteId,
-        remoteName: identity.remoteName,
-        expiresAt: this.clock().getTime() + PREVIEW_TTL_MS
+      this.purgePreviews()
+      let preview = [...this.previews.values()].find((item) => item.accountId === account.id)
+      if (preview && preview.remoteId !== identity.remoteId) {
+        this.previews.delete(preview.token)
+        preview = undefined
       }
-      this.previews.set(preview.token, preview)
+      if (!preview) {
+        preview = {
+          token: randomUUID(),
+          accountId,
+          remoteId: identity.remoteId,
+          remoteName: identity.remoteName,
+          expiresAt: this.clock().getTime() + PREVIEW_TTL_MS
+        }
+        this.previews.set(preview.token, preview)
+      } else {
+        preview.remoteName = identity.remoteName
+      }
       return {
         accountId,
         status: 'confirmation_required',
@@ -224,7 +237,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
           account.id,
           { scope: requestedMode, boundRemoteId: before.remoteId }
         )
-        const dataset = parseDataset(raw, this.platformId)
+        const dataset = parseDataset(raw, this.platformId, requestedMode)
         const after = await this.readIdentity(account.id, account.remoteId)
         if (after.remoteId !== before.remoteId || after.remoteId !== account.remoteId) {
           throw new Error('同步期间平台登录身份发生变化')
@@ -362,7 +375,7 @@ export class SandboxPlatformAdapter implements SessionApiPlatformService {
               accountId,
               runtimeInput
             )
-      const pending = officialXIdentityCapturePending(
+      const pending = genericIdentityCapturePending(value, capturePolicy) ?? officialXIdentityCapturePending(
         this.pluginId,
         this.contributionId,
         value,
@@ -465,6 +478,17 @@ interface Identity {
   likesAndFavoritesTotal: number | null
 }
 
+function genericIdentityCapturePending(
+  value: Record<string, unknown>,
+  capturePolicy: PlatformCapturePolicy
+): PluginIdentityCapturePendingError | null {
+  if (capturePolicy !== 'background-cache' || value.status !== 'capture_pending') return null
+  const message = typeof value.message === 'string'
+    ? sanitizeSandboxDiagnostic(value.message).replace(/\s+/gu, ' ').trim().slice(0, 200)
+    : ''
+  return new PluginIdentityCapturePendingError('adapter', message || undefined)
+}
+
 function officialXIdentityCapturePending(
   pluginId: string,
   contributionId: string,
@@ -517,7 +541,11 @@ function parseIdentity(value: Record<string, unknown>): Identity {
   }
 }
 
-function parseDataset(value: Record<string, unknown>, platformId: string): StandardDataset {
+function parseDataset(
+  value: Record<string, unknown>,
+  platformId: string,
+  mode: Exclude<SyncMode, 'disabled'>
+): StandardDataset {
   const capturedAt = text(value.capturedAt, '采集时间', 10, 40)
   if (new Date(capturedAt).toISOString() !== capturedAt) throw new Error('插件采集时间无效')
   const profile = value.profile === null || value.profile === undefined ? null : parseProfile(record(value.profile))
@@ -562,6 +590,7 @@ function parseDataset(value: Record<string, unknown>, platformId: string): Stand
   const warnings = Array.isArray(value.warnings)
     ? value.warnings.slice(0, 100).map((item) => text(item, '插件警告', 0, 500))
     : []
+  const coverage = parseSyncCoverage(value.coverage, mode, contents.length)
   return {
     capturedAt,
     profile,
@@ -569,7 +598,44 @@ function parseDataset(value: Record<string, unknown>, platformId: string): Stand
     ...(contentMetricDefinitions === undefined ? {} : { contentMetricDefinitions }),
     ...(accountMetricDefinitions === undefined ? {} : { accountMetricDefinitions }),
     ...(accountMetricSnapshots === undefined ? {} : { accountMetricSnapshots }),
+    coverage,
     warnings
+  }
+}
+
+function parseSyncCoverage(
+  value: unknown,
+  mode: Exclude<SyncMode, 'disabled'>,
+  actualContentCount: number
+): import('../../shared/contracts').SyncCoverage {
+  const requestedContentCount = mode === 'profile_only' ? 0 : mode === 'recent_20' ? 20 : 100
+  if (value === undefined || value === null) {
+    return {
+      requestedContentCount,
+      actualContentCount,
+      paginationEnded: mode === 'profile_only' ? true : null
+    }
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('插件同步覆盖信息无效')
+  const coverage = value as Record<string, unknown>
+  if (!Number.isSafeInteger(coverage.requestedContentCount) ||
+    coverage.requestedContentCount !== requestedContentCount) {
+    throw new Error('插件请求内容数量与同步范围不一致')
+  }
+  if (!Number.isSafeInteger(coverage.actualContentCount) ||
+    coverage.actualContentCount !== actualContentCount) {
+    throw new Error('插件实际内容数量与数据集不一致')
+  }
+  if (coverage.paginationEnded !== null && typeof coverage.paginationEnded !== 'boolean') {
+    throw new Error('插件分页结束状态无效')
+  }
+  if (mode === 'profile_only' && coverage.paginationEnded !== true) {
+    throw new Error('仅资料同步的覆盖信息无效')
+  }
+  return {
+    requestedContentCount,
+    actualContentCount,
+    paginationEnded: coverage.paginationEnded
   }
 }
 
@@ -776,7 +842,7 @@ function toSyncResult(
   job: JobRecord
 ): SessionApiSyncResult {
   const profile = dataset.profile!
-  const warnings = [...dataset.warnings]
+  const warnings = [...committed.warnings]
   const message = `已同步账号资料和 ${dataset.contents.length} 条内容。`
   return {
     accountId: account.id,
@@ -794,6 +860,7 @@ function toSyncResult(
       creatorLevel: profile.creatorLevel
     },
     contentCount: dataset.contents.length,
+    coverage: committed.coverage,
     stats: committed.stats,
     job,
     warnings,

@@ -130,6 +130,24 @@ describe('sandbox diagnostics', () => {
     ]) expect(diagnostic).not.toContain(secret)
   })
 
+  it('redacts prefixed, quoted and multi-part credential assignments', () => {
+    const diagnostic = sanitizeSandboxDiagnostic([
+      'x_access_key=ACCESS PART TWO',
+      "client_session_key='SESSION PART TWO' reason=upstream",
+      'oauth_signature=OAUTH,SECOND',
+      'guest_id_ads -> GUEST VALUE',
+      'laravel_session=LARAVEL COOKIE',
+      'PHPSESSID=PHP COOKIE',
+      '__Secure-3PSIDTS=GOOGLE_COOKIE',
+      'request_signature="UNTERMINATED SIGNATURE'
+    ].join('\n'))
+
+    for (const secret of [
+      'ACCESS PART TWO', 'SESSION PART TWO', 'OAUTH,SECOND', 'GUEST VALUE',
+      'LARAVEL COOKIE', 'PHP COOKIE', 'GOOGLE_COOKIE', 'UNTERMINATED SIGNATURE'
+    ]) expect(diagnostic).not.toContain(secret)
+  })
+
   it('bounds hostile, circular and deeply nested diagnostic properties', () => {
     const hostile = new Proxy({}, {
       getOwnPropertyDescriptor: () => { throw new Error('descriptor trap') },
