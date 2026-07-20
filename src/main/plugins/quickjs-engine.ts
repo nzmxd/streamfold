@@ -9,6 +9,7 @@ import {
 import {
   assertHostCallPayload,
   assertJsonValue,
+  hostResponseJsonByteLength,
   jsonByteLength,
   type JsonObject,
   type JsonValue,
@@ -313,8 +314,7 @@ async function resolveHostEnvelope(
       throw new PluginSupplyChainError('PLUGIN_SANDBOX_RESOURCE_LIMIT', '插件请求超过大小限制')
     }
     const value = await hostCall(operation, payloadObject)
-    assertJsonValue(value)
-    if (jsonByteLength(value) > request.limits.maxRpcBytes) {
+    if (hostResponseJsonByteLength(operation, value) > request.limits.maxRpcBytes) {
       throw new PluginSupplyChainError('PLUGIN_SANDBOX_RESOURCE_LIMIT', '宿主响应超过大小限制')
     }
     return { ok: true, value }

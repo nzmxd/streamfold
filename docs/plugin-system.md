@@ -31,7 +31,7 @@ flowchart LR
     HOST --> DB[("插件状态、Outbox、计划与运行记录")]
 ```
 
-第三方插件没有 Node.js、文件系统、进程、原生模块、Electron、DOM、Cookie 或直接网络能力；`process`、`require`、`Buffer`、`fetch`、`XMLHttpRequest`、`WebSocket`、`document` 和 `window` 均不可用。每次调用的默认上限为 64 MiB QuickJS 内存、5 秒 CPU、120 秒总时长、2 MiB RPC 数据，入口 Bundle 最大 2 MiB。
+第三方插件没有 Node.js、文件系统、进程、原生模块、Electron、DOM、Cookie 或直接网络能力；`process`、`require`、`Buffer`、`fetch`、`XMLHttpRequest`、`WebSocket`、`document` 和 `window` 均不可用。每次调用的默认上限为 64 MiB QuickJS 内存、5 秒 CPU、120 秒总时长、2 MiB RPC 数据，入口 Bundle 最大 2 MiB。插件控制的 JSON 请求与结果最多包含 10,000 个对象键和数组项；清单及字节双重约束的 `platform.getJson` / `platform.captureJson` 宿主响应可使用独立的 262,144 项结构预算，其他宿主操作不继承该预算。
 
 ## 2. 开始开发
 

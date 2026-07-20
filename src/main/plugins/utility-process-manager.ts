@@ -1,5 +1,6 @@
 import type { UtilityProcess } from 'electron'
 import {
+  hostResponseJsonByteLength,
   jsonByteLength,
   parseSandboxChildMessage,
   parseSandboxInvocationRequest,
@@ -234,7 +235,7 @@ export class UtilityProcessSandboxManager {
           contributionId: request.contributionId
         }
       )
-      if (jsonByteLength(value) > request.limits.maxRpcBytes) {
+      if (hostResponseJsonByteLength(message.operation, value) > request.limits.maxRpcBytes) {
         const error = new PluginSupplyChainError(
           'PLUGIN_SANDBOX_RESOURCE_LIMIT',
           '宿主响应超过大小限制'

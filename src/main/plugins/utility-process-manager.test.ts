@@ -59,6 +59,49 @@ describe('utility process sandbox manager', () => {
     expect(child.killed).toBe(true)
   })
 
+  it('returns a dense byte-bounded host response to the sandbox child', async () => {
+    const child = new FakeUtilityProcess()
+    const timeline = Array.from({ length: 5_001 }, (_, id) => ({ id }))
+    const hostCall = vi.fn(async () => timeline)
+    child.onPost = (message) => {
+      const record = message as Record<string, unknown>
+      if (record.type === 'invoke') {
+        child.emit('message', {
+          protocolVersion: 1,
+          type: 'host-call',
+          invocationId: 'invoke_00000001',
+          callId: 'call_00000001',
+          operation: 'platform.captureJson',
+          payload: { captureId: 'timeline.capture', params: {}, limit: 5 }
+        })
+      } else if (record.type === 'host-result' && record.ok === true) {
+        child.emit('message', {
+          protocolVersion: 1,
+          type: 'result',
+          invocationId: 'invoke_00000001',
+          value: { count: (record.value as unknown[]).length }
+        })
+      } else if (record.type === 'host-result') {
+        child.emit('message', {
+          protocolVersion: 1,
+          type: 'error',
+          invocationId: 'invoke_00000001',
+          error: record.error
+        })
+      }
+    }
+    const manager = new UtilityProcessSandboxManager({
+      runnerPath: 'runner.js',
+      fork: () => child,
+      hostCall
+    })
+    queueMicrotask(() => child.emit('message', { protocolVersion: 1, type: 'ready' }))
+
+    await expect(manager.invoke(request({ allowedOperations: ['platform.captureJson'] })))
+      .resolves.toEqual({ count: 5_001 })
+    expect(hostCall).toHaveBeenCalledOnce()
+  })
+
   it('rejects malformed child messages without invoking the host', async () => {
     const child = new FakeUtilityProcess()
     const hostCall = vi.fn(async () => null)
@@ -257,7 +300,7 @@ describe('utility process sandbox manager', () => {
   })
 })
 
-function request(): SandboxInvocationRequest {
+function request(overrides: Partial<SandboxInvocationRequest> = {}): SandboxInvocationRequest {
   return {
     protocolVersion: 1,
     type: 'invoke',
@@ -269,6 +312,7 @@ function request(): SandboxInvocationRequest {
     input: null,
     context: {},
     allowedOperations: ['platform.getJson'],
-    limits: { ...DEFAULT_SANDBOX_LIMITS }
+    limits: { ...DEFAULT_SANDBOX_LIMITS },
+    ...overrides
   }
 }

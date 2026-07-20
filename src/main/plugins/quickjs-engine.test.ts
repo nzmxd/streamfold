@@ -59,6 +59,33 @@ describe('QuickJS plugin engine', () => {
     })
   }, 20_000)
 
+  it('passes a structurally dense host response that remains within the RPC byte limit', async () => {
+    const timeline = Array.from({ length: 5_001 }, (_, id) => ({ id }))
+    expect(Buffer.byteLength(JSON.stringify(timeline), 'utf8'))
+      .toBeLessThan(DEFAULT_SANDBOX_LIMITS.maxRpcBytes)
+    const hostCall = vi.fn<SandboxHostCall>(async () => timeline)
+
+    const result = await executeQuickJsContribution(request(`
+      module.exports = {
+        async run() {
+          const timeline = await streamfold.platform.captureJson('timeline.capture', {}, 5);
+          return {
+            count: timeline.length,
+            firstId: timeline[0].id,
+            lastId: timeline[timeline.length - 1].id
+          };
+        }
+      }
+    `, null, { allowedOperations: ['platform.captureJson'] }), hostCall)
+
+    expect(result).toEqual({ count: 5_001, firstId: 0, lastId: 5_000 })
+    expect(hostCall).toHaveBeenCalledWith('platform.captureJson', {
+      captureId: 'timeline.capture',
+      params: {},
+      limit: 5
+    })
+  }, 20_000)
+
   it('interrupts guest CPU loops', async () => {
     await expect(executeQuickJsContribution(request(`
       module.exports = { run() { while (true) {} } }

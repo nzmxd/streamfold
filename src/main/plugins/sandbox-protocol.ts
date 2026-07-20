@@ -21,7 +21,13 @@ export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = Object.freeze({
 
 export const MAX_SANDBOX_ENTRY_BYTES = 2 * 1024 * 1024
 const MAX_JSON_DEPTH = 32
-const MAX_JSON_PROPERTIES = 10_000
+const MAX_JSON_ENTRIES = 10_000
+// Platform captures are host-mediated, manifest- and byte-bounded JSON. Real
+// GraphQL timelines can be dense across a full 2 MiB RPC, so allow 256K object
+// keys plus array items while retaining a separate cap for pathological shapes.
+// Non-platform host operations and guest-controlled RPC remain on the lower
+// MAX_JSON_ENTRIES budget.
+export const MAX_SANDBOX_PLATFORM_RESPONSE_ENTRIES = 256 * 1024
 const IDENTIFIER = /^[a-z0-9](?:[a-z0-9._-]{1,126}[a-z0-9])?$/
 const INVOCATION_ID = /^[A-Za-z0-9_-]{8,128}$/
 const METHOD = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/
@@ -194,7 +200,7 @@ export function parseSandboxHostResult(value: unknown): SandboxHostResultMessage
   }
   if (record.ok) {
     if (record.error !== undefined || record.value === undefined) invalidProtocol()
-    assertJsonValue(record.value)
+    assertPlatformResponseJsonValue(record.value)
     return { ...base, ok: true, value: record.value as JsonValue }
   }
   if (record.value !== undefined || record.error === undefined) invalidProtocol()
@@ -242,16 +248,44 @@ export function jsonByteLength(value: JsonValue | JsonObject): number {
 }
 
 export function assertJsonValue(value: unknown): asserts value is JsonValue {
-  const state = { properties: 0, seen: new Set<object>() }
+  assertJsonValueWithin(value, MAX_JSON_ENTRIES, invalidProtocol)
+}
+
+export function hostResponseJsonByteLength(
+  operation: SandboxHostOperation,
+  value: JsonValue | JsonObject
+): number {
+  if (operation !== 'platform.getJson' && operation !== 'platform.captureJson') {
+    return jsonByteLength(value)
+  }
+  assertPlatformResponseJsonValue(value)
+  return Buffer.byteLength(JSON.stringify(value), 'utf8')
+}
+
+function assertPlatformResponseJsonValue(value: unknown): asserts value is JsonValue {
+  assertJsonValueWithin(value, MAX_SANDBOX_PLATFORM_RESPONSE_ENTRIES, hostResponseLimitExceeded)
+}
+
+function assertJsonValueWithin(
+  value: unknown,
+  maximumEntries: number,
+  limitExceeded: () => never
+): asserts value is JsonValue {
+  const state = { entries: 0, seen: new Set<object>(), maximumEntries, limitExceeded }
   visitJson(value, 0, state)
 }
 
 function visitJson(
   value: unknown,
   depth: number,
-  state: { properties: number; seen: Set<object> }
+  state: {
+    entries: number
+    seen: Set<object>
+    maximumEntries: number
+    limitExceeded: () => never
+  }
 ): void {
-  if (depth > MAX_JSON_DEPTH) invalidProtocol()
+  if (depth > MAX_JSON_DEPTH) state.limitExceeded()
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) invalidProtocol()
@@ -264,6 +298,7 @@ function visitJson(
     const prototype = Object.getPrototypeOf(value)
     if (Array.isArray(value)) {
       if (prototype !== Array.prototype) invalidProtocol()
+      if (value.length > state.maximumEntries - state.entries) state.limitExceeded()
       const ownKeys = Reflect.ownKeys(value)
       if (ownKeys.length !== value.length + 1 || ownKeys.some((key) => {
         if (key === 'length') return false
@@ -271,8 +306,7 @@ function visitJson(
         const index = Number(key)
         return !Number.isSafeInteger(index) || index >= value.length || String(index) !== key
       })) invalidProtocol()
-      state.properties += value.length
-      if (state.properties > MAX_JSON_PROPERTIES) invalidProtocol()
+      state.entries += value.length
       for (let index = 0; index < value.length; index += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
         if (!descriptor?.enumerable || !('value' in descriptor)) invalidProtocol()
@@ -283,8 +317,9 @@ function visitJson(
     if (prototype !== Object.prototype && prototype !== null) invalidProtocol()
     for (const key of Reflect.ownKeys(value)) {
       if (typeof key !== 'string') invalidProtocol()
-      state.properties += 1
-      if (state.properties > MAX_JSON_PROPERTIES || key.length > 256 || /[\u0000-\u001f\u007f]/u.test(key)) invalidProtocol()
+      state.entries += 1
+      if (state.entries > state.maximumEntries) state.limitExceeded()
+      if (key.length > 256 || /[\u0000-\u001f\u007f]/u.test(key)) invalidProtocol()
       const descriptor = Object.getOwnPropertyDescriptor(value, key)
       if (!descriptor?.enumerable || !('value' in descriptor)) invalidProtocol()
       visitJson(descriptor.value, depth + 1, state)
@@ -377,4 +412,8 @@ function boundedInteger(value: unknown, minimum: number, maximum: number): numbe
 
 function invalidProtocol(): never {
   throw new PluginSupplyChainError('PLUGIN_SANDBOX_PROTOCOL_INVALID', '插件沙箱消息无效')
+}
+
+function hostResponseLimitExceeded(): never {
+  throw new PluginSupplyChainError('PLUGIN_SANDBOX_RESOURCE_LIMIT', '宿主响应结构超过大小限制')
 }
